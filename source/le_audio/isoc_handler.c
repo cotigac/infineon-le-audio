@@ -4,7 +4,6 @@
  *
  * Manages the flow of isochronous audio data between LC3 codec and HCI layer.
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

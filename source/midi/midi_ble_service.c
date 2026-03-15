@@ -13,7 +13,6 @@
  *
  * Timestamp: 13-bit millisecond counter (wraps at 8191ms)
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

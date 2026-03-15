@@ -13,7 +13,6 @@
  * - Available Audio Contexts: Currently available streaming contexts
  * - Supported Audio Contexts: All supported streaming contexts
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

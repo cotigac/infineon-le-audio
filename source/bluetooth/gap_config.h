@@ -16,7 +16,6 @@
  * - Periodic advertising for broadcast audio
  * - Scan for broadcast sources (BASS)
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

@@ -4,7 +4,6 @@
  *
  * Implements BAP Unicast roles for connected isochronous audio streaming.
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

@@ -5,7 +5,6 @@
  * This module provides DMA-based I2S audio streaming with ping-pong
  * buffering for continuous audio transfer to/from the main controller.
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

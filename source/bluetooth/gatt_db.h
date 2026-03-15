@@ -22,7 +22,6 @@
  * - CAS:                 0x1853
  * - MIDI:                0x03B80E5A-EDE8-4B33-A751-6CE34EC4C700
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

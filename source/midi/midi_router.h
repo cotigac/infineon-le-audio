@@ -10,7 +10,6 @@
  * The router supports configurable routing rules, message filtering,
  * channel remapping, and message transformation.
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

@@ -5,7 +5,6 @@
  * This module provides the main control interface for LE Audio functionality
  * including unicast streaming (CIS) and broadcast (BIS/Auracast).
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

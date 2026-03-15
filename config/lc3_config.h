@@ -4,7 +4,6 @@
  *
  * Configuration parameters for the LC3 audio codec.
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

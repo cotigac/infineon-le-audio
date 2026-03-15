@@ -5,7 +5,6 @@
  * Implements HCI commands and event handling for LE Audio isochronous
  * channels (CIG/CIS for unicast, BIG/BIS for broadcast).
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

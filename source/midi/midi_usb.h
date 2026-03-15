@@ -12,7 +12,6 @@
  * The implementation supports USB Full-Speed (12 Mbps) which is
  * sufficient for MIDI's relatively low bandwidth requirements.
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

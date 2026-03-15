@@ -10,7 +10,6 @@
  * Based on Bluetooth Core Specification 5.4, Volume 4, Part E
  * (HCI Commands for LE Isochronous Channels)
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

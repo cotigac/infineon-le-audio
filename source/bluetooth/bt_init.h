@@ -11,7 +11,6 @@
  * - Communication via UART HCI transport
  * - Supports LE Audio with HCI ISOC (isochronous channels)
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

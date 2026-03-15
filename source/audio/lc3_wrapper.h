@@ -5,7 +5,6 @@
  * This module provides a simplified interface to Google's liblc3 codec
  * for encoding and decoding LC3 audio frames used in Bluetooth LE Audio.
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

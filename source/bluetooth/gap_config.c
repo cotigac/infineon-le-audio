@@ -4,7 +4,6 @@
  *
  * Provides GAP advertising, scanning, and connection management.
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

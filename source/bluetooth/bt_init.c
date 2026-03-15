@@ -5,7 +5,6 @@
  * Implements BTSTACK initialization, HCI transport setup, and
  * CYW55511 controller management for LE Audio applications.
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

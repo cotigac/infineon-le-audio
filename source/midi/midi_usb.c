@@ -12,7 +12,6 @@
  * - Byte 2: MIDI_1 (data/0x00)
  * - Byte 3: MIDI_2 (data/0x00)
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

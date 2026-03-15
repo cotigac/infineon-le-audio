@@ -13,7 +13,6 @@
 # Download ARM GNU Toolchain:
 #   https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads
 #
-# Copyright 2024 Cristian Cotiga
 # SPDX-License-Identifier: Apache-2.0
 #-------------------------------------------------------------------------------
 

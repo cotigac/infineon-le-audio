@@ -28,7 +28,6 @@
  *                                       │    TX       │
  *                                       └─────────────┘
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

@@ -4,7 +4,6 @@
  *
  * Implements GATT server with LE Audio services.
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

@@ -5,7 +5,6 @@
  * This application demonstrates full-duplex LE Audio (LC3), Auracast broadcast,
  * and MIDI over BLE/USB on PSoC Edge E81 with CYW55511 Bluetooth.
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

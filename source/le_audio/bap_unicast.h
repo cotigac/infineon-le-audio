@@ -10,7 +10,6 @@
  * Implements ASE (Audio Stream Endpoint) state machine per BAP 1.0.1
  * and ASCS (Audio Stream Control Service) for stream management.
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

@@ -37,7 +37,6 @@
  * │    - Power Class 1.5 (+10 dBm TX)                               │
  * └─────────────────────────────────────────────────────────────────┘
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

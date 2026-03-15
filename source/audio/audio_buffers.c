@@ -4,7 +4,6 @@
  *
  * Thread-safe ring buffers for PCM and LC3 audio data.
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

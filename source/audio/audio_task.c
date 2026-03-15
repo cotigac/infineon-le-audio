@@ -6,7 +6,6 @@
  * Handles LC3 encoding/decoding and coordinates data flow between
  * I2S peripheral and ISOC handler.
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

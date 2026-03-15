@@ -4,7 +4,6 @@
  *
  * Implements PACS server and client roles per Bluetooth SIG specification.
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

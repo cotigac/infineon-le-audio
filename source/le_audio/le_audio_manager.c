@@ -11,7 +11,6 @@
  * - Ring buffers for PCM audio data exchange
  * - HCI ISOC interface for Bluetooth audio transport
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 

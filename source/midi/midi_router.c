@@ -16,7 +16,6 @@
  * - Soft-thru (local echo)
  * - Message transformation callbacks
  *
- * Copyright 2024 Cristian Cotiga
  * SPDX-License-Identifier: Apache-2.0
  */
 
