@@ -260,7 +260,7 @@ le_audio_broadcast_config_t config = {
 | Application code | ~30 KB | ~120 KB |
 | **Total** | **~188 KB** | **~430 KB** |
 
-PSoC Edge E81 has 4 MB SRAM and 512 KB Flash - plenty of headroom.
+PSoC Edge E82 has 5 MB SRAM and 512 KB Flash - plenty of headroom.
 
 ## Documentation
 

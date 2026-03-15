@@ -385,7 +385,7 @@ target_link_libraries(${PROJECT_NAME}
 )
 
 # Set linker script
-set(LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/cmake/psoc_edge_e81.ld)
+set(LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/cmake/psoc_edge_e82.ld)
 if(EXISTS ${LINKER_SCRIPT})
     target_link_options(${PROJECT_NAME} PRIVATE
         -T${LINKER_SCRIPT}

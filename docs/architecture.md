@@ -218,7 +218,7 @@ All LC3 encoding/decoding runs on the PSoC Edge host, providing a consistent arc
 | Audio buffers | 20 KB | I2S + LC3 ring buffers |
 | USB middleware | 8 KB | MIDI class |
 | Application | 30 KB | Task stacks, variables |
-| **Total** | **~188 KB** | PSoC Edge E81 has 4 MB |
+| **Total** | **~188 KB** | PSoC Edge E82 has 5 MB |
 
 ### Flash Usage (Estimated)
 

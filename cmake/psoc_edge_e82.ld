@@ -1,11 +1,11 @@
 /*******************************************************************************
- * psoc_edge_e81.ld - Linker Script for PSoC Edge E81
+ * psoc_edge_e82.ld - Linker Script for PSoC Edge E82
  *
- * Memory layout for PSoC Edge E81 (Cortex-M55)
+ * Memory layout for PSoC Edge E82 (Cortex-M55)
  *
  * Memory Map:
  *   FLASH:  0x10000000 - 0x1007FFFF (512 KB)
- *   SRAM:   0x20000000 - 0x203FFFFF (4 MB)
+ *   SRAM:   0x20000000 - 0x204FFFFF (5 MB)
  *
  * Section Layout:
  *   .text       - Code and read-only data (Flash)
@@ -29,20 +29,20 @@ MEMORY
     /* Flash memory - 512 KB */
     FLASH (rx)      : ORIGIN = 0x10000000, LENGTH = 512K
 
-    /* SRAM - 4 MB total */
+    /* SRAM - 5 MB total */
     /* Split into regions for different purposes */
 
-    /* Main SRAM for code/data - 2 MB */
-    SRAM (rwx)      : ORIGIN = 0x20000000, LENGTH = 2M
+    /* Main SRAM for code/data - 2.5 MB */
+    SRAM (rwx)      : ORIGIN = 0x20000000, LENGTH = 2560K
 
     /* Audio buffers - 1 MB (DMA-accessible) */
-    AUDIO_RAM (rw)  : ORIGIN = 0x20200000, LENGTH = 1M
+    AUDIO_RAM (rw)  : ORIGIN = 0x20280000, LENGTH = 1M
 
-    /* Bluetooth buffers - 512 KB */
-    BT_RAM (rw)     : ORIGIN = 0x20300000, LENGTH = 512K
+    /* Bluetooth buffers - 1 MB */
+    BT_RAM (rw)     : ORIGIN = 0x20380000, LENGTH = 1M
 
     /* Stack and heap - 512 KB */
-    STACK_RAM (rw)  : ORIGIN = 0x20380000, LENGTH = 512K
+    STACK_RAM (rw)  : ORIGIN = 0x20480000, LENGTH = 512K
 }
 
 /*******************************************************************************

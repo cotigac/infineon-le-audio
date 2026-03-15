@@ -107,7 +107,7 @@ extern "C" {
  * @brief Total heap size available to FreeRTOS
  *
  * 256 KB for audio buffers, task stacks, and queues
- * PSoC Edge E81 has 4 MB SRAM, so this is conservative
+ * PSoC Edge E82 has 5 MB SRAM, so this is conservative
  */
 #define configTOTAL_HEAP_SIZE                       ((size_t)(256 * 1024))
 

@@ -116,7 +116,7 @@ App Processor → USB HS → PSoC Edge → SDIO → CYW55512 WLAN
 **Files to Update**:
 - `config/cy_bt_config.h` - Change default controller
 - `CMakeLists.txt` - Update MCU family
-- `cmake/psoc_edge_e81.ld` - Rename for E82
+- `cmake/psoc_edge_e82.ld` - Updated for E82 (5 MB SRAM)
 
 #### Gap 4: Missing Startup Code
 
@@ -584,7 +584,7 @@ typedef struct {
 | Application code | ~30 KB | ~120 KB |
 | **Total** | **~188 KB** | **~430 KB** |
 
-PSoC Edge E81 has 4 MB SRAM and 512 KB Flash - plenty of headroom.
+PSoC Edge E82 has 5 MB SRAM and 512 KB Flash - plenty of headroom.
 
 ---
 
@@ -632,7 +632,7 @@ PSoC Edge E81 has 4 MB SRAM and 512 KB Flash - plenty of headroom.
 | LE Audio profile complexity | MEDIUM | Study Zephyr implementation; use Bluetooth SIG sample data |
 | CYW55512 HCI ISOC support | MEDIUM | Verify HCI_LE_Create_BIG and HCI_LE_Create_CIS commands |
 | Real-time LC3 + I2S timing | MEDIUM | Use DMA ping-pong buffers; audio task at high priority |
-| Memory: liblc3 + BAP stack | LOW | ~188 KB RAM needed; PSoC Edge E82 has 4MB SRAM |
+| Memory: liblc3 + BAP stack | LOW | ~188 KB RAM needed; PSoC Edge E82 has 5 MB SRAM |
 | Full-duplex latency | LOW | 10ms frame duration + buffering = ~30-40ms total latency |
 | Testing: Need Auracast receiver | LOW | nRF Connect app, Samsung Galaxy Buds3, or LE Audio headphones |
 | Part number mismatch in code | LOW | Update cy_bt_config.h, CMakeLists.txt, linker script |
