@@ -278,37 +278,38 @@ target_compile_definitions(btstack PUBLIC
 )
 
 #-------------------------------------------------------------------------------
-# USB Device Library (Infineon)
+# USB Device Library (Segger emUSB-Device for PSoC Edge - USB High-Speed)
 #-------------------------------------------------------------------------------
 
 if(ENABLE_USB)
-    set(USBDEV_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libs/usbdev)
+    set(EMUSB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libs/emusb-device)
+    set(EMUSB_USBD_DIR ${EMUSB_DIR}/USBD)
 
-    # USB device sources (basic set)
-    set(USBDEV_SOURCES
-        ${USBDEV_DIR}/cy_usb_dev.c
-        ${USBDEV_DIR}/cy_usb_dev_audio.c
-        ${USBDEV_DIR}/cy_usb_dev_cdc.c
-        ${USBDEV_DIR}/cy_usb_dev_descr.c
-        ${USBDEV_DIR}/cy_usb_dev_hid.c
-    )
+    # Pre-built library path for CM55 + GCC (PSoC Edge E82/E84)
+    set(EMUSB_LIB_PATH ${EMUSB_USBD_DIR}/COMPONENT_USBD_BASE/COMPONENT_PSE84/CONFIG_Debug/COMPONENT_CM55/COMPONENT_HARDFP/TOOLCHAIN_GCC_ARM/gcc.a)
 
-    # Check if sources exist (library structure may vary)
-    set(USBDEV_SOURCES_FOUND)
-    foreach(src ${USBDEV_SOURCES})
-        if(EXISTS ${src})
-            list(APPEND USBDEV_SOURCES_FOUND ${src})
-        endif()
-    endforeach()
 
-    if(USBDEV_SOURCES_FOUND)
-        add_library(usbdev STATIC ${USBDEV_SOURCES_FOUND})
-        target_include_directories(usbdev PUBLIC ${USBDEV_DIR})
+    if(EXISTS ${EMUSB_LIB_PATH})
+        # Create imported library for pre-built emUSB-Device
+        add_library(emusb-device STATIC IMPORTED)
+        set_target_properties(emusb-device PROPERTIES
+            IMPORTED_LOCATION ${EMUSB_LIB_PATH}
+        )
+
+        # Create interface library for includes
+        add_library(emusb-device-includes INTERFACE)
+        target_include_directories(emusb-device-includes INTERFACE
+            ${EMUSB_USBD_DIR}
+            ${EMUSB_DIR}/OS
+        )
+
+        message(STATUS "Found emUSB-Device library (USB High-Speed): ${EMUSB_LIB_PATH}")
     else()
-        message(WARNING "USB device library sources not found at expected paths")
+        message(WARNING "emUSB-Device library not found at: ${EMUSB_LIB_PATH}")
         # Create interface library as placeholder
-        add_library(usbdev INTERFACE)
-        target_include_directories(usbdev INTERFACE ${USBDEV_DIR})
+        add_library(emusb-device INTERFACE)
+        add_library(emusb-device-includes INTERFACE)
+        target_include_directories(emusb-device-includes INTERFACE ${EMUSB_USBD_DIR})
     endif()
 endif()
 
@@ -379,7 +380,8 @@ target_link_libraries(${PROJECT_NAME}
     freertos
     lc3
     btstack
-    $<$<BOOL:${ENABLE_USB}>:usbdev>
+    $<$<BOOL:${ENABLE_USB}>:emusb-device>
+    $<$<BOOL:${ENABLE_USB}>:emusb-device-includes>
     m  # Math library
 )
 
@@ -481,7 +483,7 @@ message(STATUS "  FreeRTOS:        ${FREERTOS_DIR}")
 message(STATUS "  liblc3:          ${LC3_DIR}")
 message(STATUS "  BTStack:         ${BTSTACK_DIR}")
 if(ENABLE_USB)
-    message(STATUS "  USB Device:      ${USBDEV_DIR}")
+    message(STATUS "  emUSB-Device:    ${EMUSB_DIR} (USB High-Speed)")
 endif()
 message(STATUS "")
 message(STATUS "==============================================")

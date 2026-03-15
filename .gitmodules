@@ -4,9 +4,9 @@
 [submodule "libs/btstack"]
 	path = libs/btstack
 	url = https://github.com/Infineon/btstack.git
-[submodule "libs/usbdev"]
-	path = libs/usbdev
-	url = https://github.com/Infineon/usbdev.git
 [submodule "libs/freertos"]
 	path = libs/freertos
 	url = https://github.com/FreeRTOS/FreeRTOS-Kernel.git
+[submodule "libs/emusb-device"]
+	path = libs/emusb-device
+	url = https://github.com/Infineon/emusb-device.git

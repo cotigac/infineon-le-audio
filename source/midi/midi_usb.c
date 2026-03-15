@@ -20,10 +20,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* TODO: Include Infineon USB Device middleware headers */
-/* #include "cy_usb_dev.h" */
-/* #include "cy_usb_dev_audio.h" */
-/* #include "cycfg_usbdev.h" */
+/* TODO: Include Segger emUSB-Device middleware headers */
+/* #include "USB.h" */
+/* #include "USB_HID.h" */
+/* #include "USB_Bulk.h" */
 
 /* TODO: Include FreeRTOS headers */
 /* #include "FreeRTOS.h" */
@@ -530,14 +530,14 @@ static void usb_ep_out_callback(uint8_t *data, uint16_t length)
 /**
  * @brief Initialize USB device
  *
- * TODO: Implement using Infineon USB Device middleware
+ * TODO: Implement using Segger emUSB-Device middleware
  */
 static int usb_device_init(void)
 {
     /*
      * TODO: Initialize USB device with MIDI descriptors
      *
-     * Example using Infineon USB Device middleware:
+     * Example using Segger emUSB-Device middleware:
      *
      * // Initialize USB device
      * cy_stc_usb_dev_context_t usb_context;

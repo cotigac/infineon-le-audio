@@ -335,7 +335,7 @@ source/
 
 ### USB HS Middleware
 
-The current `usbdev` library only supports USB Full-Speed. PSoC Edge E82/E84 has USB 2.0 High-Speed hardware that requires a different driver:
+The `emusb-device` library (Segger) supports USB High-Speed. PSoC Edge E82/E84 has USB 2.0 High-Speed hardware that requires a different driver:
 
 - **Required**: USB HS capable middleware (not USBFS)
 - **IP Block**: Different from MXUSBFS

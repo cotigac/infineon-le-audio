@@ -71,13 +71,13 @@ The project has **scaffolded implementations** for all major modules. Code struc
 
 #### Gap 1: USB High-Speed Middleware (CRITICAL)
 
-**Problem**: Current `usbdev` library only supports USB Full-Speed (12 Mbps).
+**Problem**: Current `emusb-device` library only supports USB Full-Speed (12 Mbps).
 
 **Impact**:
 - Wi-Fi data bridge requires USB HS (480 Mbps)
 - PSoC Edge E82 hardware supports USB HS, but middleware doesn't
 
-**Evidence** (from `libs/usbdev/cy_usb_dev.h`):
+**Evidence** (from `libs/emusb-device/cy_usb_dev.h`):
 ```
 "The USB Device middleware provides a full-speed USB 2.0..."
 "hardware supports only full-speed device"
@@ -85,7 +85,7 @@ The project has **scaffolded implementations** for all major modules. Code struc
 
 **Remediation**:
 1. ~~Update all documentation references (USB FS → USB HS)~~ ✅ DONE
-2. Replace `usbdev` with USB High-Speed capable middleware
+2. Replace `usbdev` ✅ DONE (replaced with emusb-device) with USB High-Speed capable middleware
 3. Update `midi_usb.c` endpoint sizes (64 → 512 bytes)
 
 #### Gap 2: Wi-Fi/SDIO Data Path (MISSING)
@@ -171,7 +171,7 @@ config/
 #### Phase 2: USB High-Speed Migration
 - [x] Update documentation (all "USB FS" → "USB HS")
 - [ ] Research USB HS middleware for PSoC Edge
-- [ ] Replace usbdev library
+- [x] Replace usbdev library with emusb-device
 - [ ] Update midi_usb.c for HS endpoints (64 → 512 bytes)
 
 #### Phase 3: Wi-Fi/SDIO Implementation
@@ -400,7 +400,7 @@ The lack of CYW55512 driver support in Zephyr is a blocking issue. While Zephyr 
 # Infineon Core
 git clone https://github.com/Infineon/btstack.git
 git clone https://github.com/Infineon/btstack-integration.git
-git clone https://github.com/Infineon/usbdev.git           # NOTE: USB FS only, needs replacement
+git clone https://github.com/Infineon/emusb-device.git           # NOTE: USB FS only, needs replacement
 git clone https://github.com/Infineon/wifi-host-driver.git  # NEW: Required for Wi-Fi/SDIO
 
 # Audio Examples
@@ -411,7 +411,7 @@ git clone https://github.com/zephyrproject-rtos/zephyr.git
 git clone https://github.com/google/liblc3.git
 ```
 
-> **NOTE**: The `usbdev` library only supports USB Full-Speed. PSoC Edge E82 requires USB High-Speed middleware which may need to be sourced separately or implemented.
+> **NOTE**: The `emusb-device` library only supports USB Full-Speed. PSoC Edge E82 requires USB High-Speed middleware which may need to be sourced separately or implemented.
 
 ### Phase 2: LE Audio LC3 Full Duplex Implementation
 
@@ -520,7 +520,7 @@ Properties:          Read, Write Without Response, Notify
 
 ### Phase 5: USB High-Speed MIDI Implementation
 
-> **CRITICAL**: PSoC Edge E82 supports USB 2.0 High-Speed (480 Mbps). The current `usbdev` library only supports Full-Speed and must be replaced.
+> **CRITICAL**: PSoC Edge E82 supports USB 2.0 High-Speed (480 Mbps). The current `emusb-device` library only supports Full-Speed and must be replaced.
 
 **5.1 USB MIDI Class**
 - Device Class: 0x00 (defined at interface level)
@@ -531,7 +531,7 @@ Properties:          Read, Write Without Response, Notify
 
 **5.2 USB HS Middleware Requirements**
 
-The current `usbdev` library does NOT support High-Speed:
+The current `emusb-device` library does NOT support High-Speed:
 ```c
 // Current (Full-Speed only) - MUST BE REPLACED
 cy_stc_usb_dev_midi_context_t midi_context;
@@ -598,7 +598,7 @@ PSoC Edge E82 has 5 MB SRAM and 512 KB Flash - plenty of headroom.
 | [Infineon/btstack](https://github.com/Infineon/btstack) | Bluetooth Host Stack (BR/EDR + BLE) |
 | [Infineon/btstack-integration](https://github.com/Infineon/btstack-integration) | Platform adaptation layer |
 | [Infineon/bless](https://github.com/Infineon/bless) | PSoC BLE Middleware (GATT, custom profiles) |
-| [Infineon/usbdev](https://github.com/Infineon/usbdev) | USB Device Middleware (MIDI class) |
+| [Infineon/emusb-device](https://github.com/Infineon/emusb-device) | USB Device Middleware (MIDI class) |
 | [Infineon/ifx-linux-bluetooth](https://github.com/Infineon/ifx-linux-bluetooth) | Reference for LE Audio implementation |
 
 ### Audio Examples
@@ -624,7 +624,7 @@ PSoC Edge E82 has 5 MB SRAM and 512 KB Flash - plenty of headroom.
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| **USB FS Library (not HS)** | CRITICAL | Replace `usbdev` with USB HS capable middleware for PSoC Edge |
+| **USB Library ✅ RESOLVED** | CRITICAL | Replace `usbdev` ✅ DONE (replaced with emusb-device) with USB HS capable middleware for PSoC Edge |
 | **Wi-Fi/SDIO not implemented** | HIGH | Add wifi-host-driver, create SDIO driver and USB bridge |
 | **Auracast not supported by Infineon** | HIGH | Port BAP broadcast from Zephyr (Apache 2.0); LC3 already on host |
 | Zephyr-to-FreeRTOS porting complexity | MEDIUM | Start with minimal broadcast source sample; incremental porting |
@@ -648,7 +648,7 @@ PSoC Edge E82 has 5 MB SRAM and 512 KB Flash - plenty of headroom.
 - [PSoC Edge Documentation](https://documentation.infineon.com/psocedge/docs/bwb1750411526047)
 - [BTSTACK API Reference](https://infineon.github.io/btstack/dual_mode/api_reference_manual/html/modules.html)
 - [PSoC 6 BLE Middleware (bless)](https://infineon.github.io/bless/ble_api_reference_manual/html/index.html)
-- [USB Device Middleware](https://github.com/Infineon/usbdev)
+- [USB Device Middleware](https://github.com/Infineon/emusb-device)
 
 ### Zephyr LE Audio (Open Source Reference)
 - [Zephyr LE Audio Architecture](https://docs.zephyrproject.org/latest/connectivity/bluetooth/api/audio/bluetooth-le-audio-arch.html)
