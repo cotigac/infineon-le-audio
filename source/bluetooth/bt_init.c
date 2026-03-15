@@ -1344,6 +1344,27 @@ int bt_isoc_get_capabilities(uint8_t *max_cig, uint8_t *max_cis,
  * Public API - FreeRTOS Task
  ******************************************************************************/
 
+void bt_process(void)
+{
+    if (!bt_ctx.initialized) {
+        return;
+    }
+
+    /*
+     * TODO: Process pending Bluetooth stack events
+     *
+     * With Infineon BTSTACK:
+     * wiced_bt_stack_process();
+     *
+     * This processes:
+     * - Pending HCI events from UART
+     * - Timer callbacks
+     * - GATT operations
+     */
+
+    /* Placeholder - actual implementation needs BTSTACK integration */
+}
+
 void bt_task(void *pvParameters)
 {
     (void)pvParameters;

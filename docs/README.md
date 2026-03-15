@@ -160,48 +160,179 @@ config/
 | `hci_isoc.c` | 4 | HCI command sending |
 | Others | ~45 | Various integration points |
 
-### Remediation Plan
+### Implementation Roadmap
 
-#### Phase 1: Foundation (Immediate)
+> **Note**: This roadmap is dependency-aware. Each phase depends on the previous phases being complete.
+
+#### Dependency Chain
+
+```
+Phase 1: Foundation (FreeRTOS + HAL)
+    │
+    ├─→ Phase 2: I2S Audio Pipeline
+    │       │
+    │       └─→ Phase 3: LC3 Codec Integration
+    │               │
+    │               └─→ Phase 5: LE Audio Streaming ←─┐
+    │                                                  │
+    └─→ Phase 4: Bluetooth HCI ────────────────────────┘
+            │
+            └─→ Phase 6: USB & MIDI
+                    │
+                    └─→ Phase 7: Wi-Fi Bridge
+```
+
+---
+
+#### Phase 1: Foundation ⚡ CRITICAL - START HERE
+
+**Status**: 🔴 Not Started
+**Blocking**: All other phases
+**Files**: `main.c`
+
+Without this phase complete, **nothing else works**. FreeRTOS must be running and HAL initialized.
+
+| Task | Status | Description |
+|------|--------|-------------|
+| 1.1 Add `cybsp_init()` | [ ] | Initialize board support package (clocks, pins) |
+| 1.2 Uncomment FreeRTOS includes | [ ] | Enable FreeRTOS headers in main.c |
+| 1.3 Create task handles | [ ] | Define xTaskHandle for each task |
+| 1.4 Call `xTaskCreate()` | [ ] | Create Audio, BLE, USB, MIDI, Wi-Fi tasks |
+| 1.5 Call `vTaskStartScheduler()` | [ ] | Start FreeRTOS scheduler |
+| 1.6 Add debug console output | [ ] | Enable printf via UART for debugging |
+
+**Checkpoint**: See "Audio task started", "BLE task started" on console.
+
+---
+
+#### Phase 2: I2S Audio Pipeline
+
+**Status**: 🔴 Not Started
+**Depends on**: Phase 1
+**Files**: `i2s_stream.c`, `audio_buffers.c`
+
+| Task | Status | Description |
+|------|--------|-------------|
+| 2.1 Implement `cyhal_i2s_init()` | [ ] | Configure I2S master, 48kHz/16-bit/stereo |
+| 2.2 Configure DMA ring buffers | [ ] | Ping-pong buffers for continuous streaming |
+| 2.3 Wire DMA callbacks | [ ] | Handle buffer swap interrupts |
+| 2.4 Implement `i2s_read()`/`i2s_write()` | [ ] | Thread-safe audio data access |
+| 2.5 Test audio loopback | [ ] | I2S RX → buffer → I2S TX (no codec) |
+
+**Checkpoint**: Hear audio looped through I2S with external signal generator.
+
+---
+
+#### Phase 3: LC3 Codec Integration
+
+**Status**: 🔴 Not Started
+**Depends on**: Phase 2
+**Files**: `lc3_wrapper.c`, `audio_task.c`
+
+| Task | Status | Description |
+|------|--------|-------------|
+| 3.1 Instantiate liblc3 encoder | [ ] | Create `lc3_encoder_t` with proper config |
+| 3.2 Instantiate liblc3 decoder | [ ] | Create `lc3_decoder_t` with proper config |
+| 3.3 Wire `encode_pcm_to_lc3()` | [ ] | Call `lc3_encode()` in audio task |
+| 3.4 Wire `decode_lc3_to_pcm()` | [ ] | Call `lc3_decode()` in audio task |
+| 3.5 Add timing measurement | [ ] | Verify <2ms per frame @ 48kHz |
+| 3.6 Test compressed loopback | [ ] | PCM → LC3 encode → LC3 decode → PCM |
+
+**Checkpoint**: Compressed audio loopback working, CPU usage ~15-20%.
+
+---
+
+#### Phase 4: Bluetooth HCI
+
+**Status**: 🔴 Not Started
+**Depends on**: Phase 1
+**Files**: `bt_init.c`, `hci_isoc.c`
+
+| Task | Status | Description |
+|------|--------|-------------|
+| 4.1 Initialize UART for HCI | [ ] | 3 Mbps, CTS/RTS flow control |
+| 4.2 Implement HCI command sender | [ ] | Packet framing, sequence numbers |
+| 4.3 Implement HCI event handler | [ ] | Parse responses, dispatch callbacks |
+| 4.4 Implement HCI Reset command | [ ] | First command to CYW55512 |
+| 4.5 Implement Read Local Version | [ ] | Verify controller responds |
+| 4.6 Download CYW55512 firmware | [ ] | Patchram download if needed |
+| 4.7 Configure LE features | [ ] | Enable ISOC, extended advertising |
+
+**Checkpoint**: See valid HCI events, controller version info on console.
+
+---
+
+#### Phase 5: LE Audio Streaming
+
+**Status**: 🔴 Not Started
+**Depends on**: Phase 3 + Phase 4
+**Files**: `le_audio_manager.c`, `bap_unicast.c`, `isoc_handler.c`, `pacs.c`
+
+| Task | Status | Description |
+|------|--------|-------------|
+| 5.1 Implement PACS service | [ ] | Publish audio capabilities via GATT |
+| 5.2 Implement ASCS service | [ ] | Audio stream control via GATT |
+| 5.3 Implement CIS creation | [ ] | HCI LE Create CIS command |
+| 5.4 Wire ISOC TX path | [ ] | Audio task → HCI ISOC → radio |
+| 5.5 Wire ISOC RX path | [ ] | Radio → HCI ISOC → audio task |
+| 5.6 Implement BAP state machine | [ ] | Codec config → QoS config → Enable |
+| 5.7 Test with LE Audio headphones | [ ] | Full-duplex streaming end-to-end |
+
+**Checkpoint**: Full-duplex audio streaming to LE Audio device.
+
+---
+
+#### Phase 6: USB & MIDI
+
+**Status**: 🔴 Not Started
+**Depends on**: Phase 1
+**Files**: `midi_usb.c`, `midi_ble_service.c`, `midi_router.c`
+
+| Task | Status | Description |
+|------|--------|-------------|
+| 6.1 Initialize USB device | [ ] | emUSB-Device initialization |
+| 6.2 Register USB descriptors | [ ] | MIDI class, HS endpoints (512 bytes) |
+| 6.3 Implement EP IN callback | [ ] | MIDI TX to host |
+| 6.4 Implement EP OUT callback | [ ] | MIDI RX from host |
+| 6.5 Implement BLE MIDI service | [ ] | GATT MIDI characteristic |
+| 6.6 Implement MIDI router | [ ] | Route between USB ↔ BLE ↔ I2S |
+
+**Checkpoint**: MIDI note on/off flows over USB and BLE.
+
+---
+
+#### Phase 7: Wi-Fi Bridge
+
+**Status**: 🟡 Scaffolded
+**Depends on**: Phase 6
+**Files**: `wifi_sdio.c`, `wifi_bridge.c`
+
+| Task | Status | Description |
+|------|--------|-------------|
+| 7.1 Integrate `cyhal_sdio` | [ ] | Replace TODO stubs with HAL calls |
+| 7.2 Initialize WHD | [ ] | Wi-Fi Host Driver startup |
+| 7.3 Implement SDIO CMD52/CMD53 | [ ] | Single-byte and block transfers |
+| 7.4 Add Wi-Fi task to main.c | [ ] | FreeRTOS task for packet processing |
+| 7.5 Wire USB bulk endpoints | [ ] | emUSB-Device bulk IN/OUT |
+| 7.6 Implement packet bridge | [ ] | USB HS ↔ SDIO bidirectional |
+| 7.7 Test Wi-Fi association | [ ] | Connect to access point |
+
+**Checkpoint**: Data flows from USB through PSoC to Wi-Fi network.
+
+---
+
+### Completed Setup Tasks
+
 - [x] Update part numbers (CYW55511 → CYW55512)
 - [x] Rename linker script (e81 → e82)
 - [x] Update SRAM to 5 MB per Infineon specs
-- [ ] Add startup code for PSoC Edge E82
-
-#### Phase 2: USB High-Speed Migration
-- [x] Update documentation (all "USB FS" → "USB HS")
-- [ ] Research USB HS middleware for PSoC Edge
+- [x] Update documentation (USB FS → USB HS)
 - [x] Replace usbdev library with emusb-device
-- [ ] Update midi_usb.c for HS endpoints (64 → 512 bytes)
-
-#### Phase 3: Wi-Fi/SDIO Implementation
 - [x] Add wifi-host-driver submodule
 - [x] Create `source/wifi/` directory structure
 - [x] Implement SDIO driver interface (wifi_sdio.h/c)
 - [x] Implement USB-to-Wi-Fi bridge (wifi_bridge.h/c)
 - [x] Update CMakeLists.txt with Wi-Fi sources
-- [ ] Add Wi-Fi task to main.c
-- [ ] Integrate actual PSoC Edge SDIO HAL
-
-#### Phase 4: FreeRTOS Integration
-- [ ] Uncomment FreeRTOS includes
-- [ ] Implement task creation in main.c
-- [ ] Create synchronization primitives
-
-#### Phase 5: Hardware Integration
-- [ ] Create Device Configurator project
-- [ ] Generate peripheral configurations
-- [ ] Wire PDL/HAL calls in drivers
-
-#### Phase 6: BTSTACK Integration
-- [ ] Integrate HCI layer
-- [ ] Implement firmware download
-- [ ] Wire GATT services
-
-#### Phase 7: LC3 & Audio
-- [ ] Initialize LC3 contexts
-- [ ] Test encode/decode
-- [ ] Integrate with I2S
 
 ---
 

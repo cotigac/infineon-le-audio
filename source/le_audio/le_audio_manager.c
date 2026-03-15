@@ -1275,3 +1275,22 @@ bool le_audio_broadcast_is_advertising(void)
 
     return g_le_audio_ctx.mode_state.broadcast.advertising;
 }
+
+void le_audio_process(void)
+{
+    if (!g_le_audio_ctx.initialized) {
+        return;
+    }
+
+    /*
+     * TODO: Process LE Audio state machine
+     *
+     * This function handles:
+     * - State transitions (idle → configuring → streaming)
+     * - Codec negotiations
+     * - QoS updates
+     * - ISOC stream monitoring
+     */
+
+    /* Placeholder - actual implementation needs BAP integration */
+}

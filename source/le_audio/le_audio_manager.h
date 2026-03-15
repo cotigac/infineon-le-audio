@@ -240,6 +240,14 @@ int le_audio_send_audio(const int16_t *pcm_data, uint16_t sample_count);
  */
 int le_audio_receive_audio(int16_t *pcm_data, uint16_t sample_count, uint32_t timeout_ms);
 
+/**
+ * @brief Process LE Audio state machine
+ *
+ * Non-blocking function to process pending LE Audio events and state changes.
+ * Call this periodically from a FreeRTOS task.
+ */
+void le_audio_process(void);
+
 #ifdef __cplusplus
 }
 #endif

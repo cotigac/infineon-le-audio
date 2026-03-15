@@ -474,6 +474,14 @@ int bt_isoc_get_capabilities(uint8_t *max_cig, uint8_t *max_cis,
  ******************************************************************************/
 
 /**
+ * @brief Process Bluetooth stack events
+ *
+ * Non-blocking function to process pending HCI events and callbacks.
+ * Call this periodically from a FreeRTOS task.
+ */
+void bt_process(void);
+
+/**
  * @brief Bluetooth stack task function
  *
  * Main task that processes HCI events and runs the BTSTACK event loop.
