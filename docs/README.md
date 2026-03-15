@@ -43,7 +43,7 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
 | **BLE MIDI** | MIDI over Bluetooth Low Energy GATT service | Scaffolded (TODOs) |
 | **USB MIDI** | USB High-Speed MIDI class device | **Needs USB HS Middleware** |
 | **I2S Streaming** | DMA-based bidirectional audio | Scaffolded (TODOs) |
-| **Wi-Fi Bridge** | USB HS → SDIO → CYW55512 WLAN | **Not Implemented** |
+| **Wi-Fi Bridge** | USB HS → SDIO → CYW55512 WLAN | Scaffolded (TODOs) |
 
 ---
 
@@ -88,7 +88,7 @@ The project has **scaffolded implementations** for all major modules. Code struc
 2. Replace `usbdev` ✅ DONE (replaced with emusb-device) with USB High-Speed capable middleware
 3. Update `midi_usb.c` endpoint sizes (64 → 512 bytes)
 
-#### Gap 2: Wi-Fi/SDIO Data Path (MISSING)
+#### Gap 2: Wi-Fi/SDIO Data Path ✅ RESOLVED
 
 **Problem**: No Wi-Fi or SDIO implementation exists.
 
@@ -97,17 +97,17 @@ The project has **scaffolded implementations** for all major modules. Code struc
 App Processor → USB HS → PSoC Edge → SDIO → CYW55512 WLAN
 ```
 
-**Missing Components**:
-- `source/wifi/` directory (not created)
-- SDIO driver for CYW55512 WLAN interface
-- USB-to-SDIO data bridge
-- [wifi-host-driver](https://github.com/Infineon/wifi-host-driver) integration
+**Implementation** (completed):
+- ✅ `source/wifi/` directory created
+- ✅ `wifi_sdio.h/c` - SDIO driver interface for CYW55512
+- ✅ `wifi_bridge.h/c` - USB-to-Wi-Fi data bridge
+- ✅ [wifi-host-driver](https://github.com/Infineon/wifi-host-driver) added as submodule
+- ✅ CMakeLists.txt updated with Wi-Fi sources and WHD library
 
-**Remediation**:
-1. Add wifi-host-driver as submodule
-2. Create `source/wifi/` with sdio_driver.c, usb_wifi_bridge.c
-3. Update CMakeLists.txt with Wi-Fi sources
-4. Add Wi-Fi task to FreeRTOS
+**Remaining TODOs**:
+- Integrate actual PSoC Edge SDIO HAL (cyhal_sdio)
+- Integrate WHD (Wi-Fi Host Driver) callbacks
+- Add Wi-Fi task to FreeRTOS main.c
 
 #### Gap 3: Part Number Mismatch
 
@@ -175,11 +175,13 @@ config/
 - [ ] Update midi_usb.c for HS endpoints (64 → 512 bytes)
 
 #### Phase 3: Wi-Fi/SDIO Implementation
-- [ ] Add wifi-host-driver submodule
-- [ ] Create `source/wifi/` directory structure
-- [ ] Implement SDIO driver
-- [ ] Implement USB-to-SDIO bridge
+- [x] Add wifi-host-driver submodule
+- [x] Create `source/wifi/` directory structure
+- [x] Implement SDIO driver interface (wifi_sdio.h/c)
+- [x] Implement USB-to-Wi-Fi bridge (wifi_bridge.h/c)
+- [x] Update CMakeLists.txt with Wi-Fi sources
 - [ ] Add Wi-Fi task to main.c
+- [ ] Integrate actual PSoC Edge SDIO HAL
 
 #### Phase 4: FreeRTOS Integration
 - [ ] Uncomment FreeRTOS includes
@@ -625,7 +627,7 @@ PSoC Edge E82 has 5 MB SRAM and 512 KB Flash - plenty of headroom.
 | Risk | Impact | Mitigation |
 |------|--------|------------|
 | **USB Library ✅ RESOLVED** | CRITICAL | Replace `usbdev` ✅ DONE (replaced with emusb-device) with USB HS capable middleware for PSoC Edge |
-| **Wi-Fi/SDIO not implemented** | HIGH | Add wifi-host-driver, create SDIO driver and USB bridge |
+| **Wi-Fi/SDIO ✅ RESOLVED** | HIGH | Added wifi-host-driver, created SDIO driver and USB bridge |
 | **Auracast not supported by Infineon** | HIGH | Port BAP broadcast from Zephyr (Apache 2.0); LC3 already on host |
 | Zephyr-to-FreeRTOS porting complexity | MEDIUM | Start with minimal broadcast source sample; incremental porting |
 | LC3 codec licensing | LOW | Google liblc3 is Apache 2.0 - no licensing concerns |

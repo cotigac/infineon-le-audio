@@ -10,3 +10,6 @@
 [submodule "libs/emusb-device"]
 	path = libs/emusb-device
 	url = https://github.com/Infineon/emusb-device.git
+[submodule "libs/wifi-host-driver"]
+	path = libs/wifi-host-driver
+	url = https://github.com/Infineon/wifi-host-driver.git

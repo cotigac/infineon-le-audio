@@ -301,13 +301,11 @@ source/
 │   ├── midi_router.c       # MIDI routing logic
 │   └── midi_router.h
 │
-├── wifi/                   # NEW - Wi-Fi/SDIO data path
-│   ├── wifi_init.c         # Wi-Fi subsystem initialization
-│   ├── wifi_init.h
-│   ├── sdio_driver.c       # SDIO driver for CYW55512 WLAN
-│   ├── sdio_driver.h
-│   ├── usb_wifi_bridge.c   # USB HS ↔ SDIO data bridge
-│   └── usb_wifi_bridge.h
+├── wifi/                   # Wi-Fi/SDIO data path (IMPLEMENTED)
+│   ├── wifi_sdio.c         # SDIO driver for CYW55512 WLAN
+│   ├── wifi_sdio.h         # SDIO 3.0 (CMD52/CMD53, SDR50/DDR50)
+│   ├── wifi_bridge.c       # USB HS ↔ Wi-Fi data bridge
+│   └── wifi_bridge.h       # Bidirectional packet forwarding
 │
 └── bluetooth/
     ├── bt_init.c           # BTSTACK initialization

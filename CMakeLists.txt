@@ -42,6 +42,7 @@ option(ENABLE_LE_AUDIO "Enable LE Audio (BAP, PACS, ASCS)" ON)
 option(ENABLE_AURACAST "Enable Auracast Broadcast (BIS)" ON)
 option(ENABLE_MIDI "Enable MIDI over BLE and USB" ON)
 option(ENABLE_USB "Enable USB Device support" ON)
+option(ENABLE_WIFI "Enable Wi-Fi data bridge" ON)
 option(ENABLE_DEBUG "Enable debug output" ON)
 option(ENABLE_STATS "Enable runtime statistics" ON)
 option(BUILD_TESTS "Build unit tests" OFF)
@@ -141,6 +142,7 @@ add_compile_definitions(
     $<$<BOOL:${ENABLE_AURACAST}>:ENABLE_AURACAST=1>
     $<$<BOOL:${ENABLE_MIDI}>:ENABLE_MIDI=1>
     $<$<BOOL:${ENABLE_USB}>:ENABLE_USB=1>
+    $<$<BOOL:${ENABLE_WIFI}>:ENABLE_WIFI=1>
     $<$<BOOL:${ENABLE_DEBUG}>:ENABLE_DEBUG=1>
     $<$<BOOL:${ENABLE_STATS}>:ENABLE_STATS=1>
 
@@ -159,6 +161,7 @@ set(PROJECT_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/source/bluetooth
     ${CMAKE_CURRENT_SOURCE_DIR}/source/le_audio
     ${CMAKE_CURRENT_SOURCE_DIR}/source/midi
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/wifi
 )
 
 include_directories(${PROJECT_INCLUDE_DIRS})
@@ -314,6 +317,44 @@ if(ENABLE_USB)
 endif()
 
 #-------------------------------------------------------------------------------
+# Wi-Fi Host Driver Library (WHD for CYW55512)
+#-------------------------------------------------------------------------------
+
+if(ENABLE_WIFI)
+    set(WHD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libs/wifi-host-driver)
+
+    # WHD include directories
+    set(WHD_INCLUDE_DIRS
+        ${WHD_DIR}/WiFi_Host_Driver/inc
+        ${WHD_DIR}/WiFi_Host_Driver/src
+        ${WHD_DIR}/WiFi_Host_Driver/src/include
+        ${WHD_DIR}/WiFi_Host_Driver/resources/firmware/COMPONENT_55500
+    )
+
+    # WHD core sources (minimal set for SDIO transport)
+    file(GLOB WHD_CORE_SOURCES
+        "${WHD_DIR}/WiFi_Host_Driver/src/*.c"
+        "${WHD_DIR}/WiFi_Host_Driver/src/bus_protocols/whd_bus_sdio_protocol.c"
+    )
+
+    if(EXISTS "${WHD_DIR}/WiFi_Host_Driver/inc/whd.h")
+        add_library(whd STATIC ${WHD_CORE_SOURCES})
+        target_include_directories(whd PUBLIC ${WHD_INCLUDE_DIRS})
+        target_compile_definitions(whd PUBLIC
+            WHD_SDIO_BUS
+            CYBSP_WIFI_CAPABLE
+        )
+        target_link_libraries(whd PUBLIC freertos)
+        message(STATUS "Found Wi-Fi Host Driver (WHD): ${WHD_DIR}")
+    else()
+        message(WARNING "Wi-Fi Host Driver not found at: ${WHD_DIR}")
+        # Create interface library as placeholder
+        add_library(whd INTERFACE)
+        target_include_directories(whd INTERFACE ${WHD_INCLUDE_DIRS})
+    endif()
+endif()
+
+#-------------------------------------------------------------------------------
 # Application Sources
 #-------------------------------------------------------------------------------
 
@@ -349,6 +390,12 @@ set(MIDI_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/source/midi/midi_router.c
 )
 
+# Wi-Fi module sources
+set(WIFI_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/wifi/wifi_sdio.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/wifi/wifi_bridge.c
+)
+
 # Main application
 set(APP_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/source/main.c
@@ -369,6 +416,10 @@ if(ENABLE_MIDI)
     list(APPEND ALL_SOURCES ${MIDI_SOURCES})
 endif()
 
+if(ENABLE_WIFI)
+    list(APPEND ALL_SOURCES ${WIFI_SOURCES})
+endif()
+
 #-------------------------------------------------------------------------------
 # Main Executable
 #-------------------------------------------------------------------------------
@@ -382,6 +433,7 @@ target_link_libraries(${PROJECT_NAME}
     btstack
     $<$<BOOL:${ENABLE_USB}>:emusb-device>
     $<$<BOOL:${ENABLE_USB}>:emusb-device-includes>
+    $<$<BOOL:${ENABLE_WIFI}>:whd>
     m  # Math library
 )
 
@@ -475,6 +527,7 @@ message(STATUS "  LE Audio:        ${ENABLE_LE_AUDIO}")
 message(STATUS "  Auracast:        ${ENABLE_AURACAST}")
 message(STATUS "  MIDI:            ${ENABLE_MIDI}")
 message(STATUS "  USB:             ${ENABLE_USB}")
+message(STATUS "  Wi-Fi:           ${ENABLE_WIFI}")
 message(STATUS "  Debug:           ${ENABLE_DEBUG}")
 message(STATUS "  Statistics:      ${ENABLE_STATS}")
 message(STATUS "")
@@ -484,6 +537,9 @@ message(STATUS "  liblc3:          ${LC3_DIR}")
 message(STATUS "  BTStack:         ${BTSTACK_DIR}")
 if(ENABLE_USB)
     message(STATUS "  emUSB-Device:    ${EMUSB_DIR} (USB High-Speed)")
+endif()
+if(ENABLE_WIFI)
+    message(STATUS "  WHD:             ${WHD_DIR} (SDIO)")
 endif()
 message(STATUS "")
 message(STATUS "==============================================")

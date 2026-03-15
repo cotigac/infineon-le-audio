@@ -28,6 +28,7 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
 | **BLE MIDI** | MIDI over Bluetooth Low Energy GATT service | Planned |
 | **USB MIDI** | USB High-Speed MIDI class device (480 Mbps) | Planned |
 | **I2S Streaming** | DMA-based bidirectional audio with main application controller | Planned |
+| **Wi-Fi Bridge** | USB HS → SDIO → CYW55512 WLAN data path | In Development |
 
 ## Hardware
 
@@ -157,12 +158,20 @@ infineon-le-audio/
 │   │
 │   ├── midi/                           # MIDI subsystem (planned)
 │   │
+│   ├── wifi/                           # Wi-Fi data bridge
+│   │   ├── wifi_sdio.h                 # SDIO driver API for CYW55512
+│   │   ├── wifi_sdio.c                 # SDIO driver implementation
+│   │   ├── wifi_bridge.h               # USB-to-Wi-Fi bridge API
+│   │   └── wifi_bridge.c               # Bridge implementation
+│   │
 │   └── bluetooth/                      # Bluetooth stack integration (planned)
 │
 └── libs/                               # External libraries
     ├── liblc3/                         # Google LC3 codec
     ├── btstack/                        # Infineon BTSTACK
-    └── freertos/                       # FreeRTOS kernel
+    ├── freertos/                       # FreeRTOS kernel
+    ├── emusb-device/                   # Segger emUSB-Device (USB High-Speed)
+    └── wifi-host-driver/               # Infineon WHD (Wi-Fi Host Driver)
 ```
 
 ## Getting Started
