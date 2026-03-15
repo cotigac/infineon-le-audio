@@ -5,11 +5,12 @@ This document contains the complete implementation plan for the Infineon LE Audi
 ## Table of Contents
 
 1. [Project Overview](#project-overview)
-2. [Technology Analysis: Zephyr vs ModusToolbox](#technology-analysis-zephyr-vs-modustoolbox)
-3. [Implementation Plan](#implementation-plan)
-4. [Key Infineon Repositories](#key-infineon-repositories)
-5. [Risks & Mitigations](#risks--mitigations)
-6. [References](#references)
+2. [Implementation Status & Gap Analysis](#implementation-status--gap-analysis)
+3. [Technology Analysis: Zephyr vs ModusToolbox](#technology-analysis-zephyr-vs-modustoolbox)
+4. [Implementation Plan](#implementation-plan)
+5. [Key Infineon Repositories](#key-infineon-repositories)
+6. [Risks & Mitigations](#risks--mitigations)
+7. [References](#references)
 
 ---
 
@@ -27,21 +28,177 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
 
 | Component | Part Number | Description |
 |-----------|-------------|-------------|
-| **MCU** | PSoC Edge E81 (PSE81x) | ARM Cortex-M55 @ 400MHz with Helium DSP |
-| **Bluetooth** | CYW55511 | Bluetooth 6.0 LE combo IC with Wi-Fi 6 |
-| **Eval Kit** | KIT_PSE84_EVAL | PSoC Edge E84 Evaluation Kit (or E81 equivalent) |
-| **BT Module** | CYW955513EVK-01 | CYW55511/12/13 evaluation kit with audio codec |
+| **MCU** | PSE823GOS4DBZQ3 | PSoC Edge E82, Cortex-M55 @ 400MHz + Cortex-M33 |
+| **Wireless** | CYW55512IUBGT | AIROC Wi-Fi 6 + Bluetooth 6.0 combo IC |
+| **Eval Kit** | KIT_PSE84_EVAL | PSoC Edge E84 Evaluation Kit (USB HS, SDIO) |
+| **Alt Eval** | CYW9RPI55513-EVK | CYW55512/55513 evaluation kit for Raspberry Pi |
 
 ### Feature Requirements
 
 | Feature | Description | Status |
 |---------|-------------|--------|
-| **LE Audio Unicast** | Full-duplex audio streaming via CIS | In Development |
-| **LE Audio Broadcast (Auracast)** | One-to-many audio broadcast via BIS | Planned |
-| **LC3 Codec** | Host-side implementation using Google liblc3 | In Development |
-| **BLE MIDI** | MIDI over Bluetooth Low Energy GATT service | Planned |
-| **USB MIDI** | USB Full-Speed MIDI class device | Planned |
-| **I2S Streaming** | DMA-based bidirectional audio | Planned |
+| **LE Audio Unicast** | Full-duplex audio streaming via CIS | Scaffolded (TODOs) |
+| **LE Audio Broadcast (Auracast)** | One-to-many audio broadcast via BIS | Scaffolded (TODOs) |
+| **LC3 Codec** | Host-side implementation using Google liblc3 | Scaffolded (TODOs) |
+| **BLE MIDI** | MIDI over Bluetooth Low Energy GATT service | Scaffolded (TODOs) |
+| **USB MIDI** | USB High-Speed MIDI class device | **Needs USB HS Update** |
+| **I2S Streaming** | DMA-based bidirectional audio | Scaffolded (TODOs) |
+| **Wi-Fi Bridge** | USB HS → SDIO → CYW55512 WLAN | **Not Implemented** |
+
+---
+
+## Implementation Status & Gap Analysis
+
+### Current Implementation Summary
+
+The project has **scaffolded implementations** for all major modules. Code structure is complete but contains **184 TODOs** requiring hardware integration.
+
+### TODO Distribution by Category
+
+| Category | Count | Complexity | Priority |
+|----------|-------|------------|----------|
+| FreeRTOS Integration | 28 | Low-Medium | HIGH |
+| Infineon PDL/HAL | 35 | High | CRITICAL |
+| BTSTACK/HCI Integration | 52 | High | CRITICAL |
+| liblc3 Codec | 8 | Medium | HIGH |
+| USB MIDI | 14 | Medium | MEDIUM |
+| BLE MIDI Service | 13 | Medium | MEDIUM |
+| LE Audio Profiles | 22 | High | HIGH |
+| Timestamps/Timing | 12 | Low | MEDIUM |
+| **Total** | **184** | | |
+
+### Critical Architectural Gaps
+
+#### Gap 1: USB Full-Speed → High-Speed (CRITICAL)
+
+**Problem**: Current `usbdev` library only supports USB Full-Speed (12 Mbps).
+
+**Impact**:
+- Wi-Fi data bridge is NOT viable at USB FS speeds
+- USB HS provides 480 Mbps (40x faster)
+
+**Evidence** (from `libs/usbdev/cy_usb_dev.h`):
+```
+"The USB Device middleware provides a full-speed USB 2.0..."
+"hardware supports only full-speed device"
+```
+
+**Remediation**:
+1. Replace `usbdev` with USB High-Speed capable middleware
+2. Update `midi_usb.c` endpoint sizes (64 → 512 bytes)
+3. Update all documentation references (USB FS → USB HS)
+
+#### Gap 2: Wi-Fi/SDIO Data Path (MISSING)
+
+**Problem**: No Wi-Fi or SDIO implementation exists.
+
+**Required Architecture**:
+```
+App Processor → USB HS → PSoC Edge → SDIO → CYW55512 WLAN
+```
+
+**Missing Components**:
+- `source/wifi/` directory (not created)
+- SDIO driver for CYW55512 WLAN interface
+- USB-to-SDIO data bridge
+- [wifi-host-driver](https://github.com/Infineon/wifi-host-driver) integration
+
+**Remediation**:
+1. Add wifi-host-driver as submodule
+2. Create `source/wifi/` with sdio_driver.c, usb_wifi_bridge.c
+3. Update CMakeLists.txt with Wi-Fi sources
+4. Add Wi-Fi task to FreeRTOS
+
+#### Gap 3: Part Number Mismatch
+
+**Problem**: Configuration files reference CYW55511, not CYW55512.
+
+**Files to Update**:
+- `config/cy_bt_config.h` - Change default controller
+- `CMakeLists.txt` - Update MCU family
+- `cmake/psoc_edge_e81.ld` - Rename for E82
+
+#### Gap 4: Missing Startup Code
+
+**Problem**: No startup assembly or system initialization.
+
+**Missing Files**:
+```
+source/startup/
+├── startup_psoc_edge_e82.S
+├── system_psoc_edge_e82.c
+└── system_psoc_edge_e82.h
+```
+
+#### Gap 5: Missing Device Configurator Files
+
+**Problem**: No hardware configuration for ModusToolbox.
+
+**Missing Files**:
+```
+config/
+├── design.modus
+└── GeneratedSource/
+    ├── cycfg.h
+    ├── cycfg_pins.c/h
+    ├── cycfg_peripherals.c/h
+    └── cycfg_clocks.c/h
+```
+
+### Files Containing TODOs (Summary)
+
+| File | TODOs | Primary Work |
+|------|-------|--------------|
+| `gap_config.c` | 35 | HCI advertising/scanning commands |
+| `bt_init.c` | 18 | BTSTACK initialization, firmware download |
+| `le_audio_manager.c` | 17 | BAP profiles, ISOC handling |
+| `midi_usb.c` | 14 | USB device middleware integration |
+| `midi_ble_service.c` | 13 | GATT service registration |
+| `i2s_stream.c` | 14 | I2S peripheral, DMA setup |
+| `audio_task.c` | 14 | FreeRTOS task, LC3 integration |
+| `bap_broadcast.c` | 10 | Auracast advertising/BIG creation |
+| `hci_isoc.c` | 4 | HCI command sending |
+| Others | ~45 | Various integration points |
+
+### Remediation Plan
+
+#### Phase 1: Foundation (Immediate)
+- [ ] Update part numbers (CYW55511 → CYW55512)
+- [ ] Rename linker script (e81 → e82)
+- [ ] Add startup code for PSoC Edge E82
+
+#### Phase 2: USB High-Speed Migration
+- [ ] Research USB HS middleware for PSoC Edge
+- [ ] Replace usbdev library
+- [ ] Update midi_usb.c for HS endpoints
+- [ ] Update documentation (all "USB FS" → "USB HS")
+
+#### Phase 3: Wi-Fi/SDIO Implementation
+- [ ] Add wifi-host-driver submodule
+- [ ] Create `source/wifi/` directory structure
+- [ ] Implement SDIO driver
+- [ ] Implement USB-to-SDIO bridge
+- [ ] Add Wi-Fi task to main.c
+
+#### Phase 4: FreeRTOS Integration
+- [ ] Uncomment FreeRTOS includes
+- [ ] Implement task creation in main.c
+- [ ] Create synchronization primitives
+
+#### Phase 5: Hardware Integration
+- [ ] Create Device Configurator project
+- [ ] Generate peripheral configurations
+- [ ] Wire PDL/HAL calls in drivers
+
+#### Phase 6: BTSTACK Integration
+- [ ] Integrate HCI layer
+- [ ] Implement firmware download
+- [ ] Wire GATT services
+
+#### Phase 7: LC3 & Audio
+- [ ] Initialize LC3 contexts
+- [ ] Test encode/decode
+- [ ] Integrate with I2S
 
 ---
 
@@ -103,13 +260,13 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
 **Current Driver**: `drivers/bluetooth/hci/h4_ifx_cyw43xxx.c` - Only supports legacy CYW43xxx series
 
 **ModusToolbox + FreeRTOS:**
-| Chip | Support | LE Audio | LC3 Mode |
-|------|---------|----------|----------|
-| CYW55511 | Full | Yes | On-chip (offload) or HCI |
-| CYW55512 | Full | Yes | On-chip (offload) or HCI |
-| CYW55513 | Full | Yes | On-chip (offload) or HCI |
+| Chip | Support | LE Audio | LC3 Mode | Wi-Fi |
+|------|---------|----------|----------|-------|
+| CYW55511 | Full | Yes | On-chip or HCI | Wi-Fi 6 |
+| **CYW55512** | **Full** | **Yes** | **On-chip or HCI** | **Wi-Fi 6** |
+| CYW55513 | Full | Yes | On-chip or HCI | Wi-Fi 6 |
 
-**Winner**: ModusToolbox (CYW55511 support is mandatory)
+**Winner**: ModusToolbox (CYW55512 support is mandatory)
 
 #### 3. USB MIDI Support
 
@@ -140,37 +297,37 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
 #### Option 1: Pure ModusToolbox + FreeRTOS (SELECTED)
 
 ```
-┌────────────────────────────────────────────────────────┐
-│                    PSoC Edge E81                        │
-│  ┌──────────────────────────────────────────────────┐  │
-│  │                  FreeRTOS                         │  │
-│  │  ┌────────────┐ ┌────────────┐ ┌──────────────┐  │  │
-│  │  │ Infineon   │ │ USB MIDI   │ │ I2S Audio    │  │  │
-│  │  │ BTSTACK    │ │ (usbdev)   │ │ (PDL)        │  │  │
-│  │  └────────────┘ └────────────┘ └──────────────┘  │  │
-│  │        │                                          │  │
-│  │  ┌─────▼────────────────────────────────────────┐│  │
-│  │  │ Auracast Port (from Zephyr)                  ││  │
-│  │  │ BAP Broadcast Source + liblc3                ││  │
-│  │  └──────────────────────────────────────────────┘│  │
-│  └──────────────────────────────────────────────────┘  │
-└─────────────────────────┬──────────────────────────────┘
-                          │ SDIO + UART (HCI)
-                          ▼
-┌────────────────────────────────────────────────────────┐
-│                      CYW55511                           │
-│           Bluetooth 6.0 + On-chip LC3                  │
-└────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                    PSoC Edge E82 (PSE823GOS4DBZQ3)           │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │                       FreeRTOS                          │  │
+│  │  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌──────┐ │  │
+│  │  │ Infineon   │ │ USB HS     │ │ Wi-Fi      │ │ I2S  │ │  │
+│  │  │ BTSTACK    │ │ MIDI+Data  │ │ Bridge     │ │ Audio│ │  │
+│  │  └────────────┘ └────────────┘ └────────────┘ └──────┘ │  │
+│  │        │              │              │                  │  │
+│  │  ┌─────▼──────────────▼──────────────▼────────────────┐│  │
+│  │  │ Auracast Port (from Zephyr) + liblc3               ││  │
+│  │  │ BAP Broadcast Source                               ││  │
+│  │  └────────────────────────────────────────────────────┘│  │
+│  └────────────────────────────────────────────────────────┘  │
+└──────────────────────┬────────────────────┬──────────────────┘
+                       │ UART (HCI)         │ SDIO (WLAN)
+                       ▼                    ▼
+┌──────────────────────────────────────────────────────────────┐
+│                    CYW55512IUBGT                              │
+│         Bluetooth 6.0 (BLE)     │     Wi-Fi 6 (802.11ax)     │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-**Effort**: Medium (Auracast porting required)
-**Risk**: Medium (porting from Zephyr to BTSTACK HCI)
+**Effort**: Medium (Auracast porting + Wi-Fi bridge required)
+**Risk**: Medium (porting from Zephyr to BTSTACK HCI, USB HS middleware)
 
 #### Option 2: Pure Zephyr RTOS (NOT VIABLE)
 
 ```
 ┌────────────────────────────────────────────────────────┐
-│                    PSoC Edge E81                        │
+│                    PSoC Edge E82                        │
 │  ┌──────────────────────────────────────────────────┐  │
 │  │                  Zephyr RTOS                      │  │
 │  │  ┌────────────┐ ┌────────────┐ ┌──────────────┐  │  │
@@ -180,7 +337,7 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
 │  │  └─────┬──────┘ └────────────┘ └──────────────┘  │  │
 │  │        │                                          │  │
 │  │        │  ╔════════════════════════════════════╗  │  │
-│  │        │  ║ NO DRIVER FOR CYW55511 IN ZEPHYR! ║  │  │
+│  │        │  ║ NO DRIVER FOR CYW55512 IN ZEPHYR! ║  │  │
 │  │        │  ╚════════════════════════════════════╝  │  │
 │  │        ▼                                          │  │
 │  │  ┌──────────────────────────────────────────────┐│  │
@@ -193,12 +350,12 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
                     NO DRIVER
                           ╳
 ┌────────────────────────────────────────────────────────┐
-│                      CYW55511                           │
-│           Bluetooth 6.0 + On-chip LC3                  │
+│                      CYW55512                           │
+│           Bluetooth 6.0 + Wi-Fi 6                      │
 └────────────────────────────────────────────────────────┘
 ```
 
-**Status**: NOT VIABLE without writing a CYW55511 driver for Zephyr
+**Status**: NOT VIABLE without writing a CYW55512 driver for Zephyr
 **Effort**: Very High (write full HCI driver + firmware integration)
 
 #### Option 3: Hybrid Approach (Advanced)
@@ -210,15 +367,17 @@ Write a CYW55511 HCI driver for Zephyr to use Zephyr's native LE Audio stack.
 
 ### Final Decision
 
-**For PSoC Edge E81 + CYW55511: Use ModusToolbox + FreeRTOS**
+**For PSoC Edge E82 + CYW55512: Use ModusToolbox + FreeRTOS**
 
-The lack of CYW55511 driver support in Zephyr is a blocking issue. While Zephyr has superior LE Audio support, it cannot communicate with the Bluetooth chip without significant driver development.
+The lack of CYW55512 driver support in Zephyr is a blocking issue. While Zephyr has superior LE Audio support, it cannot communicate with the Bluetooth chip without significant driver development.
 
 **Recommended Path**:
 1. Start with ModusToolbox + FreeRTOS + Infineon BTSTACK
 2. Implement LE Audio unicast using Infineon's existing support
 3. Port BAP Broadcast Source from Zephyr for Auracast
 4. Use liblc3 for unified host-side LC3 encoding/decoding
+5. **Add Wi-Fi bridge via SDIO + wifi-host-driver**
+6. **Replace USB FS middleware with USB HS capable version**
 
 ---
 
@@ -240,7 +399,8 @@ The lack of CYW55511 driver support in Zephyr is a blocking issue. While Zephyr 
 # Infineon Core
 git clone https://github.com/Infineon/btstack.git
 git clone https://github.com/Infineon/btstack-integration.git
-git clone https://github.com/Infineon/usbdev.git
+git clone https://github.com/Infineon/usbdev.git           # NOTE: USB FS only, needs replacement
+git clone https://github.com/Infineon/wifi-host-driver.git  # NEW: Required for Wi-Fi/SDIO
 
 # Audio Examples
 git clone https://github.com/Infineon/mtb-example-psoc6-i2s.git
@@ -249,6 +409,8 @@ git clone https://github.com/Infineon/mtb-example-psoc6-i2s.git
 git clone https://github.com/zephyrproject-rtos/zephyr.git
 git clone https://github.com/google/liblc3.git
 ```
+
+> **NOTE**: The `usbdev` library only supports USB Full-Speed. PSoC Edge E82 requires USB High-Speed middleware which may need to be sourced separately or implemented.
 
 ### Phase 2: LE Audio LC3 Full Duplex Implementation
 
@@ -355,18 +517,27 @@ Properties:          Read, Write Without Response, Notify
 └────────┴───────────┴─────────────────────────┘
 ```
 
-### Phase 5: USB Full-Speed MIDI Implementation
+### Phase 5: USB High-Speed MIDI Implementation
+
+> **CRITICAL**: PSoC Edge E82 supports USB 2.0 High-Speed (480 Mbps). The current `usbdev` library only supports Full-Speed and must be replaced.
 
 **5.1 USB MIDI Class**
 - Device Class: 0x00 (defined at interface level)
 - Interface Class: 0x01 (Audio)
 - Interface SubClass: 0x03 (MIDI Streaming)
+- **Speed**: USB High-Speed (480 Mbps)
+- **Endpoint Size**: 512 bytes (vs 64 for Full-Speed)
 
-**5.2 Using usbdev Middleware**
+**5.2 USB HS Middleware Requirements**
+
+The current `usbdev` library does NOT support High-Speed:
 ```c
+// Current (Full-Speed only) - MUST BE REPLACED
 cy_stc_usb_dev_midi_context_t midi_context;
 Cy_USB_Dev_MIDI_Init(&midi_config, &midi_context, &usb_dev_context);
 ```
+
+**Action Required**: Find or implement USB HS middleware for PSoC Edge.
 
 ### Phase 6: I2S Audio Stream
 
@@ -452,16 +623,20 @@ PSoC Edge E81 has 4 MB SRAM and 512 KB Flash - plenty of headroom.
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
+| **USB FS Library (not HS)** | CRITICAL | Replace `usbdev` with USB HS capable middleware for PSoC Edge |
+| **Wi-Fi/SDIO not implemented** | HIGH | Add wifi-host-driver, create SDIO driver and USB bridge |
 | **Auracast not supported by Infineon** | HIGH | Port BAP broadcast from Zephyr (Apache 2.0); LC3 already on host |
 | Zephyr-to-FreeRTOS porting complexity | MEDIUM | Start with minimal broadcast source sample; incremental porting |
 | LC3 codec licensing | LOW | Google liblc3 is Apache 2.0 - no licensing concerns |
 | **Host-side LC3 CPU load** | MEDIUM | Cortex-M55 @ 400MHz can handle stereo; reduce to mono if needed |
 | LE Audio profile complexity | MEDIUM | Study Zephyr implementation; use Bluetooth SIG sample data |
-| CYW55511 HCI ISOC support | MEDIUM | Verify HCI_LE_Create_BIG and HCI_LE_Create_CIS commands |
+| CYW55512 HCI ISOC support | MEDIUM | Verify HCI_LE_Create_BIG and HCI_LE_Create_CIS commands |
 | Real-time LC3 + I2S timing | MEDIUM | Use DMA ping-pong buffers; audio task at high priority |
-| Memory: liblc3 + BAP stack | LOW | ~188 KB RAM needed; PSoC Edge E81 has 4MB SRAM |
+| Memory: liblc3 + BAP stack | LOW | ~188 KB RAM needed; PSoC Edge E82 has 4MB SRAM |
 | Full-duplex latency | LOW | 10ms frame duration + buffering = ~30-40ms total latency |
 | Testing: Need Auracast receiver | LOW | nRF Connect app, Samsung Galaxy Buds3, or LE Audio headphones |
+| Part number mismatch in code | LOW | Update cy_bt_config.h, CMakeLists.txt, linker script |
+| Missing startup code | MEDIUM | Create startup_psoc_edge_e82.S and system init files |
 
 ---
 

@@ -343,11 +343,11 @@ static int controller_read_local_info(void)
      * hci_wait_command_complete(1000);
      */
 
-    /* Populate with simulated CYW55511 info */
-    bt_ctx.controller_info.type = BT_CONTROLLER_CYW55511;
-    bt_ctx.controller_info.hci_version = 0x0D;  /* Bluetooth 5.4 */
+    /* Populate with simulated CYW55512 info */
+    bt_ctx.controller_info.type = BT_CONTROLLER_CYW55511;  /* TODO: Add BT_CONTROLLER_CYW55512 enum */
+    bt_ctx.controller_info.hci_version = 0x0F;  /* Bluetooth 6.0 */
     bt_ctx.controller_info.hci_revision = 0x0001;
-    bt_ctx.controller_info.lmp_version = 0x0D;
+    bt_ctx.controller_info.lmp_version = 0x0F;
     bt_ctx.controller_info.manufacturer = MANUFACTURER_INFINEON;
     bt_ctx.controller_info.lmp_subversion = 0x0001;
 
