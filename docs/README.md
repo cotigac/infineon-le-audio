@@ -41,7 +41,7 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
 | **LE Audio Broadcast (Auracast)** | One-to-many audio broadcast via BIS | Scaffolded (TODOs) |
 | **LC3 Codec** | Host-side implementation using Google liblc3 | Scaffolded (TODOs) |
 | **BLE MIDI** | MIDI over Bluetooth Low Energy GATT service | Scaffolded (TODOs) |
-| **USB MIDI** | USB High-Speed MIDI class device | **Needs USB HS Update** |
+| **USB MIDI** | USB High-Speed MIDI class device | **Needs USB HS Middleware** |
 | **I2S Streaming** | DMA-based bidirectional audio | Scaffolded (TODOs) |
 | **Wi-Fi Bridge** | USB HS → SDIO → CYW55512 WLAN | **Not Implemented** |
 
@@ -69,13 +69,13 @@ The project has **scaffolded implementations** for all major modules. Code struc
 
 ### Critical Architectural Gaps
 
-#### Gap 1: USB Full-Speed → High-Speed (CRITICAL)
+#### Gap 1: USB High-Speed Middleware (CRITICAL)
 
 **Problem**: Current `usbdev` library only supports USB Full-Speed (12 Mbps).
 
 **Impact**:
-- Wi-Fi data bridge is NOT viable at USB FS speeds
-- USB HS provides 480 Mbps (40x faster)
+- Wi-Fi data bridge requires USB HS (480 Mbps)
+- PSoC Edge E82 hardware supports USB HS, but middleware doesn't
 
 **Evidence** (from `libs/usbdev/cy_usb_dev.h`):
 ```
@@ -84,9 +84,9 @@ The project has **scaffolded implementations** for all major modules. Code struc
 ```
 
 **Remediation**:
-1. Replace `usbdev` with USB High-Speed capable middleware
-2. Update `midi_usb.c` endpoint sizes (64 → 512 bytes)
-3. Update all documentation references (USB FS → USB HS)
+1. ~~Update all documentation references (USB FS → USB HS)~~ ✅ DONE
+2. Replace `usbdev` with USB High-Speed capable middleware
+3. Update `midi_usb.c` endpoint sizes (64 → 512 bytes)
 
 #### Gap 2: Wi-Fi/SDIO Data Path (MISSING)
 
@@ -163,15 +163,16 @@ config/
 ### Remediation Plan
 
 #### Phase 1: Foundation (Immediate)
-- [ ] Update part numbers (CYW55511 → CYW55512)
-- [ ] Rename linker script (e81 → e82)
+- [x] Update part numbers (CYW55511 → CYW55512)
+- [x] Rename linker script (e81 → e82)
+- [x] Update SRAM to 5 MB per Infineon specs
 - [ ] Add startup code for PSoC Edge E82
 
 #### Phase 2: USB High-Speed Migration
+- [x] Update documentation (all "USB FS" → "USB HS")
 - [ ] Research USB HS middleware for PSoC Edge
 - [ ] Replace usbdev library
-- [ ] Update midi_usb.c for HS endpoints
-- [ ] Update documentation (all "USB FS" → "USB HS")
+- [ ] Update midi_usb.c for HS endpoints (64 → 512 bytes)
 
 #### Phase 3: Wi-Fi/SDIO Implementation
 - [ ] Add wifi-host-driver submodule

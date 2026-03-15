@@ -26,7 +26,7 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
 | **LE Audio Broadcast (Auracast)** | One-to-many audio broadcast via BIS (Broadcast Isochronous Stream) | Planned |
 | **LC3 Codec** | Low Complexity Communication Codec - host-side implementation using Google liblc3 | In Development |
 | **BLE MIDI** | MIDI over Bluetooth Low Energy GATT service | Planned |
-| **USB MIDI** | USB Full-Speed MIDI class device | Planned |
+| **USB MIDI** | USB High-Speed MIDI class device (480 Mbps) | Planned |
 | **I2S Streaming** | DMA-based bidirectional audio with main application controller | Planned |
 
 ## Hardware
@@ -53,8 +53,8 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
 │                      PSoC Edge E81 (PSE81x)                     │
 │                     Cortex-M55 @ 400MHz                         │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐  │
-│  │   USB FS    │  │    I2S      │  │      UART (HCI)         │  │
-│  │   (MIDI)    │  │   Master    │  │   (BT Host Interface)   │  │
+│  │   USB HS    │  │    I2S      │  │      UART (HCI)         │  │
+│  │ (MIDI+Data) │  │   Master    │  │   (BT Host Interface)   │  │
 │  └──────┬──────┘  └──────┬──────┘  └───────────┬─────────────┘  │
 │         │                │                     │                 │
 │  ┌──────▼──────┐  ┌──────▼──────┐  ┌──────────▼──────────────┐  │

@@ -9,8 +9,8 @@
  * - Interface Class: 0x01 (Audio)
  * - Interface SubClass: 0x03 (MIDI Streaming)
  *
- * The implementation supports USB Full-Speed (12 Mbps) which is
- * sufficient for MIDI's relatively low bandwidth requirements.
+ * The implementation targets USB High-Speed (480 Mbps) to support
+ * both MIDI and Wi-Fi data bridging requirements.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -33,8 +33,8 @@ extern "C" {
 #define USB_CLASS_AUDIO                 0x01
 #define USB_SUBCLASS_MIDISTREAMING      0x03
 
-/** USB MIDI Endpoint packet size (Full-Speed) */
-#define MIDI_USB_PACKET_SIZE            64
+/** USB MIDI Endpoint packet size (High-Speed) */
+#define MIDI_USB_PACKET_SIZE            512
 
 /** Maximum MIDI cables (virtual ports) */
 #define MIDI_USB_MAX_CABLES             1

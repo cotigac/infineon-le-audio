@@ -4,7 +4,7 @@
  *
  * This module provides MIDI message routing between multiple interfaces:
  * - BLE MIDI (Bluetooth Low Energy)
- * - USB MIDI (USB Full-Speed)
+ * - USB MIDI (USB High-Speed)
  * - Main Controller (via UART/I2S/SPI)
  *
  * The router supports configurable routing rules, message filtering,
