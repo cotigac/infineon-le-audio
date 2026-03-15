@@ -1,0 +1,64 @@
+# Build outputs
+build/
+Debug/
+Release/
+*.o
+*.obj
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+
+# ModusToolbox
+mtb_shared/
+GeneratedSource/
+*.mtbx
+*.mtbproj
+*.mtbsearch
+.modustoolbox
+
+# IDE files
+.vscode/
+.idea/
+*.suo
+*.user
+*.sln
+*.vcxproj*
+
+# Eclipse
+.project
+.cproject
+.settings/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.env
+
+# Dependencies (will be fetched)
+libs/liblc3/
+libs/btstack/
+libs/freertos/
+
+# Keep directory structure
+!source/audio/.gitkeep
+!source/le_audio/.gitkeep
+!source/midi/.gitkeep
+!source/bluetooth/.gitkeep
+!config/.gitkeep
+!libs/.gitkeep
+!docs/.gitkeep
