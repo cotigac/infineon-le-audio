@@ -49,10 +49,8 @@ __pycache__/
 venv/
 .env
 
-# Dependencies (will be fetched)
-libs/liblc3/
-libs/btstack/
-libs/freertos/
+# Dependencies are added as git submodules
+# See: git submodule update --init --recursive
 
 # Keep directory structure
 !source/audio/.gitkeep
