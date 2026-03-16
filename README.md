@@ -173,7 +173,7 @@ ModusToolbox provides:
 | [btstack](https://github.com/Infineon/btstack) | Infineon | Bluetooth host stack |
 | [btstack-integration](https://github.com/Infineon/btstack-integration) | Infineon | HCI UART porting layer |
 | [freertos](https://github.com/Infineon/freertos) | MIT | Real-time operating system |
-| [emusb-device](https://github.com/Infineon/emusb-device) | Segger | USB High-Speed middleware |
+| [emusb-device](https://github.com/Infineon/emusb-device) | Infineon | USB High-Speed middleware |
 | [wifi-host-driver](https://github.com/Infineon/wifi-host-driver) | Infineon | Wi-Fi Host Driver (WHD) |
 
 ### Project Structure
