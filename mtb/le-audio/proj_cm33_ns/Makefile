@@ -173,7 +173,7 @@ LDFLAGS+=
 
 # Additional / custom libraries to link in to the application.
 # emUSB-Device library (prebuilt for PSE84 CM33)
-LDLIBS+=$(SEARCH_emusb-device)/USBD/COMPONENT_USBD_BASE/COMPONENT_PSE84/CONFIG_$(CONFIG)/COMPONENT_CM33/COMPONENT_SOFTFP/TOOLCHAIN_GCC_ARM/gcc.a
+LDLIBS+=../../../libs/emusb-device/USBD/COMPONENT_USBD_BASE/COMPONENT_PSE84/CONFIG_$(CONFIG)/COMPONENT_CM33/COMPONENT_SOFTFP/TOOLCHAIN_GCC_ARM/gcc.a
 
 # Path to the linker script to use (if empty, use the default linker script).
 LINKER_SCRIPT=
