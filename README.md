@@ -286,32 +286,39 @@ git submodule update --init --recursive
 
 The recommended build method for KIT_PSE84_EVAL and CYW955513EVK-01 evaluation kits uses the **ModusToolbox modus-shell terminal**.
 
-#### Step 1: Create a Project from Template
+#### Project Structure
 
-Use the ModusToolbox project-creator to create a project based on the BLE Isochronous example (LE Audio foundation):
+This repository includes a ModusToolbox project in the `mtb/` folder:
 
-```bash
-# Windows Command Prompt
-"C:\Users\<username>\ModusToolbox\tools_3.7\project-creator\project-creator-cli.exe" ^
-    --board-id KIT_PSE84_EVAL_EPC2 ^
-    --app-id mtb-example-psoc-edge-btstack-isoc-peripheral ^
-    --user-app-name le-audio-demo ^
-    --target-dir "C:\Users\<username>\source\repos\mtb-le-audio-demo"
+```
+infineon-le-audio/
+├── mtb/
+│   ├── le-audio/              # ModusToolbox application
+│   │   ├── proj_cm33_s/       # CM33 Secure core project
+│   │   ├── proj_cm33_ns/      # CM33 Non-Secure core project
+│   │   ├── proj_cm55/         # CM55 core project
+│   │   ├── bsps/              # Board Support Package
+│   │   ├── configs/           # Device configuration
+│   │   └── Makefile           # Top-level makefile
+│   └── mtb_shared/            # Shared library dependencies
+├── source/                    # Custom LE Audio source code
+├── libs/                      # Git submodules (BSPs, HAL, etc.)
+└── ...
 ```
 
-#### Step 2: Open ModusToolbox modus-shell
+#### Step 1: Open ModusToolbox modus-shell
 
 ```
 C:\Users\<username>\ModusToolbox\tools_3.7\modus-shell\Cygwin.bat
 ```
 
-#### Step 3: Fetch Dependencies and Build
+#### Step 2: Navigate to Project and Build
 
 ```bash
-# Navigate to project
-cd /cygdrive/c/Users/<username>/source/repos/mtb-le-audio-demo/le-audio-demo
+# Navigate to the ModusToolbox project
+cd /cygdrive/c/Users/<username>/source/repos/infineon-le-audio/mtb/le-audio
 
-# Fetch all library dependencies
+# Fetch all library dependencies (first time only)
 make getlibs
 
 # Build the project
@@ -348,7 +355,7 @@ A successful build produces firmware for all three cores (CM33 Secure, CM33 Non-
 | CM33 Non-Secure | 273 KB |
 | CM55 | 14 KB |
 
-**Output Files:**
+**Output Files (in `mtb/le-audio/`):**
 
 | File | Description |
 |------|-------------|

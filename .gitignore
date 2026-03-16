@@ -12,11 +12,16 @@ Release/
 
 # ModusToolbox
 mtb_shared/
+mtb/mtb_shared/
+mtb/le-audio/build/
+mtb/le-audio/proj_*/build/
+mtb/le-audio/proj_*/libs/
 GeneratedSource/
 *.mtbx
 *.mtbproj
 *.mtbsearch
 .modustoolbox
+.mtbqueryapi
 
 # IDE files
 .vscode/
