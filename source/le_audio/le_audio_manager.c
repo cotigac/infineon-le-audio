@@ -21,16 +21,21 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* TODO: Include Infineon BTSTACK headers when integrating */
-/* #include "wiced_bt_stack.h" */
-/* #include "wiced_bt_isoc.h" */
-/* #include "wiced_bt_ga_bap.h" */
+/* Infineon BTSTACK headers */
+#include "wiced_bt_stack.h"
+#include "wiced_bt_isoc.h"
 
-/* TODO: Include FreeRTOS headers */
-/* #include "FreeRTOS.h" */
-/* #include "queue.h" */
-/* #include "semphr.h" */
-/* #include "task.h" */
+
+/* FreeRTOS headers */
+#include "FreeRTOS.h"
+#include "queue.h"
+#include "semphr.h"
+#include "task.h"
+
+/* Project headers */
+#include "../bluetooth/hci_isoc.h"
+#include "pacs.h"
+#include "bap_unicast.h"
 
 /*******************************************************************************
  * Private Definitions
