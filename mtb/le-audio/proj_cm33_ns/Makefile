@@ -110,8 +110,8 @@ SOURCES+= \
     ../../../source/midi/midi_usb.c \
     ../../../source/wifi/wifi_bridge.c \
     ../../../source/wifi/whd_buffer_impl.c \
-    ../../../source/ipc/audio_ipc.c \
-    ../../../libs/wifi-host-driver/External/hal/cyhal_sdio.c
+    ../../../source/wifi/cyhal_sdio.c \
+    ../../../source/ipc/audio_ipc.c
 
 # Exclude app_bt files since we're using our refactored source/bluetooth/ files
 CY_IGNORE+= \
@@ -125,6 +125,8 @@ CY_IGNORE+= \
 # Custom LE Audio include directories
 # NOTE: "." must be first to ensure project's FreeRTOSConfig.h is found
 #       before the template in mtb_shared/freertos/COMPONENT_CM33
+# NOTE: core-lib must come BEFORE WHD External/hal to ensure the full
+#       cy_result.h (with CY_RSLT_CREATE_EX submodule support) is used
 INCLUDES+= \
     . \
     ../../../source \
@@ -136,6 +138,7 @@ INCLUDES+= \
     ../../../source/ipc \
     ../../../config \
     ../../../libs/liblc3/include \
+    ../../mtb_shared/core-lib/release-v1.7.0/include \
     ../../../libs/wifi-host-driver/WHD/COMPONENT_WIFI6/inc \
     ../../../libs/wifi-host-driver/WHD/COMPONENT_WIFI6/src/include \
     ../../../libs/wifi-host-driver/External/hal \
