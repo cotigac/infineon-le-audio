@@ -774,8 +774,8 @@ int gap_set_periodic_adv_params(const gap_periodic_adv_params_t *params)
     /* Set periodic advertising parameters via BTSTACK 4.x API */
     wiced_ble_padv_params_t pa_params;
     memset(&pa_params, 0, sizeof(pa_params));
-    pa_params.periodic_adv_int_min = params->periodic_adv_interval_min;
-    pa_params.periodic_adv_int_max = params->periodic_adv_interval_max;
+    pa_params.adv_int_min = params->periodic_adv_interval_min;
+    pa_params.adv_int_max = params->periodic_adv_interval_max;
     pa_params.adv_properties = params->periodic_adv_properties;
 
     wiced_result_t result = wiced_ble_padv_set_adv_params(
