@@ -231,10 +231,12 @@ cmake --build .
 
 ### 3. Hardware Setup
 
-1. Connect PSoC Edge E84 eval kit (KIT_PSE84_EVAL) to PC via USB
-2. Connect CYW55512 module via UART (HCI interface)
-3. Connect main application controller via I2S (optional)
-4. Flash the firmware using ModusToolbox or OpenOCD
+1. Connect PSoC Edge E84 eval kit (KIT_PSE84_EVAL) to PC via USB (for programming/debug)
+2. Connect CYW55512 module via UART (HCI interface for Bluetooth)
+3. Connect CYW55512 module via SDIO (for Wi-Fi data)
+4. Connect main application controller via USB High-Speed (MIDI + Wi-Fi bridge)
+5. Connect main application controller via I2S (audio streaming)
+6. Flash the firmware using ModusToolbox or OpenOCD
 
 ## Configuration
 
