@@ -112,15 +112,58 @@ RECEIVE PATH (ISOC RX -> LC3 Decode -> I2S TX):
 
 ## Software
 
-### Requirements
+### Build Prerequisites
 
-| Software | Version | Purpose |
-|----------|---------|---------|
-| ModusToolbox | 3.x | Infineon development environment |
+The following tools must be installed to build this project:
+
+| Tool | Version | Purpose | Installation |
+|------|---------|---------|--------------|
+| **ModusToolbox** | 3.x | Infineon HAL/PDL, device support | [Download](https://softwaretools.infineon.com/tools/com.ifx.tb.tool.modustoolboxsetup) |
+| **CMake** | 3.20+ | Build system | `winget install Kitware.CMake` |
+| **Ninja** | 1.10+ | Build tool | `winget install Ninja-build.Ninja` |
+| **ARM GNU Toolchain** | 14.x | arm-none-eabi-gcc cross-compiler | `winget install Arm.GnuArmEmbeddedToolchain` |
+| **Git** | 2.x | Version control, submodules | `winget install Git.Git` |
+
+#### Windows Installation (PowerShell as Administrator)
+
+```powershell
+# Install build tools via winget
+winget install Kitware.CMake --accept-package-agreements
+winget install Ninja-build.Ninja --accept-package-agreements
+winget install Arm.GnuArmEmbeddedToolchain --accept-package-agreements
+winget install Git.Git --accept-package-agreements
+
+# Restart your terminal to refresh PATH
+
+# Verify installations
+cmake --version
+ninja --version
+arm-none-eabi-gcc --version
+git --version
+```
+
+#### ModusToolbox Installation
+
+ModusToolbox must be installed separately via the GUI installer:
+
+1. Download from [Infineon Developer Center](https://softwaretools.infineon.com/tools/com.ifx.tb.tool.modustoolboxsetup)
+2. Run the installer and select "ModusToolbox 3.x"
+3. Install the **PSoC Edge Device Pack** when prompted
+4. Default installation path: `C:\Users\<username>\ModusToolbox`
+
+ModusToolbox provides:
+- Infineon HAL (Hardware Abstraction Layer)
+- PDL (Peripheral Driver Library)
+- RTOS Abstraction (`cyabs_rtos.h`)
+- Device configuration tools
+
+### Runtime Requirements
+
+| Component | Version | Purpose |
+|-----------|---------|---------|
 | PSoC Edge Device Pack | Latest | PSoC Edge E82/E84 support |
 | CYW55512 Firmware | Latest | Bluetooth controller firmware |
-| ARM GNU Toolchain | 12.x+ | arm-none-eabi-gcc compiler |
-| CMake | 3.20+ | Build system |
+| FreeRTOS | 10.x | Real-time operating system |
 
 ### Dependencies (Git Submodules)
 
@@ -198,7 +241,11 @@ infineon-le-audio/
 
 ## Getting Started
 
-### 1. Clone the Repository
+### 1. Install Prerequisites
+
+Follow the [Build Prerequisites](#build-prerequisites) section to install all required tools.
+
+### 2. Clone the Repository
 
 ```bash
 git clone --recursive https://github.com/cotigac/infineon-le-audio.git
@@ -210,7 +257,22 @@ If you already cloned without `--recursive`:
 git submodule update --init --recursive
 ```
 
-### 2. Build with CMake
+### 3. Build with CMake
+
+#### Windows (Git Bash or PowerShell)
+
+```bash
+# Set up environment (adjust paths if needed)
+export PATH="/c/Program Files (x86)/Arm GNU Toolchain arm-none-eabi/14.2 rel1/bin:$PATH"
+export PATH="/c/Program Files/CMake/bin:$PATH"
+
+# Configure and build
+mkdir build && cd build
+cmake -G Ninja -DCMAKE_TOOLCHAIN_FILE=../cmake/arm-cortex-m55.cmake ..
+cmake --build .
+```
+
+#### Linux/macOS
 
 ```bash
 mkdir build && cd build
@@ -229,7 +291,7 @@ cmake --build .
 | `ENABLE_WIFI` | ON | Enable Wi-Fi data bridge |
 | `CMAKE_BUILD_TYPE` | Debug | Debug/Release/RelWithDebInfo/MinSizeRel |
 
-### 3. Hardware Setup
+### 4. Hardware Setup
 
 1. Connect PSoC Edge E84 eval kit (KIT_PSE84_EVAL) to PC via USB (for programming/debug)
 2. Connect CYW55512 module via UART (HCI interface for Bluetooth)
