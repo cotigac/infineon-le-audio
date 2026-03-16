@@ -13,3 +13,6 @@
 [submodule "libs/wifi-host-driver"]
 	path = libs/wifi-host-driver
 	url = https://github.com/Infineon/wifi-host-driver.git
+[submodule "libs/btstack-integration"]
+	path = libs/btstack-integration
+	url = https://github.com/Infineon/btstack-integration.git
