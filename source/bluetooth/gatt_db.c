@@ -3,17 +3,22 @@
  * @brief GATT Database Implementation
  *
  * Implements GATT server with LE Audio services.
+ * Integrates MTB example patterns:
+ * - Lookup table for efficient attribute access
+ * - Integration with link.c for connection state
  *
  * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "gatt_db.h"
+#include "link.h"
 #include <string.h>
 #include <stdio.h>
 
 /* Infineon BTSTACK headers for GATT server */
 #include "wiced_bt_gatt.h"
 #include "wiced_bt_ble.h"
+#include "wiced_memory.h"
 
 /*******************************************************************************
  * Private Definitions
@@ -110,6 +115,23 @@ typedef struct {
 } gatt_db_context_t;
 
 /*******************************************************************************
+ * Lookup Table Type (MTB Pattern)
+ ******************************************************************************/
+
+/**
+ * @brief GATT attribute lookup table entry
+ *
+ * This structure follows the MTB example pattern for efficient
+ * attribute lookup by handle.
+ */
+typedef struct {
+    uint16_t handle;            /**< Attribute handle */
+    uint16_t max_len;           /**< Maximum value length */
+    uint16_t cur_len;           /**< Current value length */
+    uint8_t *p_data;            /**< Pointer to attribute value */
+} gatt_db_lookup_table_t;
+
+/*******************************************************************************
  * Private Data
  ******************************************************************************/
 
@@ -118,6 +140,10 @@ static gatt_db_context_t db_ctx;
 /* MIDI Service UUID */
 static const uint8_t midi_service_uuid[] = GATT_UUID_MIDI_SERVICE;
 static const uint8_t midi_io_uuid[] = GATT_UUID_MIDI_IO;
+
+/* Lookup table for efficient attribute access (MTB pattern) */
+static gatt_db_lookup_table_t gatt_db_ext_attr_tbl[GATT_DB_MAX_CHARACTERISTICS * 3];
+static uint16_t gatt_db_ext_attr_tbl_size = 0;
 
 /*******************************************************************************
  * Private Function Prototypes
@@ -151,6 +177,10 @@ static int build_bass_service(void);
 static int build_midi_service(void);
 
 static void notify_event(gatt_db_event_type_t type, uint16_t conn_handle, void *data);
+
+/* Lookup table helpers (MTB pattern) */
+static void add_to_lookup_table(uint16_t handle, uint16_t max_len, uint8_t *p_data);
+static const gatt_db_lookup_table_t* get_attribute_from_table(uint16_t handle);
 
 /* BTSTACK callback */
 wiced_bt_gatt_status_t gatt_db_btstack_callback(wiced_bt_gatt_evt_t event,
@@ -975,6 +1005,59 @@ static cccd_entry_t* alloc_cccd_entry(uint16_t conn_handle, gatt_handle_t cccd_h
 }
 
 /*******************************************************************************
+ * Private Functions - Lookup Table (MTB Pattern)
+ ******************************************************************************/
+
+/**
+ * @brief Add an attribute to the lookup table
+ *
+ * MTB pattern for efficient attribute access by handle.
+ */
+static void add_to_lookup_table(uint16_t handle, uint16_t max_len, uint8_t *p_data)
+{
+    if (gatt_db_ext_attr_tbl_size >= sizeof(gatt_db_ext_attr_tbl)/sizeof(gatt_db_ext_attr_tbl[0])) {
+        printf("GATT DB: Lookup table full\n");
+        return;
+    }
+
+    gatt_db_lookup_table_t *entry = &gatt_db_ext_attr_tbl[gatt_db_ext_attr_tbl_size++];
+    entry->handle = handle;
+    entry->max_len = max_len;
+    entry->cur_len = 0;
+    entry->p_data = p_data;
+}
+
+/**
+ * @brief Get attribute from lookup table by handle
+ *
+ * MTB pattern: wiced_bt_util_get_attribute() equivalent.
+ *
+ * @param handle Attribute handle to find
+ * @return Pointer to lookup table entry, or NULL if not found
+ */
+static const gatt_db_lookup_table_t* get_attribute_from_table(uint16_t handle)
+{
+    for (uint16_t i = 0; i < gatt_db_ext_attr_tbl_size; i++) {
+        if (gatt_db_ext_attr_tbl[i].handle == handle) {
+            return &gatt_db_ext_attr_tbl[i];
+        }
+    }
+    return NULL;
+}
+
+/**
+ * @brief Get attribute from lookup table (public API)
+ *
+ * Matches MTB example signature: wiced_bt_util_get_attribute()
+ */
+const gatt_db_lookup_table_t* wiced_bt_util_get_attribute(
+    gatt_db_lookup_table_t *p_attribute, uint16_t handle)
+{
+    (void)p_attribute;  /* Unused, we use our internal table */
+    return get_attribute_from_table(handle);
+}
+
+/*******************************************************************************
  * Private Functions - Service Builders
  ******************************************************************************/
 
@@ -1468,14 +1551,21 @@ wiced_bt_gatt_status_t gatt_db_btstack_callback(wiced_bt_gatt_evt_t event,
 
     switch (event) {
         case GATT_CONNECTION_STATUS_EVT:
-            /* Connection state changed */
+            /* Connection state changed - integrate with link.c (MTB pattern) */
             if (p_event_data->connection_status.connected) {
-                printf("GATT DB: Connected, handle=%d\n",
+                printf("GATT DB: Connected, conn_id=%d\n",
                        p_event_data->connection_status.conn_id);
+                /* Update link state first (like MTB gatt.c calling link_up) */
+                link_up(&p_event_data->connection_status);
+                /* Then update our internal tracking */
                 gatt_db_on_connect(p_event_data->connection_status.conn_id);
             } else {
-                printf("GATT DB: Disconnected, handle=%d\n",
-                       p_event_data->connection_status.conn_id);
+                printf("GATT DB: Disconnected, conn_id=%d reason=0x%02x\n",
+                       p_event_data->connection_status.conn_id,
+                       p_event_data->connection_status.reason);
+                /* Update link state first */
+                link_down(&p_event_data->connection_status);
+                /* Then update our internal tracking */
                 gatt_db_on_disconnect(p_event_data->connection_status.conn_id);
             }
             break;
@@ -1537,8 +1627,10 @@ wiced_bt_gatt_status_t gatt_db_btstack_callback(wiced_bt_gatt_evt_t event,
                         break;
 
                     case GATT_HANDLE_VALUE_CONF:
-                        /* Indication confirmation received */
-                        printf("GATT DB: Indication confirmed\n");
+                        /* Indication confirmation received - update link state */
+                        printf("GATT DB: Indication confirmed, handle=0x%04x\n",
+                               p_attr_req->data.confirm.handle);
+                        link_set_indication_pending(false);
                         status = WICED_BT_GATT_SUCCESS;
                         break;
 

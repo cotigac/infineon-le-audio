@@ -79,10 +79,12 @@ CY_IGNORE+=source/main_example.c
 #
 # NOTE: Audio DSP sources (LC3, I2S) are built in proj_cm55, not here.
 #
-# EXCLUDED FILES (conflict with example's app_bt/ files):
-#   - source/bluetooth/bt_init.c     (conflicts with app_bt/bt.c)
-#   - source/bluetooth/gatt_db.c     (conflicts with app_bt/gatt.c)
-#   - source/bluetooth/gap_config.c  (conflicts with example GATT)
+# Bluetooth Sources:
+#   - source/bluetooth/ files have been refactored to integrate MTB patterns:
+#     - bt_init.c: BT Configurator integration, bonding support
+#     - gatt_db.c: Lookup table pattern, link.c integration
+#     - link.c: Connection state tracking (adapted from app_bt/link.c)
+#   - We use our refactored source/bluetooth files instead of app_bt/
 #
 # EXCLUDED FILES (audio DSP - built on CM55):
 #   - source/audio/audio_buffers.c
@@ -92,7 +94,11 @@ CY_IGNORE+=source/main_example.c
 #
 SOURCES+= \
     source/app_le_audio.c \
+    ../../../source/bluetooth/bt_init.c \
     ../../../source/bluetooth/bt_platform_config.c \
+    ../../../source/bluetooth/gatt_db.c \
+    ../../../source/bluetooth/gap_config.c \
+    ../../../source/bluetooth/link.c \
     ../../../source/bluetooth/hci_isoc.c \
     ../../../source/le_audio/bap_broadcast.c \
     ../../../source/le_audio/bap_unicast.c \
@@ -105,6 +111,12 @@ SOURCES+= \
     ../../../source/wifi/wifi_bridge.c \
     ../../../source/wifi/wifi_sdio.c \
     ../../../source/ipc/audio_ipc.c
+
+# Exclude app_bt files since we're using our refactored source/bluetooth/ files
+CY_IGNORE+= \
+    source/app_bt/bt.c \
+    source/app_bt/gatt.c \
+    source/app_bt/link.c
 
 # Like SOURCES, but for include directories. Value should be paths to
 # directories (without a leading -I).

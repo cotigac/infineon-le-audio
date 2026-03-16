@@ -3,13 +3,19 @@
  * @brief Bluetooth Stack Initialization Implementation
  *
  * Implements BTSTACK initialization, HCI transport setup, and
- * CYW55511 controller management for LE Audio applications.
+ * CYW55512 controller management for LE Audio applications.
+ *
+ * Adapted from Infineon MTB LE Audio example patterns with:
+ * - BT Configurator settings integration (cycfg_bt_settings)
+ * - Link tracking via link.c module
+ * - Bonding/NVM support hooks
  *
  * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "bt_init.h"
 #include "bt_platform_config.h"
+#include "link.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -28,6 +34,12 @@
 #include "wiced_memory.h"
 #include "cybt_platform_config.h"
 #include "cybt_platform_trace.h"
+
+/* BT Configurator generated settings (optional - use fallback if not available) */
+#ifdef USE_BT_CONFIGURATOR
+#include "cycfg_bt_settings.h"
+#include "cycfg_gap.h"
+#endif
 
 /* Infineon HAL */
 #include "cyhal.h"
@@ -60,6 +72,12 @@
 
 /** Infineon manufacturer ID */
 #define MANUFACTURER_INFINEON   (0x0009)
+
+/** Application heap size (from MTB example) */
+#define APP_STACK_HEAP_SIZE     (0x512U)
+
+/** Maximum key size for pairing */
+#define MAX_KEY_SIZE            (16U)
 
 /** HCI opcodes */
 #define HCI_RESET               0x0C03
@@ -167,10 +185,68 @@ static wiced_bt_cfg_settings_t bt_cfg_settings = {
 };
 
 /*******************************************************************************
+ * Bonding/NVM Support (Weak Functions - Override in app_bt_bonding.c)
+ ******************************************************************************/
+
+/**
+ * Weak function stubs for bonding support.
+ * Override these by linking with app_bt_bonding.c from MTB example.
+ */
+
+__attribute__((weak))
+void app_kv_store_init(void) {}
+
+__attribute__((weak))
+uint32_t app_bt_restore_bond_data(void) { return 0; }
+
+__attribute__((weak))
+uint32_t app_bt_save_device_link_keys(wiced_bt_device_link_keys_t *link_key)
+{
+    (void)link_key;
+    return 0;
+}
+
+__attribute__((weak))
+uint32_t app_bt_save_local_identity_key(wiced_bt_local_identity_keys_t id_key)
+{
+    (void)id_key;
+    return 0;
+}
+
+__attribute__((weak))
+uint32_t app_bt_read_local_identity_keys(void) { return 1; /* Error - not found */ }
+
+__attribute__((weak))
+uint8_t app_bt_find_device_in_nvm(uint8_t *bd_addr)
+{
+    (void)bd_addr;
+    return 0xFF; /* Not found */
+}
+
+__attribute__((weak))
+void app_bt_update_slot_data(void) {}
+
+__attribute__((weak))
+void app_bt_add_devices_to_address_resolution_db(void) {}
+
+/* External bond_info structure (from app_bt_bonding.c if linked) */
+typedef struct {
+    uint8_t slot_data[2];
+    wiced_bt_device_link_keys_t link_keys[4];
+    uint8_t privacy_mode[4];
+} bond_info_t;
+
+__attribute__((weak))
+bond_info_t bond_info = {0};
+
+__attribute__((weak))
+wiced_bt_local_identity_keys_t identity_keys = {0};
+
+/*******************************************************************************
  * Types
  ******************************************************************************/
 
-/** Internal stack state */
+/** Internal stack state (simplified - connection tracking moved to link.c) */
 typedef struct {
     bool initialized;
     bt_state_t state;
@@ -183,13 +259,11 @@ typedef struct {
     bt_event_callback_t event_callback;
     void *callback_user_data;
 
-    /* Active connections */
-    bt_connection_info_t connections[8];
-    uint8_t num_connections;
-
     /* Advertising state */
     bool advertising;
     bool connectable_adv;
+    wiced_bt_ble_advert_mode_t adv_mode;
+    wiced_bt_ble_advert_mode_t intended_adv_mode;
     uint16_t adv_interval;
 
     /* Advertising data */
@@ -280,11 +354,13 @@ static void set_state(bt_state_t new_state)
  * @brief BTSTACK management event callback
  *
  * This is called by the BTSTACK for all Bluetooth management events.
+ * Adapted from MTB example bt.c with bonding/NVM support.
  */
 static wiced_result_t bt_management_callback(wiced_bt_management_evt_t event,
                                               wiced_bt_management_evt_data_t *p_event_data)
 {
     wiced_result_t result = WICED_BT_SUCCESS;
+    uint8_t bondindex;
 
     printf("BT Mgmt: Event %d\n", event);
 
@@ -294,7 +370,7 @@ static wiced_result_t bt_management_callback(wiced_bt_management_evt_t event,
             if (p_event_data->enabled.status == WICED_BT_SUCCESS) {
                 printf("BT Mgmt: Stack enabled successfully\n");
 
-                /* Read local BD address */
+                /* Read local BD address (via extended API like MTB example) */
                 wiced_bt_dev_read_local_addr(bt_ctx.controller_info.bd_addr);
                 printf("BT Mgmt: BD_ADDR: %02X:%02X:%02X:%02X:%02X:%02X\n",
                        bt_ctx.controller_info.bd_addr[0],
@@ -353,48 +429,84 @@ static wiced_result_t bt_management_callback(wiced_bt_management_evt_t event,
             set_state(BT_STATE_OFF);
             break;
 
-        case BTM_BLE_ADVERT_STATE_CHANGED_EVT:
-            /* Advertising state changed */
-            {
-                wiced_bt_ble_advert_mode_t mode = p_event_data->ble_advert_state_changed;
-                printf("BT Mgmt: Advert state changed: %d\n", mode);
+        case BTM_USER_CONFIRMATION_REQUEST_EVT:
+            /* User confirmation for numeric comparison (auto-accept) */
+            printf("BT Mgmt: User confirmation request, value: %d\n",
+                   (int)p_event_data->user_confirmation_request.numeric_value);
+            wiced_bt_dev_confirm_req_reply(WICED_BT_SUCCESS,
+                p_event_data->user_confirmation_request.bd_addr);
+            break;
 
-                if (mode == BTM_BLE_ADVERT_OFF) {
-                    bt_ctx.advertising = false;
-                    if (bt_ctx.num_connections == 0) {
-                        set_state(BT_STATE_READY);
-                    }
-                } else {
-                    bt_ctx.advertising = true;
-                    if (bt_ctx.num_connections == 0) {
-                        set_state(BT_STATE_ADVERTISING);
-                    }
-                }
+        case BTM_PASSKEY_NOTIFICATION_EVT:
+            /* Passkey notification (auto-confirm) */
+            wiced_bt_dev_confirm_req_reply(WICED_BT_SUCCESS,
+                p_event_data->user_passkey_notification.bd_addr);
+            break;
+
+        case BTM_LOCAL_IDENTITY_KEYS_UPDATE_EVT:
+            /* Local identity keys updated - save to NVM */
+            printf("BT Mgmt: Local identity keys updated\n");
+            if (app_bt_save_local_identity_key(
+                    p_event_data->local_identity_keys_update) != 0) {
+                result = WICED_BT_ERROR;
             }
             break;
 
-        case BTM_BLE_CONNECTION_PARAM_UPDATE:
-            /* Connection parameters updated */
-            printf("BT Mgmt: Connection params updated\n");
+        case BTM_LOCAL_IDENTITY_KEYS_REQUEST_EVT:
+            /* Local identity keys requested - read from NVM */
+            printf("BT Mgmt: Local identity keys requested\n");
+            if (app_bt_read_local_identity_keys() == 0) {
+                memcpy(&(p_event_data->local_identity_keys_request),
+                       &identity_keys, sizeof(wiced_bt_local_identity_keys_t));
+                result = WICED_BT_SUCCESS;
+            } else {
+                result = WICED_BT_ERROR;
+            }
             break;
 
-        case BTM_PAIRING_IO_CAPABILITIES_BLE_REQUEST_EVT:
-            /* Pairing IO capabilities request */
-            printf("BT Mgmt: Pairing IO caps request\n");
-            p_event_data->pairing_io_capabilities_ble_request.local_io_cap = BTM_IO_CAPABILITIES_NONE;
-            p_event_data->pairing_io_capabilities_ble_request.oob_data = BTM_OOB_NONE;
-            p_event_data->pairing_io_capabilities_ble_request.auth_req = BTM_LE_AUTH_REQ_SC_BOND;
-            p_event_data->pairing_io_capabilities_ble_request.max_key_size = 16;
-            p_event_data->pairing_io_capabilities_ble_request.init_keys =
-                BTM_LE_KEY_PENC | BTM_LE_KEY_PID | BTM_LE_KEY_PCSRK | BTM_LE_KEY_LENC;
-            p_event_data->pairing_io_capabilities_ble_request.resp_keys =
-                BTM_LE_KEY_PENC | BTM_LE_KEY_PID | BTM_LE_KEY_PCSRK | BTM_LE_KEY_LENC;
+        case BTM_PAIRED_DEVICE_LINK_KEYS_UPDATE_EVT:
+            /* Device link keys updated - save to NVM */
+            printf("BT Mgmt: Link keys updated\n");
+            app_bt_save_device_link_keys(
+                &(p_event_data->paired_device_link_keys_update));
+            break;
+
+        case BTM_PAIRED_DEVICE_LINK_KEYS_REQUEST_EVT:
+            /* Device link keys requested - lookup in NVM */
+            printf("BT Mgmt: Link keys requested for: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                   p_event_data->paired_device_link_keys_request.bd_addr[0],
+                   p_event_data->paired_device_link_keys_request.bd_addr[1],
+                   p_event_data->paired_device_link_keys_request.bd_addr[2],
+                   p_event_data->paired_device_link_keys_request.bd_addr[3],
+                   p_event_data->paired_device_link_keys_request.bd_addr[4],
+                   p_event_data->paired_device_link_keys_request.bd_addr[5]);
+
+            result = WICED_BT_ERROR;
+            bondindex = app_bt_find_device_in_nvm(
+                p_event_data->paired_device_link_keys_request.bd_addr);
+
+            if (bondindex < 4) {  /* BOND_INDEX_MAX */
+                memcpy(&(p_event_data->paired_device_link_keys_request),
+                       &bond_info.link_keys[bondindex],
+                       sizeof(wiced_bt_device_link_keys_t));
+                result = WICED_BT_SUCCESS;
+            } else {
+                printf("BT Mgmt: Device link keys not found in NVM\n");
+            }
+            break;
+
+        case BTM_ENCRYPTION_STATUS_EVT:
+            /* Encryption status change - update link state */
+            printf("BT Mgmt: Encryption status: %d\n",
+                   p_event_data->encryption_status.result);
+            link_set_encrypted(p_event_data->encryption_status.result == WICED_SUCCESS);
             break;
 
         case BTM_PAIRING_COMPLETE_EVT:
-            /* Pairing complete */
+            /* Pairing complete - update slot data */
             printf("BT Mgmt: Pairing complete: %d\n",
                    p_event_data->pairing_complete.pairing_complete_info.ble.status);
+            app_bt_update_slot_data();
             {
                 bt_event_t bt_event = {
                     .type = BT_EVENT_PAIRING_COMPLETE
@@ -403,10 +515,18 @@ static wiced_result_t bt_management_callback(wiced_bt_management_evt_t event,
             }
             break;
 
-        case BTM_ENCRYPTION_STATUS_EVT:
-            /* Encryption status change */
-            printf("BT Mgmt: Encryption status: %d\n",
-                   p_event_data->encryption_status.result);
+        case BTM_PAIRING_IO_CAPABILITIES_BLE_REQUEST_EVT:
+            /* Pairing IO capabilities request */
+            printf("BT Mgmt: Pairing IO caps request\n");
+            p_event_data->pairing_io_capabilities_ble_request.local_io_cap = BTM_IO_CAPABILITIES_NONE;
+            p_event_data->pairing_io_capabilities_ble_request.oob_data = BTM_OOB_NONE;
+            p_event_data->pairing_io_capabilities_ble_request.auth_req =
+                BTM_LE_AUTH_REQ_SC | BTM_LE_AUTH_REQ_BOND;
+            p_event_data->pairing_io_capabilities_ble_request.max_key_size = MAX_KEY_SIZE;
+            p_event_data->pairing_io_capabilities_ble_request.init_keys =
+                BTM_LE_KEY_PENC | BTM_LE_KEY_PID | BTM_LE_KEY_PCSRK | BTM_LE_KEY_PLK;
+            p_event_data->pairing_io_capabilities_ble_request.resp_keys =
+                BTM_LE_KEY_PENC | BTM_LE_KEY_PID | BTM_LE_KEY_PCSRK | BTM_LE_KEY_PLK;
             break;
 
         case BTM_SECURITY_REQUEST_EVT:
@@ -416,31 +536,62 @@ static wiced_result_t bt_management_callback(wiced_bt_management_evt_t event,
                                         WICED_BT_SUCCESS);
             break;
 
-        case BTM_PAIRED_DEVICE_LINK_KEYS_UPDATE_EVT:
-            /* Link keys updated */
-            printf("BT Mgmt: Link keys updated\n");
+        case BTM_BLE_ADVERT_STATE_CHANGED_EVT:
+            /* Advertising state changed */
+            {
+                wiced_bt_ble_advert_mode_t new_adv_mode =
+                    p_event_data->ble_advert_state_changed;
+                printf("BT Mgmt: Advert state changed: %d\n", new_adv_mode);
+
+                /* Handle automatic transition from high to low duty cycle */
+                if (!link_is_connected() && new_adv_mode == BTM_BLE_ADVERT_OFF) {
+                    if (bt_ctx.intended_adv_mode == BTM_BLE_ADVERT_UNDIRECTED_HIGH) {
+                        /* Switch to low duty cycle undirected advertising */
+                        wiced_result_t adv_result = wiced_bt_start_advertisements(
+                            BTM_BLE_ADVERT_UNDIRECTED_LOW, BLE_ADDR_PUBLIC, NULL);
+                        if (adv_result != WICED_BT_SUCCESS) {
+                            printf("BT Mgmt: Failed to start low duty cycle adv\n");
+                        }
+                        break;
+                    }
+                }
+
+                bt_ctx.adv_mode = new_adv_mode;
+                if (new_adv_mode == BTM_BLE_ADVERT_OFF) {
+                    bt_ctx.advertising = false;
+                    if (!link_is_connected()) {
+                        set_state(BT_STATE_READY);
+                    }
+                } else {
+                    bt_ctx.advertising = true;
+                    if (!link_is_connected()) {
+                        set_state(BT_STATE_ADVERTISING);
+                    }
+                }
+            }
             break;
 
-        case BTM_PAIRED_DEVICE_LINK_KEYS_REQUEST_EVT:
-            /* Link keys requested */
-            printf("BT Mgmt: Link keys requested\n");
-            result = WICED_BT_ERROR;  /* No stored keys */
+        case BTM_BLE_SCAN_STATE_CHANGED_EVT:
+            printf("BT Mgmt: Scan state changed: %d\n",
+                   p_event_data->ble_scan_state_changed);
             break;
 
-        case BTM_LOCAL_IDENTITY_KEYS_UPDATE_EVT:
-            /* Local identity keys updated */
-            printf("BT Mgmt: Local identity keys updated\n");
-            break;
-
-        case BTM_LOCAL_IDENTITY_KEYS_REQUEST_EVT:
-            /* Local identity keys requested */
-            printf("BT Mgmt: Local identity keys requested\n");
-            result = WICED_BT_ERROR;  /* No stored keys */
+        case BTM_BLE_CONNECTION_PARAM_UPDATE:
+            /* Connection parameters updated */
+            printf("BT Mgmt: Conn params updated - status:%d interval:%d latency:%d timeout:%d\n",
+                   p_event_data->ble_connection_param_update.status,
+                   p_event_data->ble_connection_param_update.conn_interval,
+                   p_event_data->ble_connection_param_update.conn_latency,
+                   p_event_data->ble_connection_param_update.supervision_timeout);
+            if (!p_event_data->ble_connection_param_update.status) {
+                link_set_parameter_updated(true);
+            }
             break;
 
         case BTM_BLE_PHY_UPDATE_EVT:
             /* PHY updated */
-            printf("BT Mgmt: PHY updated - TX: %d, RX: %d\n",
+            printf("BT Mgmt: PHY updated - status:%d TX:%d RX:%d\n",
+                   p_event_data->ble_phy_update_event.status,
                    p_event_data->ble_phy_update_event.tx_phy,
                    p_event_data->ble_phy_update_event.rx_phy);
             {
@@ -526,6 +677,9 @@ int bt_init(const bt_config_t *config)
 
     printf("BT Init: Starting Bluetooth stack initialization\n");
 
+    /* Initialize KV store for bonding data (if available) */
+    app_kv_store_init();
+
     /* Create synchronization primitives */
     bt_ctx.init_semaphore = xSemaphoreCreateBinary();
     bt_ctx.cmd_semaphore = xSemaphoreCreateBinary();
@@ -560,14 +714,28 @@ int bt_init(const bt_config_t *config)
      * 3. Send HCI Reset
      * 4. Configure the controller
      * 5. Call bt_management_callback with BTM_ENABLED_EVT on success
+     *
+     * Uses bt_cfg_settings (our fallback config) or cycfg_bt_settings
+     * if USE_BT_CONFIGURATOR is defined.
      */
     printf("BT Init: Calling wiced_bt_stack_init()\n");
+#ifdef USE_BT_CONFIGURATOR
+    wiced_result = wiced_bt_stack_init(bt_management_callback, &cy_bt_cfg_settings);
+#else
     wiced_result = wiced_bt_stack_init(bt_management_callback, &bt_cfg_settings);
+#endif
 
     if (wiced_result != WICED_BT_SUCCESS) {
         printf("BT Init: wiced_bt_stack_init failed: %d\n", wiced_result);
         bt_deinit();
         return BT_ERROR_CONTROLLER_INIT;
+    }
+
+    /* Create default heap (MTB example pattern) */
+    if (wiced_bt_create_heap("app", NULL, APP_STACK_HEAP_SIZE, NULL, WICED_TRUE) == NULL) {
+        printf("BT Init: Failed to create app heap (size %d)\n", APP_STACK_HEAP_SIZE);
+        bt_deinit();
+        return BT_ERROR_NO_MEMORY;
     }
 
     /* Wait for BTM_ENABLED_EVT (signaled by init_semaphore) */
@@ -584,6 +752,12 @@ int bt_init(const bt_config_t *config)
         bt_deinit();
         return BT_ERROR_CONTROLLER_INIT;
     }
+
+    /* Restore bonding data from NVM */
+    app_bt_restore_bond_data();
+
+    /* Add bonded devices to address resolution database */
+    app_bt_add_devices_to_address_resolution_db();
 
     printf("BT Init: Bluetooth stack initialized successfully\n");
 
@@ -603,9 +777,12 @@ void bt_deinit(void)
         bt_stop_advertising();
     }
 
-    /* Disconnect all connections */
-    for (int i = 0; i < bt_ctx.num_connections; i++) {
-        bt_disconnect(bt_ctx.connections[i].conn_handle, 0x13);
+    /* Disconnect all connections (using link.c) */
+    for (uint8_t i = 0; i < LINK_MAX_CONNECTIONS; i++) {
+        link_state_t *link = link_get_by_index(i);
+        if (link != NULL) {
+            bt_disconnect(link->connection_status.conn_id, 0x13);
+        }
     }
 
     /* Deinitialize BTSTACK */
@@ -792,10 +969,11 @@ int bt_start_advertising(bool connectable, uint16_t interval_ms)
         }
     }
 
-    /* Start advertising */
+    /* Start advertising (track intended mode for auto low-duty cycle transition) */
     wiced_bt_ble_advert_mode_t mode = connectable ?
         BTM_BLE_ADVERT_UNDIRECTED_HIGH : BTM_BLE_ADVERT_NONCONN_HIGH;
 
+    bt_ctx.intended_adv_mode = mode;
     result = wiced_bt_start_advertisements(mode, BLE_ADDR_PUBLIC, NULL);
     if (result != WICED_BT_SUCCESS) {
         printf("BT Adv: Failed to start advertising: %d\n", result);
@@ -804,6 +982,7 @@ int bt_start_advertising(bool connectable, uint16_t interval_ms)
 
     printf("BT Adv: Advertising started\n");
     bt_ctx.advertising = true;
+    bt_ctx.adv_mode = mode;
     set_state(BT_STATE_ADVERTISING);
 
     return BT_OK;
@@ -832,7 +1011,7 @@ int bt_stop_advertising(void)
 
     bt_ctx.advertising = false;
 
-    if (bt_ctx.num_connections == 0) {
+    if (!link_is_connected()) {
         set_state(BT_STATE_READY);
     }
 
@@ -949,28 +1128,30 @@ int bt_update_connection_params(uint16_t conn_handle,
                                 uint16_t latency,
                                 uint16_t timeout)
 {
-    wiced_bool_t result;
-
     if (!bt_ctx.initialized) {
         return BT_ERROR_NOT_INITIALIZED;
+    }
+
+    /* Find the connection using link.c */
+    link_state_t *link = link_get_by_conn_id(conn_handle);
+    if (link == NULL) {
+        printf("BT Conn: Connection %d not found\n", conn_handle);
+        return BT_ERROR_INVALID_PARAM;
     }
 
     printf("BT Conn: Updating params for handle %d: interval=%d-%d, latency=%d, timeout=%d\n",
            conn_handle, interval_min, interval_max, latency, timeout);
 
-    /* Use BTSTACK API to update connection parameters */
-    result = wiced_bt_l2cap_update_ble_conn_params(
-        bt_ctx.connections[0].peer_addr,  /* Use peer address from connection info */
-        interval_min,
-        interval_max,
-        latency,
-        timeout
-    );
+    /* Prepare connection parameter update request */
+    wiced_bt_ble_pref_conn_params_t conn_params = {
+        .conn_interval_min = interval_min,
+        .conn_interval_max = interval_max,
+        .conn_latency = latency,
+        .conn_supervision_timeout = timeout
+    };
 
-    if (result != WICED_TRUE) {
-        printf("BT Conn: Failed to update connection params\n");
-        return BT_ERROR_INVALID_PARAM;
-    }
+    /* Use BTSTACK API to update connection parameters */
+    wiced_bt_l2cap_update_ble_conn_params(link->bd_addr, &conn_params);
 
     return BT_OK;
 }
@@ -985,14 +1166,25 @@ int bt_get_connection_info(uint16_t conn_handle, bt_connection_info_t *info)
         return BT_ERROR_INVALID_PARAM;
     }
 
-    for (int i = 0; i < bt_ctx.num_connections; i++) {
-        if (bt_ctx.connections[i].conn_handle == conn_handle) {
-            *info = bt_ctx.connections[i];
-            return BT_OK;
-        }
+    /* Find the connection using link.c */
+    link_state_t *link = link_get_by_conn_id(conn_handle);
+    if (link == NULL) {
+        return BT_ERROR_INVALID_PARAM;
     }
 
-    return BT_ERROR_INVALID_PARAM;
+    /* Populate connection info from link state */
+    info->conn_handle = conn_handle;
+    memcpy(info->peer_addr, link->bd_addr, BT_ADDR_SIZE);
+
+    /* Get connection parameters from BTSTACK */
+    wiced_bt_ble_conn_params_t params;
+    if (wiced_bt_ble_get_connection_parameters(link->bd_addr, &params)) {
+        info->conn_interval = params.conn_interval;
+        info->conn_latency = params.conn_latency;
+        info->supervision_timeout = params.supervision_timeout;
+    }
+
+    return BT_OK;
 }
 
 int bt_set_phy(uint16_t conn_handle, uint8_t tx_phy, uint8_t rx_phy)
@@ -1007,16 +1199,16 @@ int bt_set_phy(uint16_t conn_handle, uint8_t tx_phy, uint8_t rx_phy)
     printf("BT PHY: Setting PHY for handle %d: TX=%d, RX=%d\n",
            conn_handle, tx_phy, rx_phy);
 
-    /* Find the peer address for this connection */
-    memset(&phy_pref, 0, sizeof(phy_pref));
-    for (int i = 0; i < bt_ctx.num_connections; i++) {
-        if (bt_ctx.connections[i].conn_handle == conn_handle) {
-            memcpy(phy_pref.remote_bd_addr, bt_ctx.connections[i].peer_addr, BT_ADDR_SIZE);
-            break;
-        }
+    /* Find the connection using link.c */
+    link_state_t *link = link_get_by_conn_id(conn_handle);
+    if (link == NULL) {
+        printf("BT PHY: Connection %d not found\n", conn_handle);
+        return BT_ERROR_INVALID_PARAM;
     }
 
     /* Set PHY preferences */
+    memset(&phy_pref, 0, sizeof(phy_pref));
+    memcpy(phy_pref.remote_bd_addr, link->bd_addr, BT_ADDR_SIZE);
     phy_pref.tx_phys = tx_phy;
     phy_pref.rx_phys = rx_phy;
     phy_pref.phy_opts = BTM_BLE_PHY_OPT_NO_PREF;
@@ -1205,7 +1397,7 @@ void bt_process(void)
      */
 
     /* Update statistics if there are active connections */
-    if (bt_ctx.num_connections > 0) {
+    if (link_is_connected()) {
         /* Could query link quality, RSSI, etc. here if needed */
     }
 }
