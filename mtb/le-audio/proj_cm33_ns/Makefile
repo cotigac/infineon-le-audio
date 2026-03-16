@@ -109,7 +109,7 @@ SOURCES+= \
     ../../../source/midi/midi_router.c \
     ../../../source/midi/midi_usb.c \
     ../../../source/wifi/wifi_bridge.c \
-    ../../../source/wifi/wifi_sdio.c \
+    ../../../source/wifi/whd_buffer_impl.c \
     ../../../source/ipc/audio_ipc.c \
     ../../../libs/wifi-host-driver/External/hal/cyhal_sdio.c
 

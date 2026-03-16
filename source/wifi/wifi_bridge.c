@@ -6,7 +6,7 @@
  */
 
 #include "wifi_bridge.h"
-#include "wifi_sdio.h"
+#include "whd_buffer_impl.h"
 #include <string.h>
 
 /* FreeRTOS headers */
@@ -271,24 +271,42 @@ static void send_event(wifi_bridge_event_type_t type, void *data)
 /**
  * @brief Process USB RX (data from app processor)
  *
- * Note: USB bulk receive is handled by USB device middleware callbacks.
- * This function processes any pending data in the RX buffer.
+ * USB bulk receive is handled by USB device middleware callbacks.
+ * This function forwards pending data to Wi-Fi via WHD.
  */
 static void process_usb_rx(void)
 {
     wifi_bridge_buffer_t *buffer;
+    whd_buffer_t whd_buf;
+    uint8_t *whd_data;
 
     /* Check TX queue for pending USB data to forward to Wi-Fi */
     while (xQueueReceive(bridge_state.tx_queue, &buffer, 0) == pdTRUE) {
         if (buffer != NULL && buffer->in_use && buffer->length > 0) {
-            /* Send to Wi-Fi via SDIO */
-            int result = wifi_sdio_cmd53(true, 1, 0, true,
-                                          buffer->data, buffer->length);
-            if (result != 0) {
-                bridge_state.stats.wifi_errors++;
+            /* Allocate WHD buffer for transmission */
+            if (whd_host_buffer_get(bridge_state.whd_driver, &whd_buf,
+                                    WHD_NETWORK_TX, buffer->length, 100) == WHD_SUCCESS) {
+                /* Copy data to WHD buffer */
+                whd_data = whd_buffer_get_current_piece_data_pointer(bridge_state.whd_driver, whd_buf);
+                if (whd_data != NULL) {
+                    memcpy(whd_data, buffer->data, buffer->length);
+                    whd_buffer_set_size(bridge_state.whd_driver, whd_buf, buffer->length);
+
+                    /* Send via WHD - it handles SDIO internally */
+                    whd_result_t result = whd_network_send_ethernet_data(bridge_state.whd_iface, whd_buf);
+                    if (result != WHD_SUCCESS) {
+                        bridge_state.stats.wifi_errors++;
+                        /* WHD releases buffer on failure */
+                    } else {
+                        bridge_state.stats.wifi_bytes_tx += buffer->length;
+                        bridge_state.stats.packets_forwarded++;
+                    }
+                } else {
+                    whd_buffer_release(bridge_state.whd_driver, whd_buf, WHD_NETWORK_TX);
+                    bridge_state.stats.wifi_errors++;
+                }
             } else {
-                bridge_state.stats.wifi_bytes_tx += buffer->length;
-                bridge_state.stats.packets_forwarded++;
+                bridge_state.stats.buffer_overflows++;
             }
             release_buffer(buffer);
         }
@@ -331,62 +349,57 @@ static void process_usb_tx(void)
 /**
  * @brief Process Wi-Fi RX (data from network)
  *
- * Note: Polls SDIO for incoming data. In production, this would use
- * interrupt-driven reception via WHD callbacks.
+ * Wi-Fi RX is handled by WHD via interrupt-driven callbacks.
+ * WHD calls wifi_bridge_network_process_data() when packets arrive.
+ * This function is kept for API compatibility but does nothing.
  */
 static void process_wifi_rx(void)
 {
-    wifi_bridge_buffer_t *buffer;
-
-    /* Check if there's pending data from Wi-Fi chip */
-    if (wifi_sdio_interrupt_pending(1)) {
-        buffer = get_free_rx_buffer();
-        if (buffer != NULL) {
-            /* Read data from Wi-Fi chip via SDIO CMD53 */
-            int result = wifi_sdio_cmd53(false, 1, 0, true,
-                                          buffer->data, WIFI_BRIDGE_MAX_PACKET_SIZE);
-            if (result == 0) {
-                /* Determine actual packet length from header */
-                /* For now, assume full buffer read */
-                buffer->length = WIFI_BRIDGE_MAX_PACKET_SIZE;
-                bridge_state.stats.wifi_bytes_rx += buffer->length;
-
-                /* Queue for USB transmission */
-                if (xQueueSend(bridge_state.rx_queue, &buffer, 0) != pdTRUE) {
-                    release_buffer(buffer);
-                    bridge_state.stats.buffer_overflows++;
-                }
-            } else {
-                release_buffer(buffer);
-                bridge_state.stats.wifi_errors++;
-            }
-        } else {
-            bridge_state.stats.buffer_overflows++;
-        }
-    }
+    /* No polling needed - WHD handles RX via callback */
+    /* See wifi_bridge_network_process_data() for packet reception */
 }
 
 /**
  * @brief Process Wi-Fi TX (data to network)
  *
- * Note: Sends pending TX buffers to Wi-Fi chip via SDIO.
+ * Sends pending TX buffers to Wi-Fi via WHD.
+ * WHD handles the actual SDIO communication internally.
  */
 static void process_wifi_tx(void)
 {
     wifi_bridge_buffer_t *buffer;
+    whd_buffer_t whd_buf;
+    uint8_t *whd_data;
 
     /* Check TX queue for pending data to send to Wi-Fi */
     while (xQueueReceive(bridge_state.tx_queue, &buffer, 0) == pdTRUE) {
         if (buffer != NULL && buffer->in_use && buffer->length > 0) {
-            /* Send to Wi-Fi chip via SDIO CMD53 */
-            int result = wifi_sdio_cmd53(true, 1, 0, true,
-                                          buffer->data, buffer->length);
-            if (result != 0) {
-                bridge_state.stats.wifi_errors++;
-                bridge_state.stats.packets_dropped++;
+            /* Allocate WHD buffer for transmission */
+            if (whd_host_buffer_get(bridge_state.whd_driver, &whd_buf,
+                                    WHD_NETWORK_TX, buffer->length, 100) == WHD_SUCCESS) {
+                /* Copy data to WHD buffer */
+                whd_data = whd_buffer_get_current_piece_data_pointer(bridge_state.whd_driver, whd_buf);
+                if (whd_data != NULL) {
+                    memcpy(whd_data, buffer->data, buffer->length);
+                    whd_buffer_set_size(bridge_state.whd_driver, whd_buf, buffer->length);
+
+                    /* Send via WHD */
+                    whd_result_t result = whd_network_send_ethernet_data(bridge_state.whd_iface, whd_buf);
+                    if (result != WHD_SUCCESS) {
+                        bridge_state.stats.wifi_errors++;
+                        bridge_state.stats.packets_dropped++;
+                    } else {
+                        bridge_state.stats.wifi_bytes_tx += buffer->length;
+                        bridge_state.stats.packets_forwarded++;
+                    }
+                } else {
+                    whd_buffer_release(bridge_state.whd_driver, whd_buf, WHD_NETWORK_TX);
+                    bridge_state.stats.wifi_errors++;
+                    bridge_state.stats.packets_dropped++;
+                }
             } else {
-                bridge_state.stats.wifi_bytes_tx += buffer->length;
-                bridge_state.stats.packets_forwarded++;
+                bridge_state.stats.buffer_overflows++;
+                bridge_state.stats.packets_dropped++;
             }
             release_buffer(buffer);
         }
@@ -437,23 +450,26 @@ int wifi_bridge_init(const wifi_bridge_config_t *config)
         return -2;  /* FreeRTOS resource allocation failed */
     }
 
-    /* Initialize SDIO for Wi-Fi */
-    if (wifi_sdio_init(NULL) != 0) {
+    /* Initialize WHD buffer implementation */
+    if (whd_buffer_impl_init() != 0) {
         return -3;
     }
 
-    /* Initialize WHD (Wi-Fi Host Driver) */
+    /* Initialize WHD (Wi-Fi Host Driver)
+     * WHD handles SDIO communication internally via cyhal_sdio HAL layer.
+     * We provide our buffer implementation for packet allocation.
+     */
     memset(&whd_config, 0, sizeof(whd_init_config_t));
     whd_config.thread_stack_size = 4096;
     whd_config.thread_priority = tskIDLE_PRIORITY + 2;  /* Normal priority */
     whd_config.country = WHD_COUNTRY_UNITED_STATES;
 
     whd_result = whd_init(&bridge_state.whd_driver, &whd_config,
-                          NULL,    /* Resource interface (use default) */
-                          NULL,    /* Buffer interface (use default) */
-                          NULL);   /* SDIO interface (use default) */
+                          NULL,                        /* Resource interface (use default) */
+                          whd_buffer_impl_get_funcs(), /* Buffer interface */
+                          NULL);                       /* SDIO interface (use default HAL) */
     if (whd_result != WHD_SUCCESS) {
-        wifi_sdio_deinit();
+        whd_buffer_impl_deinit();
         return -4;
     }
 
@@ -461,7 +477,7 @@ int wifi_bridge_init(const wifi_bridge_config_t *config)
     whd_result = whd_wifi_on(bridge_state.whd_driver, &bridge_state.whd_iface);
     if (whd_result != WHD_SUCCESS) {
         whd_deinit(bridge_state.whd_iface);
-        wifi_sdio_deinit();
+        whd_buffer_impl_deinit();
         return -5;
     }
 
@@ -480,7 +496,7 @@ int wifi_bridge_init(const wifi_bridge_config_t *config)
     if (bridge_state.usb_bulk_handle == 0) {
         whd_wifi_off(bridge_state.whd_iface);
         whd_deinit(bridge_state.whd_iface);
-        wifi_sdio_deinit();
+        whd_buffer_impl_deinit();
         return -6;
     }
 
@@ -522,8 +538,8 @@ void wifi_bridge_deinit(void)
      * It will be cleaned up when USB is deinitialized */
     bridge_state.usb_bulk_handle = 0;
 
-    /* Deinitialize SDIO */
-    wifi_sdio_deinit();
+    /* Deinitialize WHD buffer implementation */
+    whd_buffer_impl_deinit();
 
     /* Delete FreeRTOS synchronization primitives */
     if (bridge_state.buffer_mutex != NULL) {
