@@ -6,6 +6,10 @@
  */
 
 #include "wifi_bridge.h"
+
+/* WiFi bridge requires WHD library - conditionally compile */
+#ifdef ENABLE_WIFI
+
 #include "wifi_sdio.h"
 #include <string.h>
 
@@ -803,3 +807,73 @@ uint32_t wifi_bridge_get_rx_pending(void)
     }
     return pending_bytes;
 }
+
+#else /* !ENABLE_WIFI */
+
+/* Stub implementations when Wi-Fi is disabled */
+#include <string.h>
+
+int wifi_bridge_init(const wifi_bridge_config_t *config)
+{
+    (void)config;
+    return -1;  /* WiFi not enabled */
+}
+
+void wifi_bridge_deinit(void) {}
+
+int wifi_bridge_start(void) { return -1; }
+int wifi_bridge_stop(void) { return -1; }
+
+void wifi_bridge_register_callback(wifi_bridge_callback_t callback, void *user_data)
+{
+    (void)callback;
+    (void)user_data;
+}
+
+void wifi_bridge_process(void) {}
+
+int wifi_bridge_send_to_wifi(const uint8_t *data, uint16_t length)
+{
+    (void)data;
+    (void)length;
+    return -1;
+}
+
+int wifi_bridge_send_to_usb(const uint8_t *data, uint16_t length)
+{
+    (void)data;
+    (void)length;
+    return -1;
+}
+
+wifi_bridge_status_t wifi_bridge_get_status(void)
+{
+    return WIFI_BRIDGE_STATUS_STOPPED;
+}
+
+void wifi_bridge_get_stats(wifi_bridge_stats_t *stats)
+{
+    if (stats) {
+        memset(stats, 0, sizeof(*stats));
+    }
+}
+
+void wifi_bridge_reset_stats(void) {}
+
+int wifi_bridge_set_mode(wifi_bridge_mode_t mode)
+{
+    (void)mode;
+    return -1;
+}
+
+wifi_bridge_mode_t wifi_bridge_get_mode(void)
+{
+    return WIFI_BRIDGE_MODE_DISABLED;
+}
+
+bool wifi_bridge_is_ready(void) { return false; }
+
+uint32_t wifi_bridge_get_tx_available(void) { return 0; }
+uint32_t wifi_bridge_get_rx_pending(void) { return 0; }
+
+#endif /* ENABLE_WIFI */
