@@ -76,11 +76,14 @@ CY_IGNORE+=main_example.c
 
 # CM55 Audio DSP Sources
 # These leverage the Cortex-M55 Helium (MVE) for efficient DSP operations
-# NOTE: audio_task.c is NOT included because main.c implements its own
-#       audio processing directly using IPC for CM33 communication.
+#
+# NOTE: The following files are NOT included because main.c implements
+#       its own audio processing directly using IPC for CM33 communication:
+#   - audio_task.c (main.c has its own task)
+#   - i2s_stream.c (uses old cyhal_i2s HAL not available on PSoC Edge)
+#
 SOURCES+= \
     ../../../source/audio/audio_buffers.c \
-    ../../../source/audio/i2s_stream.c \
     ../../../source/audio/lc3_wrapper.c \
     ../../../source/ipc/audio_ipc.c
 
