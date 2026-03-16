@@ -147,7 +147,8 @@ typedef enum {
     BAP_UNICAST_ERROR_QOS_ERROR = -9,
     BAP_UNICAST_ERROR_CIS_FAILED = -10,
     BAP_UNICAST_ERROR_TIMEOUT = -11,
-    BAP_UNICAST_ERROR_REJECTED = -12
+    BAP_UNICAST_ERROR_REJECTED = -12,
+    BAP_UNICAST_ERROR_GATT_FAILED = -13
 } bap_unicast_error_t;
 
 /*******************************************************************************
