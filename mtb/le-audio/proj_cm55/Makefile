@@ -88,7 +88,10 @@ SOURCES+= \
 # directories (without a leading -I).
 #
 # Audio and LC3 include paths
+# NOTE: "." must be first to ensure project's FreeRTOSConfig.h is found
+#       before config/FreeRTOSConfig.h (which has incompatible port settings)
 INCLUDES+= \
+    . \
     ../../../source \
     ../../../source/audio \
     ../../../source/ipc \
