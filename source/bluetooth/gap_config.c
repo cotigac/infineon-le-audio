@@ -17,6 +17,10 @@
 #include "wiced_bt_gatt.h"
 #include "wiced_bt_l2c.h"
 
+/* BTSTACK 4.x extended advertising and scanning headers */
+#include "wiced_bt_adv_scan_extended.h"
+#include "wiced_bt_adv_scan_periodic.h"
+
 /* GATT database for device name updates */
 #include "gatt_db.h"
 
@@ -114,6 +118,38 @@ static void free_adv_set(adv_set_t *set);
 static periodic_sync_t* find_periodic_sync(uint16_t sync_handle);
 static periodic_sync_t* alloc_periodic_sync(void);
 static void notify_event(gap_event_type_t type, void *data);
+static uint8_t parse_raw_adv_data(const uint8_t *raw_data, uint8_t raw_len,
+                                  wiced_bt_ble_advert_elem_t *elements, uint8_t max_elements);
+
+/*******************************************************************************
+ * Private Helper Functions
+ ******************************************************************************/
+
+/**
+ * @brief Parse raw LTV advertisement data into BTSTACK 4.x element array
+ */
+static uint8_t parse_raw_adv_data(const uint8_t *raw_data, uint8_t raw_len,
+                                  wiced_bt_ble_advert_elem_t *elements, uint8_t max_elements)
+{
+    uint8_t count = 0;
+    uint8_t offset = 0;
+
+    while (offset < raw_len && count < max_elements) {
+        uint8_t len = raw_data[offset];
+        if (len == 0 || offset + len >= raw_len) {
+            break;
+        }
+
+        elements[count].advert_type = raw_data[offset + 1];
+        elements[count].len = len - 1;  /* Length minus type byte */
+        elements[count].p_data = (uint8_t *)&raw_data[offset + 2];
+        count++;
+
+        offset += len + 1;  /* Move past length + data */
+    }
+
+    return count;
+}
 
 /*******************************************************************************
  * API Functions - Initialization
@@ -272,8 +308,8 @@ int gap_set_random_address(const uint8_t *address)
     memcpy(gap_ctx.random_address, address, 6);
     gap_ctx.random_address_set = true;
 
-    /* Set random address via BTSTACK */
-    wiced_bt_ble_set_random_address((uint8_t *)address);
+    /* Set random address via BTSTACK (BTSTACK 4.x API) */
+    wiced_bt_set_local_bdaddr((uint8_t *)address, BLE_ADDR_RANDOM);
 
     return GAP_OK;
 }
@@ -327,8 +363,14 @@ int gap_set_adv_data(const uint8_t *data, uint8_t len)
     }
     gap_ctx.legacy_adv_data_len = len;
 
-    /* Set advertising data via BTSTACK */
-    wiced_bt_ble_set_raw_advertisement_data(len, (uint8_t *)data);
+    /* Set advertising data via BTSTACK (BTSTACK 4.x element-based API) */
+    if (len > 0) {
+        wiced_bt_ble_advert_elem_t elements[10];
+        uint8_t num_elements = parse_raw_adv_data(data, len, elements, 10);
+        if (num_elements > 0) {
+            wiced_bt_ble_set_raw_advertisement_data(num_elements, elements);
+        }
+    }
 
     return GAP_OK;
 }
@@ -352,8 +394,14 @@ int gap_set_scan_rsp_data(const uint8_t *data, uint8_t len)
     }
     gap_ctx.legacy_scan_rsp_len = len;
 
-    /* Set scan response data via BTSTACK */
-    wiced_bt_ble_set_raw_scan_response_data(len, (uint8_t *)data);
+    /* Set scan response data via BTSTACK (BTSTACK 4.x element-based API) */
+    if (len > 0) {
+        wiced_bt_ble_advert_elem_t elements[10];
+        uint8_t num_elements = parse_raw_adv_data(data, len, elements, 10);
+        if (num_elements > 0) {
+            wiced_bt_ble_set_raw_scan_response_data(num_elements, elements);
+        }
+    }
 
     return GAP_OK;
 }
@@ -451,11 +499,11 @@ int gap_create_ext_adv_set(const gap_ext_adv_params_t *params)
     memcpy(&set->params, params, sizeof(gap_ext_adv_params_t));
     set->state = ADV_SET_STATE_CONFIGURED;
 
-    /* Configure extended advertising parameters via BTSTACK
-     * Note: BTSTACK's extended advertising API may vary - using available APIs */
-    wiced_bt_ble_ext_adv_params_t ext_params;
+    /* Configure extended advertising parameters via BTSTACK 4.x API */
+    wiced_ble_ext_adv_params_t ext_params;
     memset(&ext_params, 0, sizeof(ext_params));
 
+    ext_params.adv_handle = params->adv_handle;
     ext_params.event_properties = params->adv_event_properties;
     ext_params.primary_adv_int_min = params->primary_adv_interval_min;
     ext_params.primary_adv_int_max = params->primary_adv_interval_max;
@@ -465,14 +513,20 @@ int gap_create_ext_adv_set(const gap_ext_adv_params_t *params)
     memcpy(ext_params.peer_addr, params->peer_addr.addr, 6);
     ext_params.adv_filter_policy = (wiced_bt_ble_advert_filter_policy_t)params->filter_policy;
     ext_params.adv_tx_power = params->adv_tx_power;
-    ext_params.primary_phy = params->primary_adv_phy;
+    ext_params.primary_adv_phy = (params->primary_adv_phy == GAP_PHY_1M) ?
+        WICED_BLE_EXT_ADV_PHY_1M : ((params->primary_adv_phy == GAP_PHY_CODED) ?
+        WICED_BLE_EXT_ADV_PHY_LE_CODED : WICED_BLE_EXT_ADV_PHY_1M);
     ext_params.secondary_adv_max_skip = params->secondary_adv_max_skip;
-    ext_params.secondary_phy = params->secondary_adv_phy;
+    ext_params.secondary_adv_phy = (params->secondary_adv_phy == GAP_PHY_1M) ?
+        WICED_BLE_EXT_ADV_PHY_1M : ((params->secondary_adv_phy == GAP_PHY_2M) ?
+        WICED_BLE_EXT_ADV_PHY_2M : WICED_BLE_EXT_ADV_PHY_LE_CODED);
     ext_params.adv_sid = params->adv_sid;
-    ext_params.scan_req_notification_enable = params->scan_req_notify_enable;
+    ext_params.scan_request_not = params->scan_req_notify_enable ?
+        WICED_BLE_EXT_ADV_SCAN_REQ_NOTIFY_ENABLE : WICED_BLE_EXT_ADV_SCAN_REQ_NOTIFY_DISABLE;
+    ext_params.primary_phy_opts = WICED_BLE_EXT_ADV_PHY_OPTIONS_NO_PREFERENCE;
+    ext_params.secondary_phy_opts = WICED_BLE_EXT_ADV_PHY_OPTIONS_NO_PREFERENCE;
 
-    wiced_result_t result = wiced_bt_ble_set_ext_adv_parameters(
-        params->adv_handle, &ext_params);
+    wiced_result_t result = wiced_ble_ext_adv_set_params(params->adv_handle, &ext_params);
     if (result != WICED_BT_SUCCESS) {
         printf("GAP: Failed to set ext adv params: %d\n", result);
         free_adv_set(set);
@@ -501,8 +555,8 @@ int gap_remove_ext_adv_set(uint8_t adv_handle)
         return GAP_ERROR_BUSY;
     }
 
-    /* Remove extended advertising set via BTSTACK */
-    wiced_result_t result = wiced_bt_ble_remove_ext_adv_set(adv_handle);
+    /* Remove extended advertising set via BTSTACK 4.x API */
+    wiced_result_t result = wiced_ble_ext_adv_remove_adv_set(adv_handle);
     if (result != WICED_BT_SUCCESS) {
         printf("GAP: Failed to remove ext adv set %d: %d\n", adv_handle, result);
     }
@@ -568,8 +622,8 @@ int gap_set_ext_adv_data(uint8_t adv_handle, const uint8_t *data, uint16_t len)
     }
     set->adv_data_len = len;
 
-    /* Set extended advertising data via BTSTACK */
-    wiced_result_t result = wiced_bt_ble_set_ext_adv_data(
+    /* Set extended advertising data via BTSTACK 4.x API */
+    wiced_result_t result = wiced_ble_ext_adv_set_adv_data(
         adv_handle,
         len,
         (uint8_t *)data
@@ -608,8 +662,8 @@ int gap_set_ext_scan_rsp_data(uint8_t adv_handle, const uint8_t *data, uint16_t 
     }
     set->scan_rsp_data_len = len;
 
-    /* Set extended scan response data via BTSTACK */
-    wiced_result_t result = wiced_bt_ble_set_ext_scan_rsp_data(
+    /* Set extended scan response data via BTSTACK 4.x API */
+    wiced_result_t result = wiced_ble_ext_adv_set_scan_rsp_data(
         adv_handle,
         len,
         (uint8_t *)data
@@ -639,13 +693,13 @@ int gap_start_ext_advertising(uint8_t adv_handle, uint16_t duration, uint8_t max
         return GAP_ERROR_BUSY;
     }
 
-    /* Enable extended advertising via BTSTACK */
-    wiced_bt_ble_ext_adv_duration_config_t adv_cfg;
+    /* Enable extended advertising via BTSTACK 4.x API */
+    wiced_ble_ext_adv_duration_config_t adv_cfg;
     adv_cfg.adv_handle = adv_handle;
     adv_cfg.adv_duration = duration;
     adv_cfg.max_ext_adv_events = max_events;
 
-    wiced_result_t result = wiced_bt_ble_start_ext_adv(WICED_TRUE, 1, &adv_cfg);
+    wiced_result_t result = wiced_ble_ext_adv_enable(WICED_TRUE, 1, &adv_cfg);
     if (result != WICED_BT_SUCCESS) {
         printf("GAP: Failed to start ext advertising set %d: %d\n", adv_handle, result);
         return GAP_ERROR_INVALID_STATE;
@@ -675,13 +729,13 @@ int gap_stop_ext_advertising(uint8_t adv_handle)
         return GAP_OK;
     }
 
-    /* Disable extended advertising via BTSTACK */
-    wiced_bt_ble_ext_adv_duration_config_t adv_cfg;
+    /* Disable extended advertising via BTSTACK 4.x API */
+    wiced_ble_ext_adv_duration_config_t adv_cfg;
     adv_cfg.adv_handle = adv_handle;
     adv_cfg.adv_duration = 0;
     adv_cfg.max_ext_adv_events = 0;
 
-    wiced_result_t result = wiced_bt_ble_start_ext_adv(WICED_FALSE, 1, &adv_cfg);
+    wiced_result_t result = wiced_ble_ext_adv_enable(WICED_FALSE, 1, &adv_cfg);
     if (result != WICED_BT_SUCCESS) {
         printf("GAP: Failed to stop ext advertising set %d: %d\n", adv_handle, result);
     }
@@ -716,14 +770,14 @@ int gap_set_periodic_adv_params(const gap_periodic_adv_params_t *params)
 
     memcpy(&set->periodic_params, params, sizeof(gap_periodic_adv_params_t));
 
-    /* Set periodic advertising parameters via BTSTACK */
-    wiced_bt_ble_periodic_adv_params_t pa_params;
-    pa_params.adv_handle = params->adv_handle;
+    /* Set periodic advertising parameters via BTSTACK 4.x API */
+    wiced_ble_padv_params_t pa_params;
+    memset(&pa_params, 0, sizeof(pa_params));
     pa_params.periodic_adv_int_min = params->periodic_adv_interval_min;
     pa_params.periodic_adv_int_max = params->periodic_adv_interval_max;
-    pa_params.periodic_adv_properties = params->periodic_adv_properties;
+    pa_params.adv_properties = params->periodic_adv_properties;
 
-    wiced_result_t result = wiced_bt_ble_set_periodic_adv_params(
+    wiced_result_t result = wiced_ble_padv_set_adv_params(
         params->adv_handle, &pa_params);
     if (result != WICED_BT_SUCCESS) {
         printf("GAP: Failed to set periodic adv params for set %d: %d\n",
@@ -765,11 +819,11 @@ int gap_set_periodic_adv_data(uint8_t adv_handle, const uint8_t *data, uint16_t 
     }
     set->periodic_data_len = len;
 
-    /* Set periodic advertising data via BTSTACK
+    /* Set periodic advertising data via BTSTACK 4.x API
      * For Auracast, this contains the BASE (Broadcast Audio Source Endpoint)
      * structure with codec configuration, BIS info, etc.
      */
-    wiced_result_t result = wiced_bt_ble_set_periodic_adv_data(
+    wiced_result_t result = wiced_ble_padv_set_adv_data(
         adv_handle,
         len,
         (uint8_t *)data
@@ -806,8 +860,8 @@ int gap_start_periodic_advertising(uint8_t adv_handle)
         return GAP_ERROR_INVALID_STATE;
     }
 
-    /* Enable periodic advertising via BTSTACK */
-    wiced_result_t result = wiced_bt_ble_start_periodic_adv(adv_handle, WICED_TRUE);
+    /* Enable periodic advertising via BTSTACK 4.x API */
+    wiced_result_t result = wiced_ble_padv_enable_adv(adv_handle, WICED_TRUE);
     if (result != WICED_BT_SUCCESS) {
         printf("GAP: Failed to start periodic advertising set %d: %d\n",
                adv_handle, result);
@@ -837,8 +891,8 @@ int gap_stop_periodic_advertising(uint8_t adv_handle)
         return GAP_OK;
     }
 
-    /* Disable periodic advertising via BTSTACK */
-    wiced_result_t result = wiced_bt_ble_start_periodic_adv(adv_handle, WICED_FALSE);
+    /* Disable periodic advertising via BTSTACK 4.x API */
+    wiced_result_t result = wiced_ble_padv_enable_adv(adv_handle, WICED_FALSE);
     if (result != WICED_BT_SUCCESS) {
         printf("GAP: Failed to stop periodic advertising set %d: %d\n",
                adv_handle, result);
@@ -874,8 +928,9 @@ int gap_periodic_adv_create_sync(uint8_t adv_sid, const gap_address_t *address,
     sync->adv_sid = adv_sid;
     memcpy(&sync->address, address, sizeof(gap_address_t));
 
-    /* Create periodic advertising sync via BTSTACK */
-    wiced_bt_ble_periodic_adv_sync_params_t sync_params;
+    /* Create periodic advertising sync via BTSTACK 4.x API */
+    wiced_ble_padv_sync_params_t sync_params;
+    memset(&sync_params, 0, sizeof(sync_params));
     sync_params.options = 0;
     sync_params.adv_sid = adv_sid;
     sync_params.adv_addr_type = (wiced_bt_ble_address_type_t)address->type;
@@ -884,7 +939,7 @@ int gap_periodic_adv_create_sync(uint8_t adv_sid, const gap_address_t *address,
     sync_params.sync_timeout = sync_timeout;
     sync_params.sync_cte_type = 0;
 
-    wiced_result_t result = wiced_bt_ble_create_periodic_adv_sync(&sync_params);
+    wiced_result_t result = wiced_ble_padv_create_sync(&sync_params);
     if (result != WICED_BT_SUCCESS) {
         printf("GAP: Failed to create periodic sync: %d\n", result);
         sync->in_use = false;
@@ -900,8 +955,8 @@ int gap_periodic_adv_cancel_sync(void)
         return GAP_ERROR_NOT_INITIALIZED;
     }
 
-    /* Cancel pending sync via BTSTACK */
-    wiced_result_t result = wiced_bt_ble_cancel_periodic_adv_sync();
+    /* Cancel pending sync via BTSTACK 4.x API */
+    wiced_result_t result = wiced_ble_padv_cancel_create_sync();
     if (result != WICED_BT_SUCCESS) {
         printf("GAP: Failed to cancel periodic sync: %d\n", result);
         return GAP_ERROR_INVALID_STATE;
@@ -923,8 +978,8 @@ int gap_periodic_adv_terminate_sync(uint16_t sync_handle)
         return GAP_ERROR_NOT_FOUND;
     }
 
-    /* Terminate sync via BTSTACK */
-    wiced_result_t result = wiced_bt_ble_terminate_periodic_adv_sync(sync_handle);
+    /* Terminate sync via BTSTACK 4.x API */
+    wiced_result_t result = wiced_ble_padv_terminate_sync(sync_handle);
     if (result != WICED_BT_SUCCESS) {
         printf("GAP: Failed to terminate periodic sync %d: %d\n", sync_handle, result);
     }
@@ -1031,27 +1086,28 @@ int gap_set_ext_scan_params(const gap_ext_scan_params_t *params)
 
     memcpy(&gap_ctx.ext_scan_params, params, sizeof(gap_ext_scan_params_t));
 
-    /* Configure extended scan parameters via BTSTACK */
-    wiced_bt_ble_ext_scan_params_t ext_params;
+    /* Configure extended scan parameters via BTSTACK 4.x API */
+    wiced_ble_ext_scan_params_t ext_params;
+    memset(&ext_params, 0, sizeof(ext_params));
     ext_params.own_addr_type = (wiced_bt_ble_address_type_t)params->own_addr_type;
     ext_params.scanning_filter_policy = (wiced_bt_ble_scanner_filter_policy_t)params->filter_policy;
     ext_params.scanning_phys = params->scanning_phys;
 
     /* Configure parameters for 1M PHY */
     if (params->scanning_phys & 0x01) {
-        ext_params.scan_params_1m.scan_type = params->phy_1m.scan_type;
-        ext_params.scan_params_1m.scan_interval = params->phy_1m.scan_interval;
-        ext_params.scan_params_1m.scan_window = params->phy_1m.scan_window;
+        ext_params.params_1m_phy.scan_type = params->phy_params[0].scan_type;
+        ext_params.params_1m_phy.scan_interval = params->phy_params[0].scan_interval;
+        ext_params.params_1m_phy.scan_window = params->phy_params[0].scan_window;
     }
 
     /* Configure parameters for Coded PHY */
     if (params->scanning_phys & 0x04) {
-        ext_params.scan_params_coded.scan_type = params->phy_coded.scan_type;
-        ext_params.scan_params_coded.scan_interval = params->phy_coded.scan_interval;
-        ext_params.scan_params_coded.scan_window = params->phy_coded.scan_window;
+        ext_params.params_coded_phy.scan_type = params->phy_params[1].scan_type;
+        ext_params.params_coded_phy.scan_interval = params->phy_params[1].scan_interval;
+        ext_params.params_coded_phy.scan_window = params->phy_params[1].scan_window;
     }
 
-    wiced_result_t result = wiced_bt_ble_set_ext_scan_params(&ext_params);
+    wiced_result_t result = wiced_ble_ext_scan_set_params(&ext_params);
     if (result != WICED_BT_SUCCESS) {
         printf("GAP: Failed to set ext scan params: %d\n", result);
         return GAP_ERROR_INVALID_PARAM;
@@ -1071,9 +1127,10 @@ int gap_start_ext_scanning(gap_scan_dup_filter_t filter_duplicates,
         return GAP_ERROR_BUSY;
     }
 
-    /* Enable extended scanning via BTSTACK */
-    wiced_result_t result = wiced_bt_ble_start_ext_scan(
-        (wiced_bt_ble_ext_scan_filter_duplicate_t)filter_duplicates,
+    /* Enable extended scanning via BTSTACK 4.x API */
+    wiced_result_t result = wiced_ble_ext_scan_enable(
+        WICED_TRUE,
+        (wiced_ble_ext_scan_filter_duplicate_t)filter_duplicates,
         duration,
         period
     );
@@ -1099,8 +1156,13 @@ int gap_stop_ext_scanning(void)
         return GAP_OK;
     }
 
-    /* Disable extended scanning via BTSTACK */
-    wiced_result_t result = wiced_bt_ble_stop_ext_scan();
+    /* Disable extended scanning via BTSTACK 4.x API */
+    wiced_result_t result = wiced_ble_ext_scan_enable(
+        WICED_FALSE,
+        WICED_BLE_EXT_SCAN_FILTER_DUPLICATE_DISABLE,
+        0,
+        0
+    );
     if (result != WICED_BT_SUCCESS) {
         printf("GAP: Failed to stop ext scanning: %d\n", result);
     }
@@ -1491,8 +1553,8 @@ int gap_whitelist_clear(void)
         return GAP_ERROR_NOT_INITIALIZED;
     }
 
-    /* Clear whitelist via BTSTACK */
-    wiced_result_t result = wiced_bt_ble_clear_filter_accept_list();
+    /* Clear filter accept list via BTSTACK 4.x API */
+    wiced_result_t result = wiced_ble_clear_filter_accept_list();
     if (result != WICED_BT_SUCCESS) {
         printf("GAP: Failed to clear whitelist: %d\n", result);
         return GAP_ERROR_INVALID_STATE;
@@ -1511,9 +1573,8 @@ int gap_whitelist_add(const gap_address_t *address)
         return GAP_ERROR_INVALID_PARAM;
     }
 
-    /* Add to whitelist via BTSTACK */
-    wiced_result_t result = wiced_bt_ble_update_filter_accept_list(
-        WICED_TRUE,  /* Add */
+    /* Add to filter accept list via BTSTACK 4.x API */
+    wiced_result_t result = wiced_ble_add_to_filter_accept_list(
         (wiced_bt_ble_address_type_t)address->type,
         (uint8_t *)address->addr
     );
@@ -1535,9 +1596,8 @@ int gap_whitelist_remove(const gap_address_t *address)
         return GAP_ERROR_INVALID_PARAM;
     }
 
-    /* Remove from whitelist via BTSTACK */
-    wiced_result_t result = wiced_bt_ble_update_filter_accept_list(
-        WICED_FALSE,  /* Remove */
+    /* Remove from filter accept list via BTSTACK 4.x API */
+    wiced_result_t result = wiced_ble_remove_from_filter_accept_list(
         (wiced_bt_ble_address_type_t)address->type,
         (uint8_t *)address->addr
     );
