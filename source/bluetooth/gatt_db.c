@@ -1580,19 +1580,26 @@ wiced_bt_gatt_status_t gatt_db_btstack_callback(wiced_bt_gatt_evt_t event,
                     case GATT_REQ_READ:
                     case GATT_REQ_READ_BLOB:
                         {
-                            uint8_t *p_rsp = p_attr_req->data.read_req.p_val;
+                            /* BTSTACK 4.x: Allocate response buffer and send via API */
+                            uint8_t rsp_buf[512];  /* Max ATT MTU */
                             uint16_t len = 0;
                             uint16_t offset = p_attr_req->data.read_req.offset;
 
                             uint8_t result = gatt_db_handle_read_request(
                                 p_attr_req->conn_id,
                                 p_attr_req->data.read_req.handle,
-                                p_rsp, &len, offset
+                                rsp_buf, &len, offset
                             );
 
                             if (result == ATT_ERROR_SUCCESS) {
-                                p_attr_req->data.read_req.p_val_len = &len;
-                                status = WICED_BT_GATT_SUCCESS;
+                                /* BTSTACK 4.x: Send response using new API */
+                                status = wiced_bt_gatt_server_send_read_handle_rsp(
+                                    p_attr_req->conn_id,
+                                    p_attr_req->opcode,
+                                    len,
+                                    rsp_buf,
+                                    NULL
+                                );
                             } else {
                                 status = (wiced_bt_gatt_status_t)result;
                             }

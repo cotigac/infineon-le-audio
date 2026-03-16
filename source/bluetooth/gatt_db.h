@@ -72,11 +72,18 @@ extern "C" {
 #define GATT_UUID_HARDWARE_REVISION             0x2A27
 #define GATT_UUID_FIRMWARE_REVISION             0x2A26
 #define GATT_UUID_SOFTWARE_REVISION             0x2A28
+/* These may be defined in BTSTACK headers, use guards */
+#ifndef GATT_UUID_SYSTEM_ID
 #define GATT_UUID_SYSTEM_ID                     0x2A23
+#endif
+#ifndef GATT_UUID_PNP_ID
 #define GATT_UUID_PNP_ID                        0x2A50
+#endif
 
 /* Battery Service */
+#ifndef GATT_UUID_BATTERY_LEVEL
 #define GATT_UUID_BATTERY_LEVEL                 0x2A19
+#endif
 
 /* PACS */
 #define GATT_UUID_SINK_PAC                      0x2BC9
