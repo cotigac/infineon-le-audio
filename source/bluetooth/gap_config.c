@@ -422,9 +422,9 @@ int gap_start_advertising(void)
     wiced_bt_ble_advert_mode_t mode = BTM_BLE_ADVERT_UNDIRECTED_HIGH;
 
     /* Determine advertising mode based on configured params */
-    if (gap_ctx.legacy_adv_params.adv_type == GAP_ADV_TYPE_NONCONN_IND) {
+    if (gap_ctx.legacy_adv_params.adv_type == GAP_ADV_TYPE_NONCONNECTABLE) {
         mode = BTM_BLE_ADVERT_NONCONN_HIGH;
-    } else if (gap_ctx.legacy_adv_params.adv_type == GAP_ADV_TYPE_SCAN_IND) {
+    } else if (gap_ctx.legacy_adv_params.adv_type == GAP_ADV_TYPE_SCANNABLE_NONCONNECTABLE) {
         mode = BTM_BLE_ADVERT_DISCOVERABLE_HIGH;
     }
 
@@ -504,7 +504,7 @@ int gap_create_ext_adv_set(const gap_ext_adv_params_t *params)
     wiced_ble_ext_adv_params_t ext_params;
     memset(&ext_params, 0, sizeof(ext_params));
 
-    ext_params.adv_handle = params->adv_handle;
+    /* Note: adv_handle is passed separately to wiced_ble_ext_adv_set_params() */
     ext_params.event_properties = params->adv_event_properties;
     ext_params.primary_adv_int_min = params->primary_adv_interval_min;
     ext_params.primary_adv_int_max = params->primary_adv_interval_max;

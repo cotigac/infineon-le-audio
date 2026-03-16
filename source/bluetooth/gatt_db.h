@@ -67,23 +67,14 @@ extern "C" {
 
 /* Device Information Service */
 #define GATT_UUID_MANUFACTURER_NAME             0x2A29
+/* Device Information UUIDs - not defined in BTSTACK */
 #define GATT_UUID_MODEL_NUMBER                  0x2A24
 #define GATT_UUID_SERIAL_NUMBER                 0x2A25
 #define GATT_UUID_HARDWARE_REVISION             0x2A27
 #define GATT_UUID_FIRMWARE_REVISION             0x2A26
 #define GATT_UUID_SOFTWARE_REVISION             0x2A28
-/* These may be defined in BTSTACK headers, use guards */
-#ifndef GATT_UUID_SYSTEM_ID
-#define GATT_UUID_SYSTEM_ID                     0x2A23
-#endif
-#ifndef GATT_UUID_PNP_ID
-#define GATT_UUID_PNP_ID                        0x2A50
-#endif
-
-/* Battery Service */
-#ifndef GATT_UUID_BATTERY_LEVEL
-#define GATT_UUID_BATTERY_LEVEL                 0x2A19
-#endif
+/* Note: GATT_UUID_SYSTEM_ID (0x2A23), GATT_UUID_PNP_ID (0x2A50), and
+ * GATT_UUID_BATTERY_LEVEL (0x2A19) are defined in BTSTACK gattdefs.h */
 
 /* PACS */
 #define GATT_UUID_SINK_PAC                      0x2BC9

@@ -10,15 +10,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+/* Infineon BTSTACK headers for GATT server - include first to get GATT UUIDs */
+#include "wiced_bt_gatt.h"
+#include "wiced_bt_ble.h"
+#include "wiced_memory.h"
+
 #include "gatt_db.h"
 #include "link.h"
 #include <string.h>
 #include <stdio.h>
-
-/* Infineon BTSTACK headers for GATT server */
-#include "wiced_bt_gatt.h"
-#include "wiced_bt_ble.h"
-#include "wiced_memory.h"
 
 /*******************************************************************************
  * Private Definitions
