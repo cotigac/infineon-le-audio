@@ -16,28 +16,16 @@
 /*******************************************************************************
  * Platform Includes
  ******************************************************************************/
-
-/*
- * TODO: Include Infineon BTSTACK headers when integrating
- *
- * #include "wiced_bt_ble.h"
- * #include "wiced_bt_dev.h"
- * #include "wiced_bt_isoc.h"
- */
+/* Infineon BTSTACK headers */
+#include "wiced_bt_ble.h"
+#include "wiced_bt_dev.h"
+#include "wiced_bt_isoc.h"
 
 /* FreeRTOS */
-#ifdef FREERTOS
 #include "FreeRTOS.h"
 #include "task.h"
 #include "semphr.h"
 #include "queue.h"
-#else
-typedef void* SemaphoreHandle_t;
-typedef void* QueueHandle_t;
-#define pdTRUE 1
-#define pdFALSE 0
-#define portMAX_DELAY 0xFFFFFFFF
-#endif
 
 /*******************************************************************************
  * Constants
@@ -155,13 +143,11 @@ static uint32_t get_time_ms(void);
  */
 static uint32_t get_time_ms(void)
 {
-#ifdef FREERTOS
-    return xTaskGetTickCount() * portTICK_PERIOD_MS;
-#else
-    /* Placeholder */
-    static uint32_t fake_time = 0;
-    return fake_time++;
-#endif
+/* FreeRTOS */
+#include "FreeRTOS.h"
+#include "task.h"
+#include "semphr.h"
+#include "queue.h"
 }
 
 /**

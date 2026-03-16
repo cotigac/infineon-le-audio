@@ -16,26 +16,16 @@
  * Platform Includes
  ******************************************************************************/
 
-/*
- * TODO: Include Infineon BTSTACK headers when integrating
- *
- * #include "wiced_bt_isoc.h"
- * #include "wiced_bt_dev.h"
- * #include "hci_control_api.h"
- */
+/* Infineon BTSTACK headers */
+#include "wiced_bt_isoc.h"
+#include "wiced_bt_dev.h"
+#include "wiced_bt_ble.h"
 
 /* FreeRTOS */
-#ifdef FREERTOS
 #include "FreeRTOS.h"
 #include "semphr.h"
 #include "queue.h"
-#else
-typedef void* SemaphoreHandle_t;
-typedef void* QueueHandle_t;
-#define pdTRUE 1
-#define pdFALSE 0
-#define portMAX_DELAY 0xFFFFFFFF
-#endif
+#include "task.h"
 
 /*******************************************************************************
  * HCI Opcodes for Isochronous Channels (BT Core 5.4)
@@ -690,12 +680,11 @@ int hci_isoc_init(void)
 
     memset(&isoc_ctx, 0, sizeof(isoc_ctx));
 
-#ifdef FREERTOS
-    isoc_ctx.cmd_semaphore = xSemaphoreCreateBinary();
-    if (isoc_ctx.cmd_semaphore == NULL) {
-        return HCI_ISOC_ERROR_NO_RESOURCES;
-    }
-#endif
+/* FreeRTOS */
+#include "FreeRTOS.h"
+#include "semphr.h"
+#include "queue.h"
+#include "task.h"
 
     isoc_ctx.initialized = true;
 
@@ -727,11 +716,11 @@ void hci_isoc_deinit(void)
         }
     }
 
-#ifdef FREERTOS
-    if (isoc_ctx.cmd_semaphore != NULL) {
-        vSemaphoreDelete(isoc_ctx.cmd_semaphore);
-    }
-#endif
+/* FreeRTOS */
+#include "FreeRTOS.h"
+#include "semphr.h"
+#include "queue.h"
+#include "task.h"
 
     isoc_ctx.initialized = false;
 }
