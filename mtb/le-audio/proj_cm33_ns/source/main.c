@@ -54,7 +54,6 @@
 #include "midi/midi_usb.h"
 #include "midi/midi_router.h"
 #include "wifi/wifi_bridge.h"
-#include "wifi/wifi_sdio.h"
 #include "le_audio/le_audio_manager.h"
 #include "ipc/audio_ipc.h"
 
@@ -223,17 +222,8 @@ static int init_control_modules(void)
         printf("  BLE MIDI: OK\n");
     }
 
-    /* Initialize SDIO for Wi-Fi (CYW55512) */
-    printf("  SDIO bus...\n");
-    wifi_sdio_config_t sdio_config = WIFI_SDIO_CONFIG_DEFAULT;
-    result = wifi_sdio_init(&sdio_config);
-    if (result != 0) {
-        printf("  WARNING: SDIO init failed: %d\n", result);
-    } else {
-        printf("  SDIO bus: OK\n");
-    }
-
-    /* Initialize Wi-Fi bridge (WHD + packet forwarding) */
+    /* Initialize Wi-Fi bridge (WHD + packet forwarding)
+     * Note: SDIO is initialized internally by WHD via cyhal_sdio_init() */
     printf("  Wi-Fi bridge...\n");
     result = wifi_bridge_init(NULL);
     if (result != 0) {

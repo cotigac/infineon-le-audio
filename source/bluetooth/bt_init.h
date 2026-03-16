@@ -323,6 +323,14 @@ int bt_get_device_address(uint8_t addr[BT_ADDR_SIZE], bool *random);
 int bt_start_advertising(bool connectable, uint16_t interval_ms);
 
 /**
+ * @brief Enter pairing mode (start undirected advertisements)
+ *
+ * Convenience function for button handlers. Equivalent to
+ * bt_start_advertising(true, 0).
+ */
+void bt_enter_pairing(void);
+
+/**
  * @brief Stop advertising
  *
  * @return BT_OK on success, negative error code on failure

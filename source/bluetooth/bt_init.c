@@ -1532,3 +1532,15 @@ uint32_t bt_get_task_priority(void)
 {
     return BT_TASK_PRIORITY;
 }
+
+/**
+ * @brief Enter pairing mode (start undirected advertisements)
+ *
+ * Called by button handler to put device into pairing mode.
+ * Wrapper for bt_start_advertising for compatibility with app_bt/bt.h interface.
+ */
+void bt_enter_pairing(void)
+{
+    printf("BT: Entering pairing mode\n");
+    bt_start_advertising(true, 0);  /* Connectable, default interval */
+}
