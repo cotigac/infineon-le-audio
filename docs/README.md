@@ -186,7 +186,7 @@ Phase 1: Foundation (FreeRTOS + HAL)
 
 #### Phase 1: Foundation ⚡ CRITICAL - START HERE
 
-**Status**: 🔴 Not Started
+**Status**: 🟢 Complete (FreeRTOS scaffolding)
 **Blocking**: All other phases
 **Files**: `main.c`
 
@@ -194,12 +194,12 @@ Without this phase complete, **nothing else works**. FreeRTOS must be running an
 
 | Task | Status | Description |
 |------|--------|-------------|
-| 1.1 Add `cybsp_init()` | [ ] | Initialize board support package (clocks, pins) |
-| 1.2 Uncomment FreeRTOS includes | [ ] | Enable FreeRTOS headers in main.c |
-| 1.3 Create task handles | [ ] | Define xTaskHandle for each task |
-| 1.4 Call `xTaskCreate()` | [ ] | Create Audio, BLE, USB, MIDI, Wi-Fi tasks |
-| 1.5 Call `vTaskStartScheduler()` | [ ] | Start FreeRTOS scheduler |
-| 1.6 Add debug console output | [ ] | Enable printf via UART for debugging |
+| 1.1 Add `cybsp_init()` | [x] | Initialize board support package (clocks, pins) |
+| 1.2 Uncomment FreeRTOS includes | [x] | Enable FreeRTOS headers in main.c |
+| 1.3 Create task handles | [x] | Define xTaskHandle for each task |
+| 1.4 Call `xTaskCreate()` | [x] | Create Audio, BLE, USB, MIDI, Wi-Fi tasks |
+| 1.5 Call `vTaskStartScheduler()` | [x] | Start FreeRTOS scheduler |
+| 1.6 Add debug console output | [x] | Enable printf via UART for debugging |
 
 **Checkpoint**: See "Audio task started", "BLE task started" on console.
 
@@ -207,16 +207,16 @@ Without this phase complete, **nothing else works**. FreeRTOS must be running an
 
 #### Phase 2: I2S Audio Pipeline
 
-**Status**: 🔴 Not Started
+**Status**: 🟡 Scaffolded (code complete, HAL TODOs remain)
 **Depends on**: Phase 1
 **Files**: `i2s_stream.c`, `audio_buffers.c`
 
 | Task | Status | Description |
 |------|--------|-------------|
 | 2.1 Implement `cyhal_i2s_init()` | [ ] | Configure I2S master, 48kHz/16-bit/stereo |
-| 2.2 Configure DMA ring buffers | [ ] | Ping-pong buffers for continuous streaming |
+| 2.2 Configure DMA ring buffers | [x] | Ping-pong buffers for continuous streaming |
 | 2.3 Wire DMA callbacks | [ ] | Handle buffer swap interrupts |
-| 2.4 Implement `i2s_read()`/`i2s_write()` | [ ] | Thread-safe audio data access |
+| 2.4 Implement `i2s_read()`/`i2s_write()` | [x] | Thread-safe audio data access |
 | 2.5 Test audio loopback | [ ] | I2S RX → buffer → I2S TX (no codec) |
 
 **Checkpoint**: Hear audio looped through I2S with external signal generator.
@@ -225,16 +225,16 @@ Without this phase complete, **nothing else works**. FreeRTOS must be running an
 
 #### Phase 3: LC3 Codec Integration
 
-**Status**: 🔴 Not Started
+**Status**: 🟡 Scaffolded (liblc3 wrapper complete, FreeRTOS sync enabled)
 **Depends on**: Phase 2
 **Files**: `lc3_wrapper.c`, `audio_task.c`
 
 | Task | Status | Description |
 |------|--------|-------------|
-| 3.1 Instantiate liblc3 encoder | [ ] | Create `lc3_encoder_t` with proper config |
-| 3.2 Instantiate liblc3 decoder | [ ] | Create `lc3_decoder_t` with proper config |
-| 3.3 Wire `encode_pcm_to_lc3()` | [ ] | Call `lc3_encode()` in audio task |
-| 3.4 Wire `decode_lc3_to_pcm()` | [ ] | Call `lc3_decode()` in audio task |
+| 3.1 Instantiate liblc3 encoder | [x] | Create `lc3_encoder_t` with proper config |
+| 3.2 Instantiate liblc3 decoder | [x] | Create `lc3_decoder_t` with proper config |
+| 3.3 Wire `encode_pcm_to_lc3()` | [x] | Call `lc3_encode()` in audio task |
+| 3.4 Wire `decode_lc3_to_pcm()` | [x] | Call `lc3_decode()` in audio task |
 | 3.5 Add timing measurement | [ ] | Verify <2ms per frame @ 48kHz |
 | 3.6 Test compressed loopback | [ ] | PCM → LC3 encode → LC3 decode → PCM |
 
@@ -244,19 +244,19 @@ Without this phase complete, **nothing else works**. FreeRTOS must be running an
 
 #### Phase 4: Bluetooth HCI
 
-**Status**: 🔴 Not Started
+**Status**: 🟡 Scaffolded (BTSTACK + HCI-UART integration complete)
 **Depends on**: Phase 1
-**Files**: `bt_init.c`, `hci_isoc.c`
+**Files**: `bt_init.c`, `hci_isoc.c`, `bt_platform_config.c`
 
 | Task | Status | Description |
 |------|--------|-------------|
-| 4.1 Initialize UART for HCI | [ ] | 3 Mbps, CTS/RTS flow control |
-| 4.2 Implement HCI command sender | [ ] | Packet framing, sequence numbers |
-| 4.3 Implement HCI event handler | [ ] | Parse responses, dispatch callbacks |
-| 4.4 Implement HCI Reset command | [ ] | First command to CYW55512 |
-| 4.5 Implement Read Local Version | [ ] | Verify controller responds |
-| 4.6 Download CYW55512 firmware | [ ] | Patchram download if needed |
-| 4.7 Configure LE features | [ ] | Enable ISOC, extended advertising |
+| 4.1 Initialize UART for HCI | [x] | 3 Mbps, CTS/RTS flow control (via btstack-integration) |
+| 4.2 Implement HCI command sender | [x] | Packet framing via BTSTACK |
+| 4.3 Implement HCI event handler | [x] | Parse responses via BTSTACK callbacks |
+| 4.4 Implement HCI Reset command | [x] | Via wiced_bt_stack_init() |
+| 4.5 Implement Read Local Version | [x] | Scaffolded in bt_init.c |
+| 4.6 Download CYW55512 firmware | [ ] | Patchram download via btstack-integration |
+| 4.7 Configure LE features | [x] | Enable ISOC, extended advertising (scaffolded) |
 
 **Checkpoint**: See valid HCI events, controller version info on console.
 
@@ -264,18 +264,18 @@ Without this phase complete, **nothing else works**. FreeRTOS must be running an
 
 #### Phase 5: LE Audio Streaming
 
-**Status**: 🔴 Not Started
+**Status**: 🟡 Scaffolded (FreeRTOS sync enabled, BTSTACK wired)
 **Depends on**: Phase 3 + Phase 4
-**Files**: `le_audio_manager.c`, `bap_unicast.c`, `isoc_handler.c`, `pacs.c`
+**Files**: `le_audio_manager.c`, `bap_unicast.c`, `bap_broadcast.c`, `isoc_handler.c`, `pacs.c`
 
 | Task | Status | Description |
 |------|--------|-------------|
-| 5.1 Implement PACS service | [ ] | Publish audio capabilities via GATT |
-| 5.2 Implement ASCS service | [ ] | Audio stream control via GATT |
-| 5.3 Implement CIS creation | [ ] | HCI LE Create CIS command |
-| 5.4 Wire ISOC TX path | [ ] | Audio task → HCI ISOC → radio |
-| 5.5 Wire ISOC RX path | [ ] | Radio → HCI ISOC → audio task |
-| 5.6 Implement BAP state machine | [ ] | Codec config → QoS config → Enable |
+| 5.1 Implement PACS service | [x] | Publish audio capabilities via GATT (scaffolded) |
+| 5.2 Implement ASCS service | [x] | Audio stream control via GATT (scaffolded) |
+| 5.3 Implement CIS creation | [x] | HCI LE Create CIS command (in hci_isoc.c) |
+| 5.4 Wire ISOC TX path | [x] | Audio task → HCI ISOC → radio (scaffolded) |
+| 5.5 Wire ISOC RX path | [x] | Radio → HCI ISOC → audio task (scaffolded) |
+| 5.6 Implement BAP state machine | [x] | Codec config → QoS config → Enable (scaffolded) |
 | 5.7 Test with LE Audio headphones | [ ] | Full-duplex streaming end-to-end |
 
 **Checkpoint**: Full-duplex audio streaming to LE Audio device.
@@ -284,18 +284,18 @@ Without this phase complete, **nothing else works**. FreeRTOS must be running an
 
 #### Phase 6: USB & MIDI
 
-**Status**: 🔴 Not Started
+**Status**: 🟡 Scaffolded (FreeRTOS sync enabled, BTSTACK wired)
 **Depends on**: Phase 1
 **Files**: `midi_usb.c`, `midi_ble_service.c`, `midi_router.c`
 
 | Task | Status | Description |
 |------|--------|-------------|
-| 6.1 Initialize USB device | [ ] | emUSB-Device initialization |
-| 6.2 Register USB descriptors | [ ] | MIDI class, HS endpoints (512 bytes) |
-| 6.3 Implement EP IN callback | [ ] | MIDI TX to host |
-| 6.4 Implement EP OUT callback | [ ] | MIDI RX from host |
-| 6.5 Implement BLE MIDI service | [ ] | GATT MIDI characteristic |
-| 6.6 Implement MIDI router | [ ] | Route between USB ↔ BLE ↔ I2S |
+| 6.1 Initialize USB device | [x] | emUSB-Device initialization (scaffolded) |
+| 6.2 Register USB descriptors | [x] | MIDI class, HS endpoints (512 bytes) |
+| 6.3 Implement EP IN callback | [x] | MIDI TX to host (scaffolded) |
+| 6.4 Implement EP OUT callback | [x] | MIDI RX from host (scaffolded) |
+| 6.5 Implement BLE MIDI service | [x] | GATT MIDI characteristic (scaffolded) |
+| 6.6 Implement MIDI router | [x] | Route between USB ↔ BLE ↔ I2S (FreeRTOS sync enabled) |
 
 **Checkpoint**: MIDI note on/off flows over USB and BLE.
 
@@ -303,7 +303,7 @@ Without this phase complete, **nothing else works**. FreeRTOS must be running an
 
 #### Phase 7: Wi-Fi Bridge
 
-**Status**: 🟡 Scaffolded
+**Status**: 🟡 Scaffolded (FreeRTOS sync enabled, wifi-host-driver submodule added)
 **Depends on**: Phase 6
 **Files**: `wifi_sdio.c`, `wifi_bridge.c`
 
@@ -311,10 +311,10 @@ Without this phase complete, **nothing else works**. FreeRTOS must be running an
 |------|--------|-------------|
 | 7.1 Integrate `cyhal_sdio` | [ ] | Replace TODO stubs with HAL calls |
 | 7.2 Initialize WHD | [ ] | Wi-Fi Host Driver startup |
-| 7.3 Implement SDIO CMD52/CMD53 | [ ] | Single-byte and block transfers |
-| 7.4 Add Wi-Fi task to main.c | [ ] | FreeRTOS task for packet processing |
+| 7.3 Implement SDIO CMD52/CMD53 | [x] | Single-byte and block transfers (scaffolded) |
+| 7.4 Add Wi-Fi task to main.c | [x] | FreeRTOS task for packet processing |
 | 7.5 Wire USB bulk endpoints | [ ] | emUSB-Device bulk IN/OUT |
-| 7.6 Implement packet bridge | [ ] | USB HS ↔ SDIO bidirectional |
+| 7.6 Implement packet bridge | [x] | USB HS ↔ SDIO bidirectional (scaffolded, FreeRTOS sync enabled) |
 | 7.7 Test Wi-Fi association | [ ] | Connect to access point |
 
 **Checkpoint**: Data flows from USB through PSoC to Wi-Fi network.
