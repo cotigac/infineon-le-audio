@@ -172,6 +172,27 @@ void i2s_stream_reset_stats(void);
  */
 bool i2s_stream_is_running(void);
 
+/**
+ * @brief Get the number of samples available to read
+ *
+ * @return Number of samples available in RX buffer
+ */
+uint32_t i2s_stream_rx_available(void);
+
+/**
+ * @brief Get the number of samples that can be written
+ *
+ * @return Number of samples that can be written to TX buffer
+ */
+uint32_t i2s_stream_tx_free(void);
+
+/**
+ * @brief Get current buffer latency in milliseconds
+ *
+ * @return Estimated latency based on buffered samples
+ */
+uint32_t i2s_stream_get_latency_ms(void);
+
 #ifdef __cplusplus
 }
 #endif

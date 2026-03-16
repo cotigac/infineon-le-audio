@@ -20,15 +20,50 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* TODO: Include Infineon PDL/HAL headers when integrating with hardware */
-/* #include "cy_pdl.h" */
-/* #include "cyhal.h" */
-/* #include "cyhal_i2s.h" */
+/* Infineon PDL/HAL headers */
+#include "cy_pdl.h"
+#include "cyhal.h"
+#include "cyhal_i2s.h"
+#include "cybsp.h"
 
-/* TODO: Include FreeRTOS headers */
-/* #include "FreeRTOS.h" */
-/* #include "semphr.h" */
-/* #include "task.h" */
+/* FreeRTOS headers */
+#include "FreeRTOS.h"
+#include "semphr.h"
+#include "task.h"
+
+/*******************************************************************************
+ * I2S Pin Definitions (PSoC Edge E82)
+ *
+ * These pins should match your hardware configuration.
+ * Update based on your board's Device Configurator settings.
+ ******************************************************************************/
+
+/* I2S TX pins (Master mode - PSoC generates clocks) */
+#ifndef I2S_TX_SCK_PIN
+#define I2S_TX_SCK_PIN      CYBSP_I2S_SCK      /* Serial Clock */
+#endif
+#ifndef I2S_TX_WS_PIN
+#define I2S_TX_WS_PIN       CYBSP_I2S_WS       /* Word Select (LRCLK) */
+#endif
+#ifndef I2S_TX_SDO_PIN
+#define I2S_TX_SDO_PIN      CYBSP_I2S_DATA     /* Serial Data Out */
+#endif
+
+/* I2S RX pins (if separate from TX, otherwise use same pins) */
+#ifndef I2S_RX_SCK_PIN
+#define I2S_RX_SCK_PIN      NC                 /* Use TX clock in master mode */
+#endif
+#ifndef I2S_RX_WS_PIN
+#define I2S_RX_WS_PIN       NC                 /* Use TX WS in master mode */
+#endif
+#ifndef I2S_RX_SDI_PIN
+#define I2S_RX_SDI_PIN      CYBSP_I2S_DATA_RX  /* Serial Data In */
+#endif
+
+/* MCLK pin (optional - some codecs need it) */
+#ifndef I2S_MCLK_PIN
+#define I2S_MCLK_PIN        NC                 /* Not connected */
+#endif
 
 /*******************************************************************************
  * Private Definitions
@@ -96,12 +131,12 @@ typedef struct {
     i2s_stream_stats_t stats;
 
     /* Synchronization (FreeRTOS) */
-    /* SemaphoreHandle_t tx_sem; */
-    /* SemaphoreHandle_t rx_sem; */
-    /* SemaphoreHandle_t mutex; */
+    SemaphoreHandle_t tx_sem;
+    SemaphoreHandle_t rx_sem;
+    SemaphoreHandle_t mutex;
 
     /* Hardware handles (Infineon HAL) */
-    /* cyhal_i2s_t i2s_obj; */
+    cyhal_i2s_t i2s_obj;
 
 } i2s_stream_ctx_t;
 
@@ -140,6 +175,7 @@ static void dma_buffer_swap(dma_buffer_t *db);
 
 static void i2s_tx_dma_callback(void);
 static void i2s_rx_dma_callback(void);
+static void i2s_event_handler(void *arg, cyhal_i2s_event_t event);
 static int i2s_hw_init(const i2s_stream_config_t *config);
 static void i2s_hw_deinit(void);
 static int i2s_hw_start(void);
@@ -293,50 +329,52 @@ static void dma_buffer_swap(dma_buffer_t *db)
  ******************************************************************************/
 
 /**
- * @brief Initialize I2S hardware
- *
- * TODO: Implement using Infineon PDL/HAL for PSoC Edge
+ * @brief Initialize I2S hardware using Infineon HAL
  */
 static int i2s_hw_init(const i2s_stream_config_t *config)
 {
-    (void)config;
+    cy_rslt_t result;
 
-    /*
-     * TODO: Initialize I2S peripheral using Infineon HAL
-     *
-     * Example using cyhal_i2s:
-     *
-     * cyhal_i2s_config_t i2s_config = {
-     *     .is_tx_slave = false,
-     *     .is_rx_slave = false,
-     *     .mclk_hz = config->sample_rate * 256,
-     *     .channel_length = 32,
-     *     .word_length = config->bit_depth,
-     *     .sample_rate_hz = config->sample_rate,
-     * };
-     *
-     * cy_rslt_t result = cyhal_i2s_init(&g_i2s_ctx.i2s_obj,
-     *                                    &i2s_config,
-     *                                    I2S_TX_SCK_PIN,
-     *                                    I2S_TX_WS_PIN,
-     *                                    I2S_TX_SDO_PIN,
-     *                                    I2S_RX_SCK_PIN,
-     *                                    I2S_RX_WS_PIN,
-     *                                    I2S_RX_SDI_PIN,
-     *                                    NC,  // MCLK
-     *                                    NULL);
-     *
-     * if (result != CY_RSLT_SUCCESS) {
-     *     return -1;
-     * }
-     *
-     * // Register DMA callbacks
-     * cyhal_i2s_register_callback(&g_i2s_ctx.i2s_obj, i2s_event_handler, NULL);
-     * cyhal_i2s_enable_event(&g_i2s_ctx.i2s_obj,
-     *                        CYHAL_I2S_ASYNC_TX_COMPLETE | CYHAL_I2S_ASYNC_RX_COMPLETE,
-     *                        CYHAL_ISR_PRIORITY_DEFAULT,
-     *                        true);
-     */
+    /* Configure I2S peripheral */
+    cyhal_i2s_config_t i2s_config = {
+        .is_tx_slave = false,           /* PSoC is master - generates clocks */
+        .is_rx_slave = false,
+        .mclk_hz = 0,                   /* No MCLK output (set non-zero if codec needs it) */
+        .channel_length = 32,           /* Bits per channel slot */
+        .word_length = config->bit_depth,
+        .sample_rate_hz = config->sample_rate,
+    };
+
+    /* Initialize I2S with configured pins */
+    result = cyhal_i2s_init(&g_i2s_ctx.i2s_obj,
+                            &i2s_config,
+                            I2S_TX_SCK_PIN,
+                            I2S_TX_WS_PIN,
+                            I2S_TX_SDO_PIN,
+                            I2S_RX_SCK_PIN,
+                            I2S_RX_WS_PIN,
+                            I2S_RX_SDI_PIN,
+                            I2S_MCLK_PIN,
+                            NULL);  /* No clock source - use default */
+
+    if (result != CY_RSLT_SUCCESS) {
+        printf("ERROR: cyhal_i2s_init failed: 0x%lx\n", (unsigned long)result);
+        return -1;
+    }
+
+    /* Register event callback for DMA complete notifications */
+    cyhal_i2s_register_callback(&g_i2s_ctx.i2s_obj, i2s_event_handler, NULL);
+
+    /* Enable TX and RX complete events */
+    cyhal_i2s_enable_event(&g_i2s_ctx.i2s_obj,
+                           (cyhal_i2s_event_t)(CYHAL_I2S_ASYNC_TX_COMPLETE | CYHAL_I2S_ASYNC_RX_COMPLETE),
+                           CYHAL_ISR_PRIORITY_DEFAULT,
+                           true);
+
+    printf("I2S initialized: %lu Hz, %d-bit, %d channel(s)\n",
+           (unsigned long)config->sample_rate,
+           config->bit_depth,
+           config->channels);
 
     return 0;
 }
@@ -346,11 +384,8 @@ static int i2s_hw_init(const i2s_stream_config_t *config)
  */
 static void i2s_hw_deinit(void)
 {
-    /*
-     * TODO: Deinitialize I2S peripheral
-     *
-     * cyhal_i2s_free(&g_i2s_ctx.i2s_obj);
-     */
+    /* Free I2S peripheral resources */
+    cyhal_i2s_free(&g_i2s_ctx.i2s_obj);
 }
 
 /**
@@ -358,30 +393,40 @@ static void i2s_hw_deinit(void)
  */
 static int i2s_hw_start(void)
 {
-    /*
-     * TODO: Start DMA transfers
-     *
-     * // Start TX DMA with first buffer
-     * cy_rslt_t result = cyhal_i2s_write_async(&g_i2s_ctx.i2s_obj,
-     *                                          dma_buffer_get_active(&g_i2s_ctx.tx_dma),
-     *                                          g_i2s_ctx.tx_dma.buffer_size_samples);
-     * if (result != CY_RSLT_SUCCESS) {
-     *     return -1;
-     * }
-     *
-     * // Start RX DMA with first buffer
-     * result = cyhal_i2s_read_async(&g_i2s_ctx.i2s_obj,
-     *                               dma_buffer_get_active(&g_i2s_ctx.rx_dma),
-     *                               g_i2s_ctx.rx_dma.buffer_size_samples);
-     * if (result != CY_RSLT_SUCCESS) {
-     *     return -2;
-     * }
-     *
-     * // Start I2S clock
-     * cyhal_i2s_start_tx(&g_i2s_ctx.i2s_obj);
-     * cyhal_i2s_start_rx(&g_i2s_ctx.i2s_obj);
-     */
+    cy_rslt_t result;
 
+    /* Start TX DMA with first buffer */
+    result = cyhal_i2s_write_async(&g_i2s_ctx.i2s_obj,
+                                   dma_buffer_get_active(&g_i2s_ctx.tx_dma),
+                                   g_i2s_ctx.tx_dma.buffer_size_samples);
+    if (result != CY_RSLT_SUCCESS) {
+        printf("ERROR: cyhal_i2s_write_async failed: 0x%lx\n", (unsigned long)result);
+        return -1;
+    }
+
+    /* Start RX DMA with first buffer */
+    result = cyhal_i2s_read_async(&g_i2s_ctx.i2s_obj,
+                                  dma_buffer_get_active(&g_i2s_ctx.rx_dma),
+                                  g_i2s_ctx.rx_dma.buffer_size_samples);
+    if (result != CY_RSLT_SUCCESS) {
+        printf("ERROR: cyhal_i2s_read_async failed: 0x%lx\n", (unsigned long)result);
+        return -2;
+    }
+
+    /* Start I2S TX and RX */
+    result = cyhal_i2s_start_tx(&g_i2s_ctx.i2s_obj);
+    if (result != CY_RSLT_SUCCESS) {
+        printf("ERROR: cyhal_i2s_start_tx failed: 0x%lx\n", (unsigned long)result);
+        return -3;
+    }
+
+    result = cyhal_i2s_start_rx(&g_i2s_ctx.i2s_obj);
+    if (result != CY_RSLT_SUCCESS) {
+        printf("ERROR: cyhal_i2s_start_rx failed: 0x%lx\n", (unsigned long)result);
+        return -4;
+    }
+
+    printf("I2S streaming started\n");
     return 0;
 }
 
@@ -390,15 +435,37 @@ static int i2s_hw_start(void)
  */
 static int i2s_hw_stop(void)
 {
-    /*
-     * TODO: Stop DMA transfers and I2S clock
-     *
-     * cyhal_i2s_stop_tx(&g_i2s_ctx.i2s_obj);
-     * cyhal_i2s_stop_rx(&g_i2s_ctx.i2s_obj);
-     * cyhal_i2s_abort_async(&g_i2s_ctx.i2s_obj);
-     */
+    /* Stop I2S TX and RX */
+    cyhal_i2s_stop_tx(&g_i2s_ctx.i2s_obj);
+    cyhal_i2s_stop_rx(&g_i2s_ctx.i2s_obj);
 
+    /* Abort any pending async transfers */
+    cyhal_i2s_abort_async(&g_i2s_ctx.i2s_obj);
+
+    printf("I2S streaming stopped\n");
     return 0;
+}
+
+/*******************************************************************************
+ * HAL Event Handler (called from ISR context)
+ ******************************************************************************/
+
+/**
+ * @brief I2S HAL event handler
+ *
+ * Called by the HAL when I2S events occur (TX/RX complete, errors).
+ */
+static void i2s_event_handler(void *arg, cyhal_i2s_event_t event)
+{
+    (void)arg;
+
+    if (event & CYHAL_I2S_ASYNC_TX_COMPLETE) {
+        i2s_tx_dma_callback();
+    }
+
+    if (event & CYHAL_I2S_ASYNC_RX_COMPLETE) {
+        i2s_rx_dma_callback();
+    }
 }
 
 /*******************************************************************************
@@ -448,18 +515,20 @@ static void i2s_tx_dma_callback(void)
     /* Update statistics */
     g_i2s_ctx.stats.frames_transferred++;
 
-    /*
-     * TODO: Start next DMA transfer
-     *
-     * cyhal_i2s_write_async(&g_i2s_ctx.i2s_obj,
-     *                       dma_buffer_get_active(&g_i2s_ctx.tx_dma),
-     *                       g_i2s_ctx.tx_dma.buffer_size_samples);
-     */
+    /* Start next DMA transfer with the now-active buffer */
+    cy_rslt_t result = cyhal_i2s_write_async(&g_i2s_ctx.i2s_obj,
+                                              dma_buffer_get_active(&g_i2s_ctx.tx_dma),
+                                              g_i2s_ctx.tx_dma.buffer_size_samples);
+    if (result != CY_RSLT_SUCCESS) {
+        g_i2s_ctx.stats.dma_errors++;
+    }
 
-    /* TODO: Signal semaphore for blocking write */
-    /* BaseType_t xHigherPriorityTaskWoken = pdFALSE; */
-    /* xSemaphoreGiveFromISR(g_i2s_ctx.tx_sem, &xHigherPriorityTaskWoken); */
-    /* portYIELD_FROM_ISR(xHigherPriorityTaskWoken); */
+    /* Signal semaphore for blocking write (notify that space is available) */
+    if (g_i2s_ctx.tx_sem != NULL) {
+        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+        xSemaphoreGiveFromISR(g_i2s_ctx.tx_sem, &xHigherPriorityTaskWoken);
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
 }
 
 /**
@@ -503,18 +572,20 @@ static void i2s_rx_dma_callback(void)
     /* Update statistics */
     g_i2s_ctx.stats.frames_transferred++;
 
-    /*
-     * TODO: Start next DMA transfer
-     *
-     * cyhal_i2s_read_async(&g_i2s_ctx.i2s_obj,
-     *                      dma_buffer_get_active(&g_i2s_ctx.rx_dma),
-     *                      g_i2s_ctx.rx_dma.buffer_size_samples);
-     */
+    /* Start next DMA transfer with the now-active buffer */
+    cy_rslt_t result = cyhal_i2s_read_async(&g_i2s_ctx.i2s_obj,
+                                             dma_buffer_get_active(&g_i2s_ctx.rx_dma),
+                                             g_i2s_ctx.rx_dma.buffer_size_samples);
+    if (result != CY_RSLT_SUCCESS) {
+        g_i2s_ctx.stats.dma_errors++;
+    }
 
-    /* TODO: Signal semaphore for blocking read */
-    /* BaseType_t xHigherPriorityTaskWoken = pdFALSE; */
-    /* xSemaphoreGiveFromISR(g_i2s_ctx.rx_sem, &xHigherPriorityTaskWoken); */
-    /* portYIELD_FROM_ISR(xHigherPriorityTaskWoken); */
+    /* Signal semaphore for blocking read (notify that data is available) */
+    if (g_i2s_ctx.rx_sem != NULL) {
+        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+        xSemaphoreGiveFromISR(g_i2s_ctx.rx_sem, &xHigherPriorityTaskWoken);
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
 }
 
 /*******************************************************************************
@@ -580,18 +651,25 @@ int i2s_stream_init(const i2s_stream_config_t *config)
         return -8;
     }
 
-    /*
-     * TODO: Create FreeRTOS synchronization primitives
-     *
-     * g_i2s_ctx.tx_sem = xSemaphoreCreateBinary();
-     * g_i2s_ctx.rx_sem = xSemaphoreCreateBinary();
-     * g_i2s_ctx.mutex = xSemaphoreCreateMutex();
-     *
-     * if (g_i2s_ctx.tx_sem == NULL || g_i2s_ctx.rx_sem == NULL ||
-     *     g_i2s_ctx.mutex == NULL) {
-     *     return -9;
-     * }
-     */
+    /* Create FreeRTOS synchronization primitives */
+    g_i2s_ctx.tx_sem = xSemaphoreCreateBinary();
+    g_i2s_ctx.rx_sem = xSemaphoreCreateBinary();
+    g_i2s_ctx.mutex = xSemaphoreCreateMutex();
+
+    if (g_i2s_ctx.tx_sem == NULL || g_i2s_ctx.rx_sem == NULL ||
+        g_i2s_ctx.mutex == NULL) {
+        /* Clean up any successfully created semaphores */
+        if (g_i2s_ctx.tx_sem != NULL) {
+            vSemaphoreDelete(g_i2s_ctx.tx_sem);
+        }
+        if (g_i2s_ctx.rx_sem != NULL) {
+            vSemaphoreDelete(g_i2s_ctx.rx_sem);
+        }
+        if (g_i2s_ctx.mutex != NULL) {
+            vSemaphoreDelete(g_i2s_ctx.mutex);
+        }
+        return -9;
+    }
 
     /* Initialize hardware */
     result = i2s_hw_init(config);
@@ -618,19 +696,19 @@ void i2s_stream_deinit(void)
     /* Deinitialize hardware */
     i2s_hw_deinit();
 
-    /*
-     * TODO: Delete FreeRTOS synchronization primitives
-     *
-     * if (g_i2s_ctx.tx_sem != NULL) {
-     *     vSemaphoreDelete(g_i2s_ctx.tx_sem);
-     * }
-     * if (g_i2s_ctx.rx_sem != NULL) {
-     *     vSemaphoreDelete(g_i2s_ctx.rx_sem);
-     * }
-     * if (g_i2s_ctx.mutex != NULL) {
-     *     vSemaphoreDelete(g_i2s_ctx.mutex);
-     * }
-     */
+    /* Delete FreeRTOS synchronization primitives */
+    if (g_i2s_ctx.tx_sem != NULL) {
+        vSemaphoreDelete(g_i2s_ctx.tx_sem);
+        g_i2s_ctx.tx_sem = NULL;
+    }
+    if (g_i2s_ctx.rx_sem != NULL) {
+        vSemaphoreDelete(g_i2s_ctx.rx_sem);
+        g_i2s_ctx.rx_sem = NULL;
+    }
+    if (g_i2s_ctx.mutex != NULL) {
+        vSemaphoreDelete(g_i2s_ctx.mutex);
+        g_i2s_ctx.mutex = NULL;
+    }
 
     g_i2s_ctx.initialized = false;
 }
@@ -715,39 +793,44 @@ int i2s_stream_read(int16_t *buffer, uint16_t sample_count, uint32_t timeout_ms)
         return -2;
     }
 
-    (void)timeout_ms;  /* TODO: Implement timeout with FreeRTOS semaphore */
+    /* Convert timeout to ticks (0 means non-blocking, portMAX_DELAY for infinite) */
+    TickType_t ticks;
+    if (timeout_ms == 0) {
+        ticks = 0;
+    } else if (timeout_ms == UINT32_MAX) {
+        ticks = portMAX_DELAY;
+    } else {
+        ticks = pdMS_TO_TICKS(timeout_ms);
+    }
 
-    /*
-     * TODO: Implement blocking read with timeout
-     *
-     * TickType_t ticks = (timeout_ms == 0) ? 0 : pdMS_TO_TICKS(timeout_ms);
-     * TickType_t start_ticks = xTaskGetTickCount();
-     *
-     * while (samples_read < sample_count) {
-     *     // Try to read available samples
-     *     remaining = sample_count - samples_read;
-     *     samples_read += ring_buffer_read(&g_i2s_ctx.rx_ring,
-     *                                      &buffer[samples_read],
-     *                                      remaining);
-     *
-     *     if (samples_read >= sample_count) {
-     *         break;
-     *     }
-     *
-     *     // Wait for more samples
-     *     TickType_t elapsed = xTaskGetTickCount() - start_ticks;
-     *     if (elapsed >= ticks && ticks != portMAX_DELAY) {
-     *         break;  // Timeout
-     *     }
-     *
-     *     TickType_t remaining_ticks = ticks - elapsed;
-     *     xSemaphoreTake(g_i2s_ctx.rx_sem, remaining_ticks);
-     * }
-     */
+    TickType_t start_ticks = xTaskGetTickCount();
 
-    /* Non-blocking read for now */
-    remaining = sample_count;
-    samples_read = ring_buffer_read(&g_i2s_ctx.rx_ring, buffer, remaining);
+    while (samples_read < sample_count) {
+        /* Try to read available samples */
+        remaining = sample_count - samples_read;
+        samples_read += ring_buffer_read(&g_i2s_ctx.rx_ring,
+                                         &buffer[samples_read],
+                                         remaining);
+
+        if (samples_read >= sample_count) {
+            break;
+        }
+
+        /* Non-blocking case: return immediately with what we have */
+        if (ticks == 0) {
+            break;
+        }
+
+        /* Check for timeout */
+        TickType_t elapsed = xTaskGetTickCount() - start_ticks;
+        if (elapsed >= ticks && ticks != portMAX_DELAY) {
+            break;  /* Timeout */
+        }
+
+        /* Wait for more samples from RX DMA callback */
+        TickType_t remaining_ticks = (ticks == portMAX_DELAY) ? portMAX_DELAY : (ticks - elapsed);
+        xSemaphoreTake(g_i2s_ctx.rx_sem, remaining_ticks);
+    }
 
     return (int)samples_read;
 }
@@ -765,39 +848,44 @@ int i2s_stream_write(const int16_t *buffer, uint16_t sample_count, uint32_t time
         return -2;
     }
 
-    (void)timeout_ms;  /* TODO: Implement timeout with FreeRTOS semaphore */
+    /* Convert timeout to ticks (0 means non-blocking, portMAX_DELAY for infinite) */
+    TickType_t ticks;
+    if (timeout_ms == 0) {
+        ticks = 0;
+    } else if (timeout_ms == UINT32_MAX) {
+        ticks = portMAX_DELAY;
+    } else {
+        ticks = pdMS_TO_TICKS(timeout_ms);
+    }
 
-    /*
-     * TODO: Implement blocking write with timeout
-     *
-     * TickType_t ticks = (timeout_ms == 0) ? 0 : pdMS_TO_TICKS(timeout_ms);
-     * TickType_t start_ticks = xTaskGetTickCount();
-     *
-     * while (samples_written < sample_count) {
-     *     // Try to write available space
-     *     remaining = sample_count - samples_written;
-     *     samples_written += ring_buffer_write(&g_i2s_ctx.tx_ring,
-     *                                          &buffer[samples_written],
-     *                                          remaining);
-     *
-     *     if (samples_written >= sample_count) {
-     *         break;
-     *     }
-     *
-     *     // Wait for space
-     *     TickType_t elapsed = xTaskGetTickCount() - start_ticks;
-     *     if (elapsed >= ticks && ticks != portMAX_DELAY) {
-     *         break;  // Timeout
-     *     }
-     *
-     *     TickType_t remaining_ticks = ticks - elapsed;
-     *     xSemaphoreTake(g_i2s_ctx.tx_sem, remaining_ticks);
-     * }
-     */
+    TickType_t start_ticks = xTaskGetTickCount();
 
-    /* Non-blocking write for now */
-    remaining = sample_count;
-    samples_written = ring_buffer_write(&g_i2s_ctx.tx_ring, buffer, remaining);
+    while (samples_written < sample_count) {
+        /* Try to write available space */
+        remaining = sample_count - samples_written;
+        samples_written += ring_buffer_write(&g_i2s_ctx.tx_ring,
+                                             &buffer[samples_written],
+                                             remaining);
+
+        if (samples_written >= sample_count) {
+            break;
+        }
+
+        /* Non-blocking case: return immediately with what we wrote */
+        if (ticks == 0) {
+            break;
+        }
+
+        /* Check for timeout */
+        TickType_t elapsed = xTaskGetTickCount() - start_ticks;
+        if (elapsed >= ticks && ticks != portMAX_DELAY) {
+            break;  /* Timeout */
+        }
+
+        /* Wait for space from TX DMA callback */
+        TickType_t remaining_ticks = (ticks == portMAX_DELAY) ? portMAX_DELAY : (ticks - elapsed);
+        xSemaphoreTake(g_i2s_ctx.tx_sem, remaining_ticks);
+    }
 
     return (int)samples_written;
 }
