@@ -415,8 +415,8 @@ set(MIDI_SOURCES
 )
 
 # Wi-Fi module sources
+# Note: SDIO communication uses cyhal_sdio via WHD library, not custom driver
 set(WIFI_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/source/wifi/wifi_sdio.c
     ${CMAKE_CURRENT_SOURCE_DIR}/source/wifi/wifi_bridge.c
 )
 

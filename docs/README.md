@@ -134,8 +134,7 @@ The project has **complete implementation** of all Bluetooth, LE Audio, MIDI, an
 - ✅ **midi_ble_service.c** - BLE MIDI GATT service with notifications
 - ✅ **midi_usb.c** - USB MIDI class with emUSB-Device (TX and RX)
 - ✅ **midi_router.c** - MIDI routing with timestamps using FreeRTOS ticks
-- ✅ **wifi_sdio.c** - SDIO HAL with `cyhal_sdio_*` APIs (CMD52, CMD53, async DMA)
-- ✅ **wifi_bridge.c** - USB-Wi-Fi bridge with WHD and emUSB-Device bulk endpoints
+- ✅ **wifi_bridge.c** - USB-Wi-Fi bridge with WHD (uses cyhal_sdio internally) and emUSB-Device bulk endpoints
 - ✅ LC3 wrapper API (calls to liblc3)
 - ✅ CMakeLists.txt with all dependencies
 - ✅ Library submodules (btstack, btstack-integration, liblc3, wifi-host-driver, emusb-device)
@@ -149,8 +148,7 @@ The project has **complete implementation** of all Bluetooth, LE Audio, MIDI, an
 
 | File | TODOs | Status | Notes |
 |------|-------|--------|-------|
-| `wifi_bridge.c` | 0 | ✅ Complete | WHD + emUSB-Device bulk integration |
-| `wifi_sdio.c` | 0 | ✅ Complete | `cyhal_sdio_*` HAL APIs |
+| `wifi_bridge.c` | 0 | ✅ Complete | WHD (cyhal_sdio) + emUSB-Device bulk |
 | `midi_usb.c` | 0 | ✅ Complete | emUSB-Device MIDI class |
 | `midi_router.c` | 0 | ✅ Complete | FreeRTOS tick timestamps |
 | `audio_task.c` | 0 | ✅ Complete | I2S silence + ISOC TX/RX wiring |
@@ -275,18 +273,16 @@ App Processor → USB HS Bulk → Bridge Queues → SDIO Driver → WHD → CYW5
 
 | Component | File | TODOs | Status |
 |-----------|------|-------|--------|
-| SDIO Driver | `wifi_sdio.c` | 0 | ✅ `cyhal_sdio_*` HAL APIs |
-| WHD Init | `wifi_bridge.c` | 0 | ✅ `whd_init()`, `whd_wifi_on()` |
+| WHD + SDIO | `wifi_bridge.c` | 0 | ✅ WHD uses `cyhal_sdio_*` internally |
 | USB Bulk | `wifi_bridge.c` | 0 | ✅ emUSB-Device bulk endpoints |
 | Bridge Logic | `wifi_bridge.c` | 0 | ✅ WHD packet callbacks |
 
-**SDIO Implementation:**
+**WHD SDIO (internal to wifi-host-driver):**
 ```c
-// wifi_sdio.c - SDIO HAL with cyhal_sdio_* APIs
-cyhal_sdio_init(&sdio_obj, cmd, clk, d0, d1, d2, d3);
-cyhal_sdio_send_cmd(&sdio_obj, CYHAL_SDIO_CMD_IO_RW_DIRECT, arg, &response);
-cyhal_sdio_bulk_transfer(&sdio_obj, direction, addr, data, len, &response);
-cyhal_sdio_register_callback(&sdio_obj, sdio_irq_handler, NULL);
+// WHD library handles SDIO via cyhal_sdio internally
+// No custom SDIO driver needed - WHD abstracts this
+whd_init(&whd_driver, &whd_init_config, &resource_ops, &buffer_ops, &netif_funcs);
+whd_wifi_on(whd_driver, interface);
 ```
 
 **WHD Implementation:**
@@ -393,20 +389,12 @@ USBD_AddEP(USB_DIR_OUT, USB_TRANSFER_TYPE_BULK, 0, buffer, size);
 USBD_BULK_Add(&bulk_init_data);
 ```
 
-#### Gap 4: Wi-Fi SDIO HAL - RESOLVED
+#### Gap 4: Wi-Fi SDIO HAL - RESOLVED (via WHD)
 
-**Status**: Fully implemented with `cyhal_sdio_*` HAL APIs.
+**Status**: Handled internally by WHD library using `cyhal_sdio_*` APIs.
 
-**Implementation:**
-```c
-// wifi_sdio.c
-cyhal_sdio_init(&ctx->sdio_obj, ctx->config.cmd_pin, ctx->config.clk_pin,
-                ctx->config.data_pins[0], ctx->config.data_pins[1],
-                ctx->config.data_pins[2], ctx->config.data_pins[3]);
-cyhal_sdio_send_cmd(&ctx->sdio_obj, CYHAL_SDIO_CMD_IO_RW_DIRECT, arg, &response);
-cyhal_sdio_bulk_transfer(&ctx->sdio_obj, direction, address, data, length, &response);
-cyhal_sdio_register_callback(&ctx->sdio_obj, sdio_irq_handler, NULL);
-```
+**Note:** No custom SDIO driver needed. WHD (Wi-Fi Host Driver) manages SDIO
+communication with CYW55512 internally using the cyhal_sdio interface.
 
 #### Gap 5: Wi-Fi Host Driver (WHD) - RESOLVED
 
@@ -554,10 +542,9 @@ uint16_t midi_usb_rx_available(void);           // Check queue level
 
 | Task | Core | File | Description | Status |
 |------|------|------|-------------|--------|
-| 7.1 | CM33 | `wifi_sdio.c` | `cyhal_sdio_init()` | ✅ Done |
-| 7.2 | CM33 | `wifi_bridge.c` | WHD initialization | ✅ Done |
-| 7.3 | CM33 | `wifi_bridge.c` | USB bulk endpoints | ✅ Done |
-| 7.4 | CM33 | `wifi_bridge.c` | Bidirectional packet bridge | ✅ Done |
+| 7.1 | CM33 | `wifi_bridge.c` | WHD initialization (uses cyhal_sdio internally) | ✅ Done |
+| 7.2 | CM33 | `wifi_bridge.c` | USB bulk endpoints | ✅ Done |
+| 7.3 | CM33 | `wifi_bridge.c` | Bidirectional packet bridge | ✅ Done |
 
 **Checkpoint**: Data flows USB HS → SDIO → Wi-Fi.
 

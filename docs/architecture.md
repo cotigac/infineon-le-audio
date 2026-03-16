@@ -241,7 +241,7 @@ Network data bridged from USB to Wi-Fi for the main controller.
 │ (Network)    │    │ emUSB-Device │    │ FreeRTOS     │    │ cyhal_sdio   │    │ 802.11ax     │
 └──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘
                            │                   │                   │
-                    wifi_bridge.c       wifi_bridge.c       wifi_sdio.c
+                    wifi_bridge.c       wifi_bridge.c       WHD (cyhal_sdio)
 ```
 
 **Implementation Status:**
@@ -366,8 +366,8 @@ The firmware runs FreeRTOS on both cores with separate schedulers:
 │    ├── tx_queue           : USB → SDIO packets                  │
 │    └── rx_queue           : SDIO → USB packets                  │
 │                                                                  │
-│  Wi-Fi SDIO (wifi_sdio.c):                                      │
-│    └── bus_mutex          : Thread-safe SDIO bus access         │
+│  Wi-Fi SDIO (WHD via cyhal_sdio):                               │
+│    └── Managed by WHD library internally                        │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 
@@ -613,8 +613,7 @@ infineon-le-audio/
 │   │   └── midi_router.c/h          # MIDI routing logic
 │   │
 │   ├── wifi/                        # ══════ Built on CM33 ══════
-│   │   ├── wifi_sdio.c/h            # SDIO driver for CYW55512
-│   │   └── wifi_bridge.c/h          # USB-Wi-Fi data bridge
+│   │   └── wifi_bridge.c/h          # USB-Wi-Fi data bridge (uses WHD/cyhal_sdio)
 │   │
 │   └── bluetooth/                   # ══════ Built on CM33 ══════
 │       ├── bt_init.c/h              # BTSTACK initialization
@@ -678,8 +677,7 @@ infineon-le-audio/
 | **CM33** | `midi/midi_ble_service.c` | BLE MIDI GATT service |
 | **CM33** | `midi/midi_usb.c` | USB MIDI class |
 | **CM33** | `midi/midi_router.c` | MIDI routing logic |
-| **CM33** | `wifi/wifi_sdio.c` | SDIO driver for CYW55512 |
-| **CM33** | `wifi/wifi_bridge.c` | USB-Wi-Fi data bridge |
+| **CM33** | `wifi/wifi_bridge.c` | USB-Wi-Fi data bridge (uses WHD/cyhal_sdio) |
 
 ---
 
