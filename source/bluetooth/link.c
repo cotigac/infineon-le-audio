@@ -13,6 +13,11 @@
 #include <string.h>
 #include <stdio.h>
 
+/* BT_TRANSPORT_NONE may not be defined in BTSTACK 4.x */
+#ifndef BT_TRANSPORT_NONE
+#define BT_TRANSPORT_NONE   0
+#endif
+
 /*******************************************************************************
  * Constants
  ******************************************************************************/
