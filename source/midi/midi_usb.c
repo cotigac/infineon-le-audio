@@ -20,10 +20,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* USB Device middleware headers */
-/* Note: Using Infineon USB device middleware */
-/* #include "cy_usb_dev.h" */
-/* #include "cy_usb_dev_audio.h" */
+/* Segger emUSB-Device middleware headers */
+#include "USB.h"
+#include "USB_MIDI.h"
 
 /* FreeRTOS headers */
 #include "FreeRTOS.h"
@@ -119,8 +118,11 @@ typedef struct {
     SemaphoreHandle_t tx_mutex;
     SemaphoreHandle_t rx_mutex;
 
-    /* USB device handle */
-    /* cy_stc_usb_dev_context_t *usb_context; */
+    /* emUSB-Device MIDI handle */
+    USB_MIDI_HANDLE usb_midi_handle;
+
+    /* USB RX state */
+    volatile bool rx_active;
 
 } midi_usb_ctx_t;
 
@@ -535,18 +537,7 @@ static void usb_ep_out_callback(uint8_t *data, uint16_t length)
  */
 static int usb_device_init(void)
 {
-    /*
-     * USB device initialization is handled by cy_usb_dev middleware.
-     * The MIDI class descriptors should be defined in a separate descriptor file.
-     *
-     * For PSoC Edge, the USB device middleware handles:
-     * - USB hardware initialization
-     * - Descriptor parsing and enumeration
-     * - Endpoint management
-     *
-     * The actual Cy_USB_Dev_Init() call should be made during system init.
-     * This module registers as a MIDI class handler.
-     */
+    USB_MIDI_INIT_DATA midi_init_data;
 
     /* Set initial state - waiting for USB cable connection */
     g_midi_usb_ctx.state = MIDI_USB_STATE_DETACHED;
@@ -554,6 +545,29 @@ static int usb_device_init(void)
     /* Clear endpoint buffers */
     memset(g_midi_usb_ctx.ep_in_buffer, 0, MIDI_USB_EP_BUFFER_SIZE);
     memset(g_midi_usb_ctx.ep_out_buffer, 0, MIDI_USB_EP_BUFFER_SIZE);
+
+    /* Initialize USB MIDI class with emUSB-Device */
+    memset(&midi_init_data, 0, sizeof(USB_MIDI_INIT_DATA));
+
+    /* Configure IN endpoint (device to host) */
+    midi_init_data.EPIn = USBD_AddEP(USB_DIR_IN, USB_TRANSFER_TYPE_BULK, 0,
+                                     g_midi_usb_ctx.ep_in_buffer,
+                                     MIDI_USB_EP_BUFFER_SIZE);
+
+    /* Configure OUT endpoint (host to device) */
+    midi_init_data.EPOut = USBD_AddEP(USB_DIR_OUT, USB_TRANSFER_TYPE_BULK, 0,
+                                      g_midi_usb_ctx.ep_out_buffer,
+                                      MIDI_USB_EP_BUFFER_SIZE);
+
+    /* Add MIDI class */
+    g_midi_usb_ctx.usb_midi_handle = USBD_MIDI_Add(&midi_init_data);
+
+    if (g_midi_usb_ctx.usb_midi_handle == 0) {
+        return -1;  /* Failed to add MIDI class */
+    }
+
+    /* Initialize RX state */
+    g_midi_usb_ctx.rx_active = false;
 
     return 0;
 }
@@ -563,14 +577,24 @@ static int usb_device_init(void)
  */
 static int usb_start_rx(void)
 {
-    /*
-     * TODO: Start async receive on OUT endpoint
-     *
-     * Cy_USB_Dev_ReadOutEndpoint(MIDI_USB_EP_OUT,
-     *                            g_midi_usb_ctx.ep_out_buffer,
-     *                            MIDI_USB_EP_BUFFER_SIZE,
-     *                            &usb_context);
-     */
+    int bytes_read;
+
+    if (g_midi_usb_ctx.usb_midi_handle == 0) {
+        return -1;
+    }
+
+    /* Check if data is available */
+    bytes_read = USBD_MIDI_Receive(g_midi_usb_ctx.usb_midi_handle,
+                                   g_midi_usb_ctx.ep_out_buffer,
+                                   MIDI_USB_EP_BUFFER_SIZE,
+                                   0);  /* Non-blocking */
+
+    if (bytes_read > 0) {
+        /* Process received data */
+        usb_ep_out_callback(g_midi_usb_ctx.ep_out_buffer, (uint16_t)bytes_read);
+    }
+
+    g_midi_usb_ctx.rx_active = true;
 
     return 0;
 }
@@ -580,6 +604,8 @@ static int usb_start_rx(void)
  */
 static int usb_send_packet(const uint8_t *data, uint16_t length)
 {
+    int bytes_written;
+
     if (data == NULL || length == 0) {
         return -1;
     }
@@ -588,16 +614,28 @@ static int usb_send_packet(const uint8_t *data, uint16_t length)
         return -2;
     }
 
-    /*
-     * TODO: Send data on IN endpoint
-     *
-     * cy_en_usb_dev_status_t status;
-     * status = Cy_USB_Dev_WriteInEndpoint(MIDI_USB_EP_IN,
-     *                                     data,
-     *                                     length,
-     *                                     &usb_context);
-     * return (status == CY_USB_DEV_SUCCESS) ? 0 : -3;
-     */
+    if (g_midi_usb_ctx.usb_midi_handle == 0) {
+        return -3;
+    }
+
+    /* Send data via emUSB-Device MIDI class */
+    bytes_written = USBD_MIDI_Write(g_midi_usb_ctx.usb_midi_handle,
+                                    data,
+                                    length,
+                                    0);  /* Non-blocking */
+
+    if (bytes_written < 0) {
+        g_midi_usb_ctx.stats.tx_errors++;
+        return -4;
+    }
+
+    if (bytes_written == 0) {
+        /* Endpoint busy, will retry later */
+        return -5;
+    }
+
+    /* Notify completion */
+    usb_ep_in_callback();
 
     return 0;
 }
@@ -658,12 +696,22 @@ void midi_usb_deinit(void)
         return;
     }
 
-    /*
-     * TODO: Disconnect USB device
-     *
-     * Cy_USB_Dev_Connect(false, 0, &usb_context);
-     * Cy_USB_Dev_DeInit(&usb_context);
-     */
+    /* Stop RX */
+    g_midi_usb_ctx.rx_active = false;
+
+    /* Clear queues */
+    g_midi_usb_ctx.tx_head = 0;
+    g_midi_usb_ctx.tx_tail = 0;
+    g_midi_usb_ctx.tx_count = 0;
+    g_midi_usb_ctx.rx_head = 0;
+    g_midi_usb_ctx.rx_tail = 0;
+    g_midi_usb_ctx.rx_count = 0;
+
+    /* Note: The USB MIDI handle is managed by the emUSB-Device stack.
+     * The handle remains valid until USBD_DeInit() is called at system level.
+     * We just reset our local state here. */
+    g_midi_usb_ctx.usb_midi_handle = 0;
+    g_midi_usb_ctx.state = MIDI_USB_STATE_DETACHED;
 
     /* Delete FreeRTOS synchronization */
     if (g_midi_usb_ctx.tx_mutex != NULL) {
@@ -688,9 +736,43 @@ void midi_usb_process(void)
 {
     midi_usb_event_t events[MIDI_USB_MAX_EVENTS_PER_PKT];
     uint8_t count = 0;
+    int bytes_read;
 
     if (!g_midi_usb_ctx.initialized) {
         return;
+    }
+
+    /* Check USB state and update if needed */
+    if (g_midi_usb_ctx.usb_midi_handle != 0) {
+        /* Check if USB is configured (ready for data transfer) */
+        if (USBD_GetState() == USB_STAT_CONFIGURED) {
+            if (g_midi_usb_ctx.state != MIDI_USB_STATE_CONFIGURED) {
+                g_midi_usb_ctx.state = MIDI_USB_STATE_CONFIGURED;
+                notify_event(MIDI_USB_EVENT_CONNECTED);
+            }
+        } else if (USBD_GetState() == USB_STAT_ATTACHED) {
+            if (g_midi_usb_ctx.state == MIDI_USB_STATE_CONFIGURED) {
+                g_midi_usb_ctx.state = MIDI_USB_STATE_ATTACHED;
+                notify_event(MIDI_USB_EVENT_DISCONNECTED);
+            }
+        } else if (USBD_GetState() == USB_STAT_SUSPENDED) {
+            if (g_midi_usb_ctx.state != MIDI_USB_STATE_SUSPENDED) {
+                g_midi_usb_ctx.state = MIDI_USB_STATE_SUSPENDED;
+                notify_event(MIDI_USB_EVENT_SUSPENDED);
+            }
+        }
+    }
+
+    /* Process RX - check for incoming MIDI data */
+    if (g_midi_usb_ctx.state == MIDI_USB_STATE_CONFIGURED &&
+        g_midi_usb_ctx.usb_midi_handle != 0) {
+        bytes_read = USBD_MIDI_Receive(g_midi_usb_ctx.usb_midi_handle,
+                                       g_midi_usb_ctx.ep_out_buffer,
+                                       MIDI_USB_EP_BUFFER_SIZE,
+                                       0);  /* Non-blocking */
+        if (bytes_read > 0) {
+            usb_ep_out_callback(g_midi_usb_ctx.ep_out_buffer, (uint16_t)bytes_read);
+        }
     }
 
     /* Process TX queue - batch events into USB packets */
@@ -709,16 +791,12 @@ void midi_usb_process(void)
             int result = usb_send_packet((uint8_t *)events, count * MIDI_USB_EVENT_SIZE);
             if (result != 0) {
                 g_midi_usb_ctx.tx_busy = false;
-                g_midi_usb_ctx.stats.tx_errors++;
+                if (result != -5) {  /* -5 means endpoint busy, not an error */
+                    g_midi_usb_ctx.stats.tx_errors++;
+                }
             }
         }
     }
-
-    /*
-     * TODO: Process USB device events
-     *
-     * Cy_USB_Dev_Process(&usb_context);
-     */
 }
 
 int midi_usb_send_event(const midi_usb_event_t *event)
