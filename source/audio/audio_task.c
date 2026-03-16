@@ -1090,7 +1090,10 @@ static int process_rx_path(stream_context_t *stream)
             memset(g_audio_task.pcm_tx_buffer, 0,
                    samples_per_frame * config->channels * sizeof(int16_t));
             g_audio_task.stats.rx_overruns++;
-            /* TODO: Write silence to I2S */
+            /* Write silence to I2S to maintain continuous output */
+            i2s_stream_write(g_audio_task.pcm_tx_buffer,
+                            samples_per_frame * config->channels,
+                            0);  /* Non-blocking */
             return AUDIO_TASK_OK;
         }
     }

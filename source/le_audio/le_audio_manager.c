@@ -1435,7 +1435,8 @@ int le_audio_receive_audio(int16_t *pcm_data, uint16_t sample_count, uint32_t ti
     uint16_t samples_per_frame;
     int result;
 
-    (void)timeout_ms;  /* TODO: Implement timeout with FreeRTOS */
+    TickType_t start_tick;
+    TickType_t timeout_ticks;
 
     if (!g_le_audio_ctx.initialized) {
         return -1;
@@ -1463,10 +1464,28 @@ int le_audio_receive_audio(int16_t *pcm_data, uint16_t sample_count, uint32_t ti
         return -5;  /* Buffer too small */
     }
 
-    /* Try to get a frame from the queue */
-    result = frame_queue_pop(&g_le_audio_ctx.rx_queue, &frame);
+    /* Try to get a frame from the queue with timeout */
+    start_tick = xTaskGetTickCount();
+    timeout_ticks = pdMS_TO_TICKS(timeout_ms);
+
+    do {
+        result = frame_queue_pop(&g_le_audio_ctx.rx_queue, &frame);
+        if (result == 0) {
+            break;  /* Got a frame */
+        }
+
+        /* If timeout is 0, don't wait */
+        if (timeout_ms == 0) {
+            return 0;  /* No frames available */
+        }
+
+        /* Wait a bit before retrying */
+        vTaskDelay(1);
+
+    } while ((xTaskGetTickCount() - start_tick) < timeout_ticks);
+
     if (result != 0) {
-        return 0;  /* No frames available */
+        return 0;  /* Timeout - no frames available */
     }
 
     /* Decode LC3 to PCM */
