@@ -8,9 +8,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+/* Include local cyhal_sdio.h which pulls in cy_pdl.h first */
 #include "cyhal_sdio.h"
-#include "cy_pdl.h"
-#include "cy_syslib.h"
 
 #include "FreeRTOS.h"
 #include "semphr.h"
@@ -36,6 +35,9 @@
 /** SDHC instance for WLAN (SDHC0) */
 #define WLAN_SDHC_HW                SDHC0
 #define WLAN_SDHC_IRQ               sdhc_0_interrupt_general_IRQn
+
+/** Source clock for SDHC (100 MHz) */
+#define SDHC_SOURCE_CLK_HZ          100000000UL
 
 /*******************************************************************************
  * Types
@@ -70,6 +72,17 @@ static const cy_stc_sd_host_init_config_t sdhc_config = {
 /*******************************************************************************
  * Private Functions
  ******************************************************************************/
+
+/**
+ * @brief Calculate clock divider for target frequency
+ */
+static uint16_t calculate_clk_div(uint32_t target_hz)
+{
+    if (target_hz == 0 || target_hz >= SDHC_SOURCE_CLK_HZ) {
+        return 1;
+    }
+    return (uint16_t)((SDHC_SOURCE_CLK_HZ + target_hz - 1) / target_hz);
+}
 
 /**
  * @brief SDHC interrupt handler
@@ -154,10 +167,9 @@ static cy_rslt_t send_cmd52(bool write, uint32_t func, uint32_t addr,
 
     /* Get response */
     if (response != NULL) {
-        uint32_t resp = Cy_SD_Host_GetResponse(WLAN_SDHC_HW,
-                                                CY_SD_HOST_RESPONSE_TYPE_R5,
-                                                false);
-        *response = (uint8_t)(resp & 0xFF);
+        uint32_t resp[4] = {0};
+        Cy_SD_Host_GetResponse(WLAN_SDHC_HW, resp, false);
+        *response = (uint8_t)(resp[0] & 0xFF);
     }
 
     return CY_RSLT_SUCCESS;
@@ -278,6 +290,10 @@ cy_rslt_t cyhal_sdio_init(cyhal_sdio_t *obj, cyhal_gpio_t cmd, cyhal_gpio_t clk,
     /* Set default configuration */
     sdio_state.frequency_hz = 400000;  /* Start at 400 kHz for init */
     sdio_state.block_size = SDIO_BLOCK_SIZE;
+
+    /* Set initial clock divider */
+    Cy_SD_Host_SetSdClkDiv(WLAN_SDHC_HW, calculate_clk_div(sdio_state.frequency_hz));
+
     sdio_state.initialized = true;
 
     return CY_RSLT_SUCCESS;
@@ -328,8 +344,7 @@ cy_rslt_t cyhal_sdio_configure(cyhal_sdio_t *obj, const cyhal_sdio_cfg_t *config
     /* Update clock frequency */
     if (config->frequencyhal_hz > 0) {
         sdio_state.frequency_hz = config->frequencyhal_hz;
-        Cy_SD_Host_SetSdClkFrequency(WLAN_SDHC_HW, config->frequencyhal_hz,
-                                      &sdio_state.sd_host_context);
+        Cy_SD_Host_SetSdClkDiv(WLAN_SDHC_HW, calculate_clk_div(config->frequencyhal_hz));
     }
 
     return CY_RSLT_SUCCESS;
@@ -379,7 +394,7 @@ cy_rslt_t cyhal_sdio_send_cmd(const cyhal_sdio_t *obj, cyhal_transfer_t directio
             cmd.enableCrcCheck = true;
             cmd.enableIdxCheck = true;
             cmd.respType = (command == CYHAL_SDIO_CMD_GO_IDLE_STATE) ?
-                           CY_SD_HOST_RESPONSE_LEN_NONE : CY_SD_HOST_RESPONSE_LEN_48;
+                           CY_SD_HOST_RESPONSE_NONE : CY_SD_HOST_RESPONSE_LEN_48;
             cmd.dataPresent = false;
 
             status = Cy_SD_Host_SendCommand(WLAN_SDHC_HW, &cmd);
@@ -388,9 +403,9 @@ cy_rslt_t cyhal_sdio_send_cmd(const cyhal_sdio_t *obj, cyhal_transfer_t directio
             } else {
                 result = wait_transfer_complete(SDIO_TIMEOUT_MS);
                 if (response != NULL && result == CY_RSLT_SUCCESS) {
-                    *response = Cy_SD_Host_GetResponse(WLAN_SDHC_HW,
-                                                       CY_SD_HOST_RESPONSE_TYPE_R1,
-                                                       false);
+                    uint32_t resp[4] = {0};
+                    Cy_SD_Host_GetResponse(WLAN_SDHC_HW, resp, false);
+                    *response = resp[0];
                 }
             }
             break;
@@ -452,7 +467,7 @@ bool cyhal_sdio_is_busy(const cyhal_sdio_t *obj)
 
     /* Check if transfer is in progress */
     uint32_t state = Cy_SD_Host_GetPresentState(WLAN_SDHC_HW);
-    return (state & (CY_SD_HOST_CMD_INHIBIT | CY_SD_HOST_DAT_INHIBIT)) != 0;
+    return (state & (CY_SD_HOST_CMD_INHIBIT | CY_SD_HOST_CMD_CMD_INHIBIT_DAT)) != 0;
 }
 
 cy_rslt_t cyhal_sdio_abort_async(const cyhal_sdio_t *obj)

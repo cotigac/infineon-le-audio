@@ -125,8 +125,8 @@ CY_IGNORE+= \
 # Custom LE Audio include directories
 # NOTE: "." must be first to ensure project's FreeRTOSConfig.h is found
 #       before the template in mtb_shared/freertos/COMPONENT_CM33
-# NOTE: core-lib must come BEFORE WHD External/hal to ensure the full
-#       cy_result.h (with CY_RSLT_CREATE_EX submodule support) is used
+# NOTE: source/wifi has local cyhal_sdio.h that includes cy_pdl.h first,
+#       avoiding cy_result.h conflicts with WHD External/hal
 INCLUDES+= \
     . \
     ../../../source \
@@ -138,10 +138,8 @@ INCLUDES+= \
     ../../../source/ipc \
     ../../../config \
     ../../../libs/liblc3/include \
-    ../../mtb_shared/core-lib/release-v1.7.0/include \
     ../../../libs/wifi-host-driver/WHD/COMPONENT_WIFI6/inc \
     ../../../libs/wifi-host-driver/WHD/COMPONENT_WIFI6/src/include \
-    ../../../libs/wifi-host-driver/External/hal \
     ../../../libs/emusb-device/USBD \
     ../../../libs/emusb-device/USBD/COMPONENT_USBD_BASE/COMPONENT_PSE84/CONFIG_Debug
 
