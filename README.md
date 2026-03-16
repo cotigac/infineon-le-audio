@@ -337,23 +337,24 @@ A successful build produces firmware for all three cores (CM33 Secure, CM33 Non-
 
 **Memory Usage Summary:**
 
-| Core | Region | Used | Available |
-|------|--------|------|-----------|
-| **CM33 Secure** | SRAM (code) | 1.5 KB | 217 KB |
-| **CM33 Secure** | SRAM (data) | 133 KB | 135 KB |
-| **CM33 Non-Secure** | SRAM (code) | 12.8 KB | 413 KB |
-| **CM33 Non-Secure** | SRAM (data) | 258 KB | 262 KB |
-| **CM55** | ITCM (code) | 11.7 KB | 262 KB |
-| **CM55** | DTCM (data) | 3.7 KB | 262 KB |
-| **CM55** | SOCMEM (heap) | 2.8 MB | 2.8 MB |
+| Core | Region | Used | Available | Utilization |
+|------|--------|------|-----------|-------------|
+| **CM33 Secure** | SRAM (code) | 1.5 KB | 212 KB | 1% |
+| **CM33 Secure** | SRAM (data) | 130 KB | 132 KB | 98% |
+| **CM33 Non-Secure** | SRAM (code) | 13.3 KB | 404 KB | 3% |
+| **CM33 Non-Secure** | SRAM (data) | 252 KB | 256 KB | 98% |
+| **CM55** | ITCM (code) | 11.7 KB | 256 KB | 5% |
+| **CM55** | DTCM (data) | 27.2 KB | 256 KB | 11% |
+| **CM55** | SOCMEM (heap) | 2.73 MB | 2.73 MB | 100% |
 
 **Flash Usage (SMIF0MEM1 External QSPI):**
 
-| Image | Size |
-|-------|------|
-| CM33 Secure | 27 KB |
-| CM33 Non-Secure | 273 KB |
-| CM55 | 14 KB |
+| Image | Size | Description |
+|-------|------|-------------|
+| CM33 Secure | 27 KB | Secure services, TrustZone config |
+| CM33 Non-Secure | 295 KB | BLE stack, USB, Wi-Fi, MIDI |
+| CM55 | 136 KB | LC3 codec, I2S streaming, audio DSP |
+| **Total** | **458 KB** | Combined firmware (16 MB available) |
 
 **Output Files (in `mtb/le-audio/`):**
 

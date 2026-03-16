@@ -1,8 +1,8 @@
 /**
  * @file i2s_stream.c
- * @brief I2S Audio Streaming Implementation
+ * @brief I2S Audio Streaming Implementation using TDM PDL Driver
  *
- * This module provides DMA-based I2S audio streaming with ping-pong
+ * This module provides interrupt-driven I2S audio streaming with ping-pong
  * buffering for continuous audio transfer to/from the main controller.
  *
  * Architecture:
@@ -11,20 +11,21 @@
  * - Supports callback notification from ISR context
  * - Thread-safe for FreeRTOS environment
  *
+ * PSoC Edge E84 uses the TDM peripheral for I2S operations.
+ *
  * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "i2s_stream.h"
-#include "../config/lc3_config.h"
+#include "lc3_config.h"
 
 #include <stdlib.h>
 #include <string.h>
 
-/* Infineon PDL/HAL headers */
+/* Infineon PDL headers for TDM/I2S */
 #include "cy_pdl.h"
-#include "cyhal.h"
-#include "cyhal_i2s.h"
-#include "cybsp.h"
+#include "cy_tdm.h"
+#include "cy_sysint.h"
 
 /* FreeRTOS headers */
 #include "FreeRTOS.h"
@@ -32,38 +33,44 @@
 #include "task.h"
 
 /*******************************************************************************
- * I2S Pin Definitions (PSoC Edge E82)
+ * TDM/I2S Configuration (PSoC Edge E84)
  *
- * These pins should match your hardware configuration.
- * Update based on your board's Device Configurator settings.
+ * The TDM peripheral is used for I2S operations.
  ******************************************************************************/
 
-/* I2S TX pins (Master mode - PSoC generates clocks) */
-#ifndef I2S_TX_SCK_PIN
-#define I2S_TX_SCK_PIN      CYBSP_I2S_SCK      /* Serial Clock */
-#endif
-#ifndef I2S_TX_WS_PIN
-#define I2S_TX_WS_PIN       CYBSP_I2S_WS       /* Word Select (LRCLK) */
-#endif
-#ifndef I2S_TX_SDO_PIN
-#define I2S_TX_SDO_PIN      CYBSP_I2S_DATA     /* Serial Data Out */
+/* TDM instance to use - TDM0, TDM_STRUCT[0]
+ * TDM0_TDM_STRUCT0 = TDM_STRUCT for Init/DeInit
+ * TDM0_TDM_STRUCT0_TDM_TX_STRUCT = TX operations
+ * TDM0_TDM_STRUCT0_TDM_RX_STRUCT = RX operations
+ */
+#ifndef I2S_TDM_STRUCT
+#define I2S_TDM_STRUCT          TDM0_TDM_STRUCT0
 #endif
 
-/* I2S RX pins (if separate from TX, otherwise use same pins) */
-#ifndef I2S_RX_SCK_PIN
-#define I2S_RX_SCK_PIN      NC                 /* Use TX clock in master mode */
-#endif
-#ifndef I2S_RX_WS_PIN
-#define I2S_RX_WS_PIN       NC                 /* Use TX WS in master mode */
-#endif
-#ifndef I2S_RX_SDI_PIN
-#define I2S_RX_SDI_PIN      CYBSP_I2S_DATA_RX  /* Serial Data In */
+#ifndef I2S_TDM_TX
+#define I2S_TDM_TX              TDM0_TDM_STRUCT0_TDM_TX_STRUCT
 #endif
 
-/* MCLK pin (optional - some codecs need it) */
-#ifndef I2S_MCLK_PIN
-#define I2S_MCLK_PIN        NC                 /* Not connected */
+#ifndef I2S_TDM_RX
+#define I2S_TDM_RX              TDM0_TDM_STRUCT0_TDM_RX_STRUCT
 #endif
+
+/* TDM interrupt configuration */
+#ifndef I2S_TDM_TX_IRQ
+#define I2S_TDM_TX_IRQ          tdm_0_interrupts_tx_0_IRQn
+#endif
+
+#ifndef I2S_TDM_RX_IRQ
+#define I2S_TDM_RX_IRQ          tdm_0_interrupts_rx_0_IRQn
+#endif
+
+/* Interrupt priorities */
+#define I2S_TX_IRQ_PRIORITY     3
+#define I2S_RX_IRQ_PRIORITY     3
+
+/* FIFO trigger levels */
+#define I2S_TX_FIFO_TRIGGER     64  /* Trigger when FIFO has less than 64 entries */
+#define I2S_RX_FIFO_TRIGGER     64  /* Trigger when FIFO has more than 64 entries */
 
 /*******************************************************************************
  * Private Definitions
@@ -117,6 +124,10 @@ typedef struct {
     dma_buffer_t tx_dma;
     dma_buffer_t rx_dma;
 
+    /* Buffer indices for FIFO operations */
+    volatile uint32_t tx_buffer_index;
+    volatile uint32_t rx_buffer_index;
+
     /* Application ring buffers */
     ring_buffer_t tx_ring;
     ring_buffer_t rx_ring;
@@ -134,9 +145,6 @@ typedef struct {
     SemaphoreHandle_t tx_sem;
     SemaphoreHandle_t rx_sem;
     SemaphoreHandle_t mutex;
-
-    /* Hardware handles (Infineon HAL) */
-    cyhal_i2s_t i2s_obj;
 
 } i2s_stream_ctx_t;
 
@@ -157,6 +165,11 @@ static int16_t g_rx_dma_buffer_1[I2S_MAX_BUFFER_SAMPLES] __attribute__((aligned(
 static int16_t g_tx_ring_buffer[I2S_MAX_BUFFER_SAMPLES * I2S_RING_BUFFER_FRAMES];
 static int16_t g_rx_ring_buffer[I2S_MAX_BUFFER_SAMPLES * I2S_RING_BUFFER_FRAMES];
 
+/** TDM configuration structures */
+static cy_stc_tdm_config_tx_t g_tdm_tx_config;
+static cy_stc_tdm_config_rx_t g_tdm_rx_config;
+static cy_stc_tdm_config_t g_tdm_config;
+
 /*******************************************************************************
  * Private Function Prototypes
  ******************************************************************************/
@@ -173,9 +186,8 @@ static int16_t* dma_buffer_get_active(dma_buffer_t *db);
 static int16_t* dma_buffer_get_inactive(dma_buffer_t *db);
 static void dma_buffer_swap(dma_buffer_t *db);
 
-static void i2s_tx_dma_callback(void);
-static void i2s_rx_dma_callback(void);
-static void i2s_event_handler(void *arg, cyhal_i2s_event_t event);
+static void i2s_tx_isr(void);
+static void i2s_rx_isr(void);
 static int i2s_hw_init(const i2s_stream_config_t *config);
 static void i2s_hw_deinit(void);
 static int i2s_hw_start(void);
@@ -327,189 +339,50 @@ static void dma_buffer_swap(dma_buffer_t *db)
 }
 
 /*******************************************************************************
- * Hardware Abstraction Layer
+ * Hardware Abstraction Layer - TDM PDL Driver
  ******************************************************************************/
 
 /**
- * @brief Initialize I2S hardware using Infineon HAL
- */
-static int i2s_hw_init(const i2s_stream_config_t *config)
-{
-    cy_rslt_t result;
-
-    /* Configure I2S peripheral */
-    cyhal_i2s_config_t i2s_config = {
-        .is_tx_slave = false,           /* PSoC is master - generates clocks */
-        .is_rx_slave = false,
-        .mclk_hz = 0,                   /* No MCLK output (set non-zero if codec needs it) */
-        .channel_length = 32,           /* Bits per channel slot */
-        .word_length = config->bit_depth,
-        .sample_rate_hz = config->sample_rate,
-    };
-
-    /* Initialize I2S with configured pins */
-    result = cyhal_i2s_init(&g_i2s_ctx.i2s_obj,
-                            &i2s_config,
-                            I2S_TX_SCK_PIN,
-                            I2S_TX_WS_PIN,
-                            I2S_TX_SDO_PIN,
-                            I2S_RX_SCK_PIN,
-                            I2S_RX_WS_PIN,
-                            I2S_RX_SDI_PIN,
-                            I2S_MCLK_PIN,
-                            NULL);  /* No clock source - use default */
-
-    if (result != CY_RSLT_SUCCESS) {
-        printf("ERROR: cyhal_i2s_init failed: 0x%lx\n", (unsigned long)result);
-        return -1;
-    }
-
-    /* Register event callback for DMA complete notifications */
-    cyhal_i2s_register_callback(&g_i2s_ctx.i2s_obj, i2s_event_handler, NULL);
-
-    /* Enable TX and RX complete events */
-    cyhal_i2s_enable_event(&g_i2s_ctx.i2s_obj,
-                           (cyhal_i2s_event_t)(CYHAL_I2S_ASYNC_TX_COMPLETE | CYHAL_I2S_ASYNC_RX_COMPLETE),
-                           CYHAL_ISR_PRIORITY_DEFAULT,
-                           true);
-
-    printf("I2S initialized: %lu Hz, %d-bit, %d channel(s)\n",
-           (unsigned long)config->sample_rate,
-           config->bit_depth,
-           config->channels);
-
-    return 0;
-}
-
-/**
- * @brief Deinitialize I2S hardware
- */
-static void i2s_hw_deinit(void)
-{
-    /* Free I2S peripheral resources */
-    cyhal_i2s_free(&g_i2s_ctx.i2s_obj);
-}
-
-/**
- * @brief Start I2S hardware streaming
- */
-static int i2s_hw_start(void)
-{
-    cy_rslt_t result;
-
-    /* Start TX DMA with first buffer */
-    result = cyhal_i2s_write_async(&g_i2s_ctx.i2s_obj,
-                                   dma_buffer_get_active(&g_i2s_ctx.tx_dma),
-                                   g_i2s_ctx.tx_dma.buffer_size_samples);
-    if (result != CY_RSLT_SUCCESS) {
-        printf("ERROR: cyhal_i2s_write_async failed: 0x%lx\n", (unsigned long)result);
-        return -1;
-    }
-
-    /* Start RX DMA with first buffer */
-    result = cyhal_i2s_read_async(&g_i2s_ctx.i2s_obj,
-                                  dma_buffer_get_active(&g_i2s_ctx.rx_dma),
-                                  g_i2s_ctx.rx_dma.buffer_size_samples);
-    if (result != CY_RSLT_SUCCESS) {
-        printf("ERROR: cyhal_i2s_read_async failed: 0x%lx\n", (unsigned long)result);
-        return -2;
-    }
-
-    /* Start I2S TX and RX */
-    result = cyhal_i2s_start_tx(&g_i2s_ctx.i2s_obj);
-    if (result != CY_RSLT_SUCCESS) {
-        printf("ERROR: cyhal_i2s_start_tx failed: 0x%lx\n", (unsigned long)result);
-        return -3;
-    }
-
-    result = cyhal_i2s_start_rx(&g_i2s_ctx.i2s_obj);
-    if (result != CY_RSLT_SUCCESS) {
-        printf("ERROR: cyhal_i2s_start_rx failed: 0x%lx\n", (unsigned long)result);
-        return -4;
-    }
-
-    printf("I2S streaming started\n");
-    return 0;
-}
-
-/**
- * @brief Stop I2S hardware streaming
- */
-static int i2s_hw_stop(void)
-{
-    /* Stop I2S TX and RX */
-    cyhal_i2s_stop_tx(&g_i2s_ctx.i2s_obj);
-    cyhal_i2s_stop_rx(&g_i2s_ctx.i2s_obj);
-
-    /* Abort any pending async transfers */
-    cyhal_i2s_abort_async(&g_i2s_ctx.i2s_obj);
-
-    printf("I2S streaming stopped\n");
-    return 0;
-}
-
-/*******************************************************************************
- * HAL Event Handler (called from ISR context)
- ******************************************************************************/
-
-/**
- * @brief I2S HAL event handler
+ * @brief TX FIFO trigger interrupt handler
  *
- * Called by the HAL when I2S events occur (TX/RX complete, errors).
+ * Called when TX FIFO needs more data.
  */
-static void i2s_event_handler(void *arg, cyhal_i2s_event_t event)
+static void i2s_tx_isr(void)
 {
-    (void)arg;
-
-    if (event & CYHAL_I2S_ASYNC_TX_COMPLETE) {
-        i2s_tx_dma_callback();
-    }
-
-    if (event & CYHAL_I2S_ASYNC_RX_COMPLETE) {
-        i2s_rx_dma_callback();
-    }
-}
-
-/*******************************************************************************
- * DMA Callbacks (called from ISR context)
- ******************************************************************************/
-
-/**
- * @brief TX DMA complete callback
- *
- * Called when a TX DMA buffer has been fully transmitted.
- * Swaps to the next buffer and refills from the ring buffer.
- */
-static void i2s_tx_dma_callback(void)
-{
-    int16_t *inactive_buffer;
+    int16_t *buffer;
     uint32_t samples_read;
+    uint32_t fifo_space;
+    uint32_t i;
 
     if (!g_i2s_ctx.running) {
+        Cy_AudioTDM_ClearTxInterrupt(I2S_TDM_TX, CY_TDM_INTR_TX_FIFO_TRIGGER);
         return;
     }
 
-    /* Swap to the next buffer */
-    dma_buffer_swap(&g_i2s_ctx.tx_dma);
+    /* Get inactive buffer and fill from ring buffer */
+    buffer = dma_buffer_get_inactive(&g_i2s_ctx.tx_dma);
 
-    /* Get the buffer that just finished (now inactive) and refill it */
-    inactive_buffer = dma_buffer_get_inactive(&g_i2s_ctx.tx_dma);
-
-    /* Try to fill from ring buffer */
+    /* Read from ring buffer */
     samples_read = ring_buffer_read(&g_i2s_ctx.tx_ring,
-                                    inactive_buffer,
+                                    buffer,
                                     g_i2s_ctx.tx_dma.buffer_size_samples);
 
-    /* If not enough samples, fill remainder with silence and count underrun */
+    /* If not enough samples, fill remainder with silence */
     if (samples_read < g_i2s_ctx.tx_dma.buffer_size_samples) {
-        memset(&inactive_buffer[samples_read], 0,
+        memset(&buffer[samples_read], 0,
                (g_i2s_ctx.tx_dma.buffer_size_samples - samples_read) * sizeof(int16_t));
         g_i2s_ctx.stats.buffer_underruns++;
     }
 
+    /* Write samples to TX FIFO */
+    fifo_space = 128 - Cy_AudioTDM_GetNumInTxFifo(I2S_TDM_TX);
+    for (i = 0; i < g_i2s_ctx.tx_dma.buffer_size_samples && i < fifo_space; i++) {
+        Cy_AudioTDM_WriteTxData(I2S_TDM_TX, (uint32_t)buffer[i]);
+    }
+
     /* Call user callback if registered */
     if (g_i2s_ctx.tx_callback != NULL) {
-        g_i2s_ctx.tx_callback(inactive_buffer,
+        g_i2s_ctx.tx_callback(buffer,
                               g_i2s_ctx.tx_dma.buffer_size_samples,
                               g_i2s_ctx.tx_callback_user_data);
     }
@@ -517,53 +390,61 @@ static void i2s_tx_dma_callback(void)
     /* Update statistics */
     g_i2s_ctx.stats.frames_transferred++;
 
-    /* Start next DMA transfer with the now-active buffer */
-    cy_rslt_t result = cyhal_i2s_write_async(&g_i2s_ctx.i2s_obj,
-                                              dma_buffer_get_active(&g_i2s_ctx.tx_dma),
-                                              g_i2s_ctx.tx_dma.buffer_size_samples);
-    if (result != CY_RSLT_SUCCESS) {
-        g_i2s_ctx.stats.dma_errors++;
-    }
+    /* Swap buffers */
+    dma_buffer_swap(&g_i2s_ctx.tx_dma);
 
-    /* Signal semaphore for blocking write (notify that space is available) */
+    /* Signal semaphore for blocking write */
     if (g_i2s_ctx.tx_sem != NULL) {
         BaseType_t xHigherPriorityTaskWoken = pdFALSE;
         xSemaphoreGiveFromISR(g_i2s_ctx.tx_sem, &xHigherPriorityTaskWoken);
         portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
     }
+
+    /* Clear interrupt */
+    Cy_AudioTDM_ClearTxInterrupt(I2S_TDM_TX, CY_TDM_INTR_TX_FIFO_TRIGGER);
 }
 
 /**
- * @brief RX DMA complete callback
+ * @brief RX FIFO trigger interrupt handler
  *
- * Called when a RX DMA buffer has been fully received.
- * Swaps to the next buffer and pushes data to the ring buffer.
+ * Called when RX FIFO has data available.
  */
-static void i2s_rx_dma_callback(void)
+static void i2s_rx_isr(void)
 {
-    int16_t *inactive_buffer;
+    int16_t *buffer;
     uint32_t samples_written;
+    uint32_t fifo_level;
+    uint32_t i;
 
     if (!g_i2s_ctx.running) {
+        Cy_AudioTDM_ClearRxInterrupt(I2S_TDM_RX, CY_TDM_INTR_RX_FIFO_TRIGGER);
         return;
     }
 
-    /* Swap to the next buffer */
-    dma_buffer_swap(&g_i2s_ctx.rx_dma);
+    /* Get inactive buffer */
+    buffer = dma_buffer_get_inactive(&g_i2s_ctx.rx_dma);
 
-    /* Get the buffer that just filled (now inactive) */
-    inactive_buffer = dma_buffer_get_inactive(&g_i2s_ctx.rx_dma);
+    /* Read samples from RX FIFO */
+    fifo_level = Cy_AudioTDM_GetNumInRxFifo(I2S_TDM_RX);
+    for (i = 0; i < g_i2s_ctx.rx_dma.buffer_size_samples && i < fifo_level; i++) {
+        buffer[i] = (int16_t)Cy_AudioTDM_ReadRxData(I2S_TDM_RX);
+    }
+
+    /* Fill remainder with zeros if needed */
+    for (; i < g_i2s_ctx.rx_dma.buffer_size_samples; i++) {
+        buffer[i] = 0;
+    }
 
     /* Call user callback if registered */
     if (g_i2s_ctx.rx_callback != NULL) {
-        g_i2s_ctx.rx_callback(inactive_buffer,
+        g_i2s_ctx.rx_callback(buffer,
                               g_i2s_ctx.rx_dma.buffer_size_samples,
                               g_i2s_ctx.rx_callback_user_data);
     }
 
     /* Push to ring buffer */
     samples_written = ring_buffer_write(&g_i2s_ctx.rx_ring,
-                                        inactive_buffer,
+                                        buffer,
                                         g_i2s_ctx.rx_dma.buffer_size_samples);
 
     /* If ring buffer is full, count overrun */
@@ -574,20 +455,177 @@ static void i2s_rx_dma_callback(void)
     /* Update statistics */
     g_i2s_ctx.stats.frames_transferred++;
 
-    /* Start next DMA transfer with the now-active buffer */
-    cy_rslt_t result = cyhal_i2s_read_async(&g_i2s_ctx.i2s_obj,
-                                             dma_buffer_get_active(&g_i2s_ctx.rx_dma),
-                                             g_i2s_ctx.rx_dma.buffer_size_samples);
-    if (result != CY_RSLT_SUCCESS) {
-        g_i2s_ctx.stats.dma_errors++;
-    }
+    /* Swap buffers */
+    dma_buffer_swap(&g_i2s_ctx.rx_dma);
 
-    /* Signal semaphore for blocking read (notify that data is available) */
+    /* Signal semaphore for blocking read */
     if (g_i2s_ctx.rx_sem != NULL) {
         BaseType_t xHigherPriorityTaskWoken = pdFALSE;
         xSemaphoreGiveFromISR(g_i2s_ctx.rx_sem, &xHigherPriorityTaskWoken);
         portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
     }
+
+    /* Clear interrupt */
+    Cy_AudioTDM_ClearRxInterrupt(I2S_TDM_RX, CY_TDM_INTR_RX_FIFO_TRIGGER);
+}
+
+/**
+ * @brief Map word size to TDM enum
+ */
+static cy_en_tdm_ws_t get_tdm_word_size(uint8_t bit_depth)
+{
+    switch (bit_depth) {
+        case 8:  return CY_TDM_SIZE_8;
+        case 10: return CY_TDM_SIZE_10;
+        case 12: return CY_TDM_SIZE_12;
+        case 14: return CY_TDM_SIZE_14;
+        case 16: return CY_TDM_SIZE_16;
+        case 18: return CY_TDM_SIZE_18;
+        case 20: return CY_TDM_SIZE_20;
+        case 24: return CY_TDM_SIZE_24;
+        case 32: return CY_TDM_SIZE_32;
+        default: return CY_TDM_SIZE_16;
+    }
+}
+
+/**
+ * @brief Calculate clock divider for desired sample rate
+ *
+ * For I2S: BCLK = sample_rate * channels * bits_per_channel
+ * Clock divider = source_clock / BCLK
+ */
+static uint16_t calculate_clock_div(uint32_t sample_rate, uint8_t channels, uint8_t bit_depth)
+{
+    /* Assume 48 MHz source clock (typical for audio) */
+    uint32_t source_clk = 48000000;
+    uint32_t bclk = sample_rate * channels * bit_depth;
+    uint16_t div = (uint16_t)(source_clk / bclk);
+
+    /* Ensure even divider for 50/50 duty cycle */
+    if (div & 1) {
+        div++;
+    }
+
+    /* Clamp to valid range */
+    if (div < 2) div = 2;
+    if (div > 256) div = 256;
+
+    return div;
+}
+
+/**
+ * @brief Initialize I2S hardware using TDM PDL driver
+ */
+static int i2s_hw_init(const i2s_stream_config_t *config)
+{
+    cy_en_tdm_status_t result;
+    uint16_t clk_div;
+
+    /* Calculate clock divider */
+    clk_div = calculate_clock_div(config->sample_rate, config->channels, config->bit_depth);
+
+    /* Configure TX */
+    g_tdm_tx_config.enable = true;
+    g_tdm_tx_config.masterMode = CY_TDM_DEVICE_MASTER;
+    g_tdm_tx_config.wordSize = get_tdm_word_size(config->bit_depth);
+    g_tdm_tx_config.format = CY_TDM_LEFT_DELAYED;  /* Standard I2S format */
+    g_tdm_tx_config.clkDiv = clk_div;
+    g_tdm_tx_config.clkSel = CY_TDM_SEL_SRSS_CLK0;
+    g_tdm_tx_config.sckPolarity = CY_TDM_CLK;
+    g_tdm_tx_config.fsyncPolarity = CY_TDM_SIGN;
+    g_tdm_tx_config.fsyncFormat = CY_TDM_CH_PERIOD;
+    g_tdm_tx_config.channelNum = config->channels;
+    g_tdm_tx_config.channelSize = 32;  /* 32-bit channel slots */
+    g_tdm_tx_config.fifoTriggerLevel = I2S_TX_FIFO_TRIGGER;
+    g_tdm_tx_config.chEn = (1U << config->channels) - 1;  /* Enable all channels */
+    g_tdm_tx_config.signalInput = 0;  /* Independent signaling */
+    g_tdm_tx_config.i2sMode = true;   /* I2S mode */
+
+    /* Configure RX (similar to TX) */
+    g_tdm_rx_config.enable = true;
+    g_tdm_rx_config.masterMode = CY_TDM_DEVICE_MASTER;
+    g_tdm_rx_config.wordSize = get_tdm_word_size(config->bit_depth);
+    g_tdm_rx_config.signExtend = CY_SIGN_EXTEND;
+    g_tdm_rx_config.format = CY_TDM_LEFT_DELAYED;
+    g_tdm_rx_config.clkDiv = clk_div;
+    g_tdm_rx_config.clkSel = CY_TDM_SEL_SRSS_CLK0;
+    g_tdm_rx_config.sckPolarity = CY_TDM_CLK;
+    g_tdm_rx_config.fsyncPolarity = CY_TDM_SIGN;
+    g_tdm_rx_config.lateSample = false;
+    g_tdm_rx_config.fsyncFormat = CY_TDM_CH_PERIOD;
+    g_tdm_rx_config.channelNum = config->channels;
+    g_tdm_rx_config.channelSize = 32;
+    g_tdm_rx_config.chEn = (1U << config->channels) - 1;
+    g_tdm_rx_config.fifoTriggerLevel = I2S_RX_FIFO_TRIGGER;
+    g_tdm_rx_config.signalInput = 2;  /* RX uses TX master clocks */
+    g_tdm_rx_config.i2sMode = true;
+
+    /* Combined config */
+    g_tdm_config.tx_config = &g_tdm_tx_config;
+    g_tdm_config.rx_config = &g_tdm_rx_config;
+
+    /* Initialize TDM */
+    result = Cy_AudioTDM_Init(I2S_TDM_STRUCT, &g_tdm_config);
+    if (result != CY_TDM_SUCCESS) {
+        return -1;
+    }
+
+    /* Set up TX interrupt */
+    Cy_AudioTDM_SetTxInterruptMask(I2S_TDM_TX, CY_TDM_INTR_TX_FIFO_TRIGGER);
+
+    /* Set up RX interrupt */
+    Cy_AudioTDM_SetRxInterruptMask(I2S_TDM_RX, CY_TDM_INTR_RX_FIFO_TRIGGER);
+
+    /* Note: Interrupt vectors should be configured in the system startup
+     * or via Device Configurator. The ISR functions i2s_tx_isr and i2s_rx_isr
+     * should be registered as handlers for I2S_TDM_TX_IRQ and I2S_TDM_RX_IRQ */
+
+    return 0;
+}
+
+/**
+ * @brief Deinitialize I2S hardware
+ */
+static void i2s_hw_deinit(void)
+{
+    Cy_AudioTDM_DeInit(I2S_TDM_STRUCT);
+}
+
+/**
+ * @brief Start I2S hardware streaming
+ */
+static int i2s_hw_start(void)
+{
+    /* Enable TX and RX */
+    Cy_AudioTDM_EnableTx(I2S_TDM_TX);
+    Cy_AudioTDM_EnableRx(I2S_TDM_RX);
+
+    /* Pre-fill TX FIFO with silence */
+    for (uint32_t i = 0; i < I2S_TX_FIFO_TRIGGER; i++) {
+        Cy_AudioTDM_WriteTxData(I2S_TDM_TX, 0);
+    }
+
+    /* Activate TX and RX */
+    Cy_AudioTDM_ActivateTx(I2S_TDM_TX);
+    Cy_AudioTDM_ActivateRx(I2S_TDM_RX);
+
+    return 0;
+}
+
+/**
+ * @brief Stop I2S hardware streaming
+ */
+static int i2s_hw_stop(void)
+{
+    /* Deactivate TX and RX */
+    Cy_AudioTDM_DeActivateTx(I2S_TDM_TX);
+    Cy_AudioTDM_DeActivateRx(I2S_TDM_RX);
+
+    /* Disable TX and RX */
+    Cy_AudioTDM_DisableTx(I2S_TDM_TX);
+    Cy_AudioTDM_DisableRx(I2S_TDM_RX);
+
+    return 0;
 }
 
 /*******************************************************************************
@@ -829,7 +867,7 @@ int i2s_stream_read(int16_t *buffer, uint16_t sample_count, uint32_t timeout_ms)
             break;  /* Timeout */
         }
 
-        /* Wait for more samples from RX DMA callback */
+        /* Wait for more samples from RX ISR */
         TickType_t remaining_ticks = (ticks == portMAX_DELAY) ? portMAX_DELAY : (ticks - elapsed);
         xSemaphoreTake(g_i2s_ctx.rx_sem, remaining_ticks);
     }
@@ -884,7 +922,7 @@ int i2s_stream_write(const int16_t *buffer, uint16_t sample_count, uint32_t time
             break;  /* Timeout */
         }
 
-        /* Wait for space from TX DMA callback */
+        /* Wait for space from TX ISR */
         TickType_t remaining_ticks = (ticks == portMAX_DELAY) ? portMAX_DELAY : (ticks - elapsed);
         xSemaphoreTake(g_i2s_ctx.tx_sem, remaining_ticks);
     }
@@ -959,4 +997,29 @@ uint32_t i2s_stream_get_latency_ms(void)
 
     /* Latency in ms = samples / sample_rate * 1000 */
     return (buffered_samples * 1000) / sample_rate;
+}
+
+/*******************************************************************************
+ * ISR Registration (weak symbols for user override)
+ ******************************************************************************/
+
+/**
+ * @brief TDM TX interrupt handler wrapper
+ *
+ * This function should be registered as the interrupt handler for I2S_TDM_TX_IRQ.
+ * You can do this via Device Configurator or manually in startup code.
+ */
+void TDM_0_interrupts_tx_0_IRQHandler(void)
+{
+    i2s_tx_isr();
+}
+
+/**
+ * @brief TDM RX interrupt handler wrapper
+ *
+ * This function should be registered as the interrupt handler for I2S_TDM_RX_IRQ.
+ */
+void TDM_0_interrupts_rx_0_IRQHandler(void)
+{
+    i2s_rx_isr();
 }

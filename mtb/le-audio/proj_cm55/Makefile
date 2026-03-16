@@ -77,15 +77,33 @@ CY_IGNORE+=main_example.c
 # CM55 Audio DSP Sources
 # These leverage the Cortex-M55 Helium (MVE) for efficient DSP operations
 #
-# NOTE: The following files are NOT included because main.c implements
-#       its own audio processing directly using IPC for CM33 communication:
-#   - audio_task.c (main.c has its own task)
-#   - i2s_stream.c (uses old cyhal_i2s HAL not available on PSoC Edge)
+# NOTE: audio_task.c is NOT included because main.c implements its own
+#       audio processing directly using IPC for CM33 communication.
+#
+# i2s_stream.c has been ported to use the TDM PDL driver (cy_tdm.h)
+# instead of the old cyhal_i2s HAL which is not available on PSoC Edge.
 #
 SOURCES+= \
     ../../../source/audio/audio_buffers.c \
+    ../../../source/audio/i2s_stream.c \
     ../../../source/audio/lc3_wrapper.c \
     ../../../source/ipc/audio_ipc.c
+
+# LC3 Codec Library Sources (liblc3)
+# Open-source LC3 codec implementation for Bluetooth LE Audio
+SOURCES+= \
+    ../../../libs/liblc3/src/attdet.c \
+    ../../../libs/liblc3/src/bits.c \
+    ../../../libs/liblc3/src/bwdet.c \
+    ../../../libs/liblc3/src/energy.c \
+    ../../../libs/liblc3/src/lc3.c \
+    ../../../libs/liblc3/src/ltpf.c \
+    ../../../libs/liblc3/src/mdct.c \
+    ../../../libs/liblc3/src/plc.c \
+    ../../../libs/liblc3/src/sns.c \
+    ../../../libs/liblc3/src/spec.c \
+    ../../../libs/liblc3/src/tables.c \
+    ../../../libs/liblc3/src/tns.c
 
 # Like SOURCES, but for include directories. Value should be paths to
 # directories (without a leading -I).
@@ -99,7 +117,8 @@ INCLUDES+= \
     ../../../source/audio \
     ../../../source/ipc \
     ../../../config \
-    ../../../libs/liblc3/include
+    ../../../libs/liblc3/include \
+    ../../../libs/liblc3/src
 
 # Add additional defines to the build process (without a leading -D).
 DEFINES+=CY_RETARGET_IO_CONVERT_LF_TO_CRLF
