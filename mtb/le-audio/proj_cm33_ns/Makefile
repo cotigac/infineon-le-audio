@@ -55,7 +55,15 @@ DEFINES+=CYBSP_BT_PLATFORM_CFG_BAUD_FEATURE=3000000
 # ... then code in directories named COMPONENT_foo and COMPONENT_bar will be
 # added to the build
 #
-COMPONENTS+=FREERTOS RTOS_AWARE WICED_BLE WIFI6 WIFI_INTERFACE_SDIO USBD_BASE 
+# Components:
+# - FREERTOS: FreeRTOS RTOS
+# - RTOS_AWARE: Enable RTOS-aware debugging
+# - WICED_BLE: WICED Bluetooth LE stack
+# - WIFI6: Wi-Fi 6 support (WHD)
+# - WIFI_INTERFACE_SDIO: SDIO interface for Wi-Fi
+# - USBD_BASE: USB Device base functionality
+# - 55500, SM: CYW55500 firmware (compatible with CYW55512)
+COMPONENTS+=FREERTOS RTOS_AWARE WICED_BLE WIFI6 WIFI_INTERFACE_SDIO USBD_BASE 55500 SM 
 
 # Like COMPONENTS, but disable optional code that was enabled by default.
 DISABLE_COMPONENTS=
@@ -108,10 +116,49 @@ SOURCES+= \
     ../../../source/midi/midi_ble_service.c \
     ../../../source/midi/midi_router.c \
     ../../../source/midi/midi_usb.c \
+    ../../../source/ipc/audio_ipc.c \
+    ../../../libs/emusb-device/OS/usbd_os_abs_rtos.c
+
+# Wi-Fi bridge sources (our integration layer)
+SOURCES+= \
     ../../../source/wifi/wifi_bridge.c \
     ../../../source/wifi/whd_buffer_impl.c \
-    ../../../source/wifi/cyhal_sdio.c \
-    ../../../source/ipc/audio_ipc.c
+    ../../../source/wifi/cyhal_sdio.c
+
+# WHD (Wi-Fi Host Driver) sources for CYW55512 SDIO interface
+WHD_SRC_PATH=../../../libs/wifi-host-driver/WHD/COMPONENT_WIFI6/src
+SOURCES+= \
+    $(WHD_SRC_PATH)/whd_ap.c \
+    $(WHD_SRC_PATH)/whd_buffer_api.c \
+    $(WHD_SRC_PATH)/whd_cdc_bdc.c \
+    $(WHD_SRC_PATH)/whd_chip.c \
+    $(WHD_SRC_PATH)/whd_chip_constants.c \
+    $(WHD_SRC_PATH)/whd_clm.c \
+    $(WHD_SRC_PATH)/whd_commonring.c \
+    $(WHD_SRC_PATH)/whd_debug.c \
+    $(WHD_SRC_PATH)/whd_events.c \
+    $(WHD_SRC_PATH)/whd_flowring.c \
+    $(WHD_SRC_PATH)/whd_hal_port.c \
+    $(WHD_SRC_PATH)/whd_logging.c \
+    $(WHD_SRC_PATH)/whd_management.c \
+    $(WHD_SRC_PATH)/whd_msgbuf_txrx.c \
+    $(WHD_SRC_PATH)/whd_network_if.c \
+    $(WHD_SRC_PATH)/whd_proto.c \
+    $(WHD_SRC_PATH)/whd_resource_if.c \
+    $(WHD_SRC_PATH)/whd_ring.c \
+    $(WHD_SRC_PATH)/whd_sdpcm.c \
+    $(WHD_SRC_PATH)/whd_thread.c \
+    $(WHD_SRC_PATH)/whd_utils.c \
+    $(WHD_SRC_PATH)/whd_wifi.c \
+    $(WHD_SRC_PATH)/whd_wifi_api.c \
+    $(WHD_SRC_PATH)/whd_wifi_p2p.c \
+    $(WHD_SRC_PATH)/bus_protocols/whd_bus.c \
+    $(WHD_SRC_PATH)/bus_protocols/whd_bus_common.c \
+    $(WHD_SRC_PATH)/bus_protocols/whd_bus_sdio_protocol.c
+
+# NOTE: WHD resource implementation (whd_resources.c) is NOT included manually.
+# The ModusToolbox component system (COMPONENT_55500, COMPONENT_SM) handles
+# firmware/NVRAM/CLM resource files and their macros (FW_IMAGE_NAME, etc.)
 
 # Exclude app_bt files since we're using our refactored source/bluetooth/ files
 CY_IGNORE+= \
@@ -137,9 +184,10 @@ INCLUDES+= \
     ../../../source/wifi \
     ../../../source/ipc \
     ../../../config \
-    ../../../libs/liblc3/include \
+    ../../../libs/wifi-host-driver \
     ../../../libs/wifi-host-driver/WHD/COMPONENT_WIFI6/inc \
     ../../../libs/wifi-host-driver/WHD/COMPONENT_WIFI6/src/include \
+    ../../../libs/wifi-host-driver/WHD/COMPONENT_WIFI6/src/bus_protocols \
     ../../../libs/emusb-device/USBD \
     ../../../libs/emusb-device/USBD/COMPONENT_PSE84 \
     ../../../libs/emusb-device/USBD/COMPONENT_USBD_BASE/COMPONENT_PSE84/CONFIG_$(CONFIG)
