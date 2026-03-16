@@ -110,7 +110,8 @@ SOURCES+= \
     ../../../source/midi/midi_usb.c \
     ../../../source/wifi/wifi_bridge.c \
     ../../../source/wifi/wifi_sdio.c \
-    ../../../source/ipc/audio_ipc.c
+    ../../../source/ipc/audio_ipc.c \
+    ../../../libs/wifi-host-driver/External/hal/cyhal_sdio.c
 
 # Exclude app_bt files since we're using our refactored source/bluetooth/ files
 CY_IGNORE+= \
@@ -137,6 +138,7 @@ INCLUDES+= \
     ../../../libs/liblc3/include \
     ../../../libs/wifi-host-driver/WHD/COMPONENT_WIFI6/inc \
     ../../../libs/wifi-host-driver/WHD/COMPONENT_WIFI6/src/include \
+    ../../../libs/wifi-host-driver/External/hal \
     ../../../libs/emusb-device/USBD \
     ../../../libs/emusb-device/USBD/COMPONENT_USBD_BASE/COMPONENT_PSE84/CONFIG_Debug
 
