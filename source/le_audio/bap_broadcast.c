@@ -1189,13 +1189,7 @@ uint32_t bap_broadcast_lc3_to_sample_rate(uint8_t lc3_freq)
 
 void bap_broadcast_generate_id(uint8_t broadcast_id[3])
 {
-    /* Generate random Broadcast_ID using BTSTACK random function
-     * or FreeRTOS tick count as entropy source
-     */
-    uint32_t random_val;
-
-    /* Use BTSTACK random number generator if available */
-    wiced_bt_dev_get_bonded_devices(NULL, NULL);  /* Ensures BT is ready */
+    /* Generate random Broadcast_ID using FreeRTOS tick count as entropy source */
 
     /* Mix multiple entropy sources for randomness */
     TickType_t ticks = xTaskGetTickCount();
