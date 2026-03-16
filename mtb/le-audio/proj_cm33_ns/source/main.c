@@ -32,7 +32,6 @@
 #include "cybsp.h"
 #include "cy_retarget_io.h"
 #include "cy_pdl.h"
-#include "cyhal.h"
 #include "cy_time.h"
 
 /* Infineon BT Platform */

@@ -41,8 +41,7 @@
 #include "cycfg_gap.h"
 #endif
 
-/* Infineon HAL */
-#include "cyhal.h"
+/* Infineon BSP/PDL */
 #include "cybsp.h"
 
 /* FreeRTOS */
