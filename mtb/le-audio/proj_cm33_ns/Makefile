@@ -117,7 +117,9 @@ SOURCES+= \
     ../../../source/midi/midi_router.c \
     ../../../source/midi/midi_usb.c \
     ../../../source/ipc/audio_ipc.c \
-    ../../../libs/emusb-device/OS/usbd_os_abs_rtos.c
+    ../../../libs/emusb-device/OS/usbd_os_abs_rtos.c \
+    ../../../libs/emusb-device/export/Config/usbd_config_io.c \
+    ../../../libs/emusb-device/export/Config/COMPONENT_PSE84/usbd_config.c
 
 # Wi-Fi bridge sources (our integration layer)
 SOURCES+= \
@@ -186,8 +188,8 @@ INCLUDES+= \
     ../../../config \
     ../../../libs/wifi-host-driver \
     ../../../libs/wifi-host-driver/WHD/COMPONENT_WIFI6/inc \
+    ../../../libs/wifi-host-driver/WHD/COMPONENT_WIFI6/src \
     ../../../libs/wifi-host-driver/WHD/COMPONENT_WIFI6/src/include \
-    ../../../libs/wifi-host-driver/WHD/COMPONENT_WIFI6/src/bus_protocols \
     ../../../libs/emusb-device/USBD \
     ../../../libs/emusb-device/USBD/COMPONENT_PSE84 \
     ../../../libs/emusb-device/USBD/COMPONENT_USBD_BASE/COMPONENT_PSE84/CONFIG_$(CONFIG)

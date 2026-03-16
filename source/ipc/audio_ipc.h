@@ -32,7 +32,7 @@ extern "C" {
 #define AUDIO_IPC_MAX_LC3_FRAME_SIZE    (155U)
 
 /** Number of frames in each IPC queue */
-#define AUDIO_IPC_QUEUE_DEPTH           (8U)
+#define AUDIO_IPC_QUEUE_DEPTH           (6U)
 
 /** IPC channel identifiers */
 #define AUDIO_IPC_CHANNEL_LC3_TX        (0U)  /**< CM55 -> CM33 (encoded frames for ISOC TX) */
