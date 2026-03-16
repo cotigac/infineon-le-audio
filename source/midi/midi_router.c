@@ -171,6 +171,25 @@ static int controller_uart_init(uint32_t baud_rate);
 static int controller_uart_send(const uint8_t *data, uint16_t length);
 
 /*******************************************************************************
+ * Timestamp Helper
+ ******************************************************************************/
+
+/**
+ * @brief Get current system timestamp in milliseconds
+ *
+ * Uses FreeRTOS tick count to generate a monotonic timestamp.
+ * The timestamp wraps at 32-bit max value.
+ *
+ * @return Timestamp in milliseconds
+ */
+static uint32_t get_system_timestamp_ms(void)
+{
+    TickType_t ticks = xTaskGetTickCount();
+    /* Convert ticks to milliseconds */
+    return (uint32_t)(ticks * (1000U / configTICK_RATE_HZ));
+}
+
+/*******************************************************************************
  * Queue Implementation
  ******************************************************************************/
 
@@ -595,7 +614,7 @@ static void usb_midi_callback(const midi_usb_callback_event_t *event, void *user
     entry.msg.data[1] = event->data.event.midi_1;
     entry.msg.data[2] = event->data.event.midi_2;
     entry.msg.length = len;
-    entry.msg.timestamp = 0;  /* TODO: Get system timestamp */
+    entry.msg.timestamp = get_system_timestamp_ms();
 
     /* Compute destination */
     entry.destination = compute_destination(&entry.msg);
@@ -951,7 +970,7 @@ int midi_router_send_from(midi_port_t source, const uint8_t *data, uint16_t leng
 
     msg.source = source;
     msg.length = length;
-    msg.timestamp = 0;  /* TODO: Get system timestamp */
+    msg.timestamp = get_system_timestamp_ms();
     memcpy(msg.data, data, length);
 
     return midi_router_send(&msg);
