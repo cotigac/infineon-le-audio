@@ -80,7 +80,8 @@ SOURCES+= \
     ../../../source/audio/audio_buffers.c \
     ../../../source/audio/audio_task.c \
     ../../../source/audio/i2s_stream.c \
-    ../../../source/audio/lc3_wrapper.c
+    ../../../source/audio/lc3_wrapper.c \
+    ../../../source/ipc/audio_ipc.c
 
 # Like SOURCES, but for include directories. Value should be paths to
 # directories (without a leading -I).
@@ -89,6 +90,7 @@ SOURCES+= \
 INCLUDES+= \
     ../../../source \
     ../../../source/audio \
+    ../../../source/ipc \
     ../../../config \
     ../../../libs/liblc3/include
 

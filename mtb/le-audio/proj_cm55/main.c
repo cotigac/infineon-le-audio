@@ -41,6 +41,7 @@
 #include "audio/i2s_stream.h"
 #include "audio/audio_buffers.h"
 #include "audio/audio_task.h"
+#include "ipc/audio_ipc.h"
 
 /*******************************************************************************
  * Macros
@@ -102,8 +103,7 @@ static uint8_t g_lc3_rx_buffer[LC3_FRAME_BYTES];
 
 /* Synchronization */
 static SemaphoreHandle_t g_audio_ready_sem = NULL;
-static QueueHandle_t g_lc3_tx_queue = NULL;  /* PCM -> LC3 -> CM33 */
-static QueueHandle_t g_lc3_rx_queue = NULL;  /* CM33 -> LC3 -> PCM */
+/* LC3 frame queues are now handled via IPC (see ipc/audio_ipc.c) */
 
 /*******************************************************************************
  * Function Prototypes
@@ -250,12 +250,13 @@ static int init_audio_modules(void)
 /**
  * @brief I2S RX callback - called when PCM data received from codec
  *
- * Encodes PCM to LC3 and queues for transmission to CM33.
+ * Encodes PCM to LC3 and sends to CM33 via IPC for ISOC transmission.
  */
 static void i2s_rx_callback(int16_t *buffer, uint16_t sample_count, void *user_data)
 {
     (void)user_data;
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    (void)sample_count;
+    static uint16_t tx_sequence = 0;
 
     if (!g_audio_running || g_lc3_ctx == NULL) {
         return;
@@ -264,22 +265,28 @@ static void i2s_rx_callback(int16_t *buffer, uint16_t sample_count, void *user_d
     /* Encode PCM to LC3 using Helium-optimized codec */
     int result = lc3_wrapper_encode(g_lc3_ctx, buffer, g_lc3_tx_buffer, 0);
     if (result == 0) {
-        /* Queue encoded frame for transmission to CM33 via IPC */
-        xQueueSendFromISR(g_lc3_tx_queue, g_lc3_tx_buffer, &xHigherPriorityTaskWoken);
-    }
+        /* Prepare IPC frame and send to CM33 */
+        audio_ipc_frame_t frame;
+        frame.length = LC3_FRAME_BYTES;
+        frame.sequence = tx_sequence++;
+        frame.timestamp = xTaskGetTickCountFromISR() * 1000 / configTICK_RATE_HZ;
+        frame.flags = AUDIO_IPC_FLAG_VALID;
+        memcpy(frame.data, g_lc3_tx_buffer, LC3_FRAME_BYTES);
 
-    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+        /* Send to CM33 via IPC (non-blocking) */
+        audio_ipc_send_encoded_frame(&frame);
+    }
 }
 
 /**
  * @brief I2S TX callback - called when codec needs PCM data
  *
- * Decodes LC3 from CM33 to PCM for playback.
+ * Receives LC3 from CM33 via IPC and decodes to PCM for playback.
  */
 static void i2s_tx_callback(int16_t *buffer, uint16_t sample_count, void *user_data)
 {
     (void)user_data;
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    (void)sample_count;
 
     if (!g_audio_running || g_lc3_ctx == NULL) {
         /* Output silence if not running */
@@ -287,9 +294,12 @@ static void i2s_tx_callback(int16_t *buffer, uint16_t sample_count, void *user_d
         return;
     }
 
-    /* Try to get LC3 frame from CM33 */
-    if (xQueueReceiveFromISR(g_lc3_rx_queue, g_lc3_rx_buffer,
-                              &xHigherPriorityTaskWoken) == pdTRUE) {
+    /* Try to get LC3 frame from CM33 via IPC */
+    audio_ipc_frame_t frame;
+    if (audio_ipc_receive_for_decode(&frame) == CY_RSLT_SUCCESS) {
+        /* Copy to local buffer and decode */
+        memcpy(g_lc3_rx_buffer, frame.data, frame.length);
+
         /* Decode LC3 to PCM using Helium-optimized codec */
         int result = lc3_wrapper_decode(g_lc3_ctx, g_lc3_rx_buffer, buffer, 0);
         if (result != 0) {
@@ -300,8 +310,6 @@ static void i2s_tx_callback(int16_t *buffer, uint16_t sample_count, void *user_d
         /* No data available - use PLC */
         lc3_wrapper_decode_plc(g_lc3_ctx, buffer, 0);
     }
-
-    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
 /*******************************************************************************
@@ -318,6 +326,15 @@ static void audio_task(void *pvParameters)
     (void)pvParameters;
 
     printf("[Audio] Task started on CM55\n");
+
+    /* Initialize IPC with CM33 (must wait for CM33 to init first) */
+    printf("[Audio] Waiting for IPC with CM33...\n");
+    if (audio_ipc_init_secondary() != CY_RSLT_SUCCESS) {
+        printf("[Audio] ERROR: IPC init failed - CM33 not ready?\n");
+        vTaskDelete(NULL);
+        return;
+    }
+    printf("[Audio] IPC with CM33 established\n");
 
     /* Initialize audio modules */
     if (init_audio_modules() != 0) {
@@ -357,13 +374,16 @@ static void audio_task(void *pvParameters)
 }
 
 /**
- * @brief IPC task - handles communication with CM33
+ * @brief IPC task - monitors IPC health and statistics
  *
- * Manages transfer of LC3 frames between CM33 (ISOC) and CM55 (codec).
+ * The actual LC3 frame transfer is handled in I2S callbacks using
+ * the audio_ipc module. This task monitors IPC health and logs stats.
  */
 static void ipc_task(void *pvParameters)
 {
     (void)pvParameters;
+    audio_ipc_stats_t stats;
+    audio_ipc_stats_t prev_stats = {0};
 
     printf("[IPC] Task started on CM55\n");
 
@@ -371,27 +391,31 @@ static void ipc_task(void *pvParameters)
     xSemaphoreTake(g_audio_ready_sem, portMAX_DELAY);
     xSemaphoreGive(g_audio_ready_sem);
 
-    printf("[IPC] Audio ready, starting IPC processing\n");
+    printf("[IPC] Audio ready, monitoring IPC\n");
 
     while (g_audio_running) {
-        /*
-         * IPC handling:
-         * - Receive LC3 frames from CM33 (ISOC RX) -> g_lc3_rx_queue
-         * - Send LC3 frames to CM33 (ISOC TX) <- g_lc3_tx_queue
-         *
-         * This uses shared memory and IPC semaphores.
-         * The actual implementation depends on the IPC mechanism:
-         * - mtb-ipc library
-         * - Shared memory with semaphores
-         * - Message passing
-         */
+        /* Check IPC health */
+        if (!audio_ipc_is_ready()) {
+            printf("[IPC] WARNING: IPC connection lost!\n");
+        }
 
-        /* TODO: Implement actual IPC with CM33
-         * For now, the queues are local and would need to be
-         * connected to CM33 via shared memory or IPC middleware
-         */
+        /* Get and log statistics periodically */
+        audio_ipc_get_stats(&stats);
 
-        vTaskDelay(pdMS_TO_TICKS(1));
+        /* Log if there are issues */
+        if (stats.tx_queue_full > prev_stats.tx_queue_full) {
+            printf("[IPC] TX queue full (dropped %lu frames)\n",
+                   stats.tx_queue_full - prev_stats.tx_queue_full);
+        }
+        if (stats.rx_queue_empty > prev_stats.rx_queue_empty) {
+            printf("[IPC] RX underrun (%lu events)\n",
+                   stats.rx_queue_empty - prev_stats.rx_queue_empty);
+        }
+
+        prev_stats = stats;
+
+        /* Check every 100ms */
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 
     printf("[IPC] Task stopped\n");
@@ -446,12 +470,8 @@ int main(void)
         handle_app_error();
     }
 
-    /* Create LC3 frame queues for IPC with CM33 */
-    g_lc3_tx_queue = xQueueCreate(8, LC3_FRAME_BYTES);
-    g_lc3_rx_queue = xQueueCreate(8, LC3_FRAME_BYTES);
-    if (g_lc3_tx_queue == NULL || g_lc3_rx_queue == NULL) {
-        handle_app_error();
-    }
+    /* Note: LC3 frame queues are handled via IPC (audio_ipc.c)
+     * IPC initialization happens in audio_task after CM33 is ready */
 
     /***************************************************************************
      * Phase 4: Create FreeRTOS Tasks

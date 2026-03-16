@@ -57,6 +57,7 @@
 #include "wifi/wifi_bridge.h"
 #include "wifi/wifi_sdio.h"
 #include "le_audio/le_audio_manager.h"
+#include "ipc/audio_ipc.h"
 
 /*******************************************************************************
  * Macros
@@ -391,6 +392,12 @@ int main(void)
 
     /* Initialize button handling */
     button_lib_init();
+
+    /* Initialize IPC for audio frames (must be before CM55 boot) */
+    if (CY_RSLT_SUCCESS != audio_ipc_init_primary()) {
+        printf("ERROR: Failed to initialize audio IPC\n");
+        handle_app_error();
+    }
 
     /* Boot CM55 core (audio DSP runs there) */
     Cy_SysEnableCM55(MXCM55, CM55_APP_BOOT_ADDR, CM55_BOOT_WAIT_TIME_USEC);

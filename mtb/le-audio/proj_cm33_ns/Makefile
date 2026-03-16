@@ -103,7 +103,8 @@ SOURCES+= \
     ../../../source/midi/midi_router.c \
     ../../../source/midi/midi_usb.c \
     ../../../source/wifi/wifi_bridge.c \
-    ../../../source/wifi/wifi_sdio.c
+    ../../../source/wifi/wifi_sdio.c \
+    ../../../source/ipc/audio_ipc.c
 
 # Like SOURCES, but for include directories. Value should be paths to
 # directories (without a leading -I).
@@ -116,6 +117,7 @@ INCLUDES+= \
     ../../../source/le_audio \
     ../../../source/midi \
     ../../../source/wifi \
+    ../../../source/ipc \
     ../../../config \
     ../../../libs/liblc3/include
 

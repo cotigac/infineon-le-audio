@@ -712,6 +712,44 @@ void isoc_handler_on_big_sync_established(uint8_t big_handle,
  */
 void isoc_handler_on_big_sync_lost(uint8_t big_handle, uint8_t reason);
 
+/*******************************************************************************
+ * IPC Integration Functions (CM33 <-> CM55)
+ *
+ * These functions bridge the ISOC handler with the CM55 audio DSP via IPC.
+ * Call them periodically from the BLE task to transfer LC3 frames.
+ ******************************************************************************/
+
+/**
+ * @brief Process IPC TX - Forward encoded frames from CM55 to ISOC
+ *
+ * Gets encoded LC3 frames from CM55 via IPC and transmits them on the
+ * specified ISOC stream.
+ *
+ * @param stream_id     Stream to transmit on
+ * @return Number of frames transmitted, or negative error code
+ */
+int isoc_handler_process_ipc_tx(uint8_t stream_id);
+
+/**
+ * @brief Process IPC RX - Forward received ISOC frames to CM55
+ *
+ * Gets received LC3 frames from ISOC and sends them to CM55 via IPC
+ * for decoding.
+ *
+ * @param stream_id     Stream to receive from
+ * @return Number of frames forwarded, or negative error code
+ */
+int isoc_handler_process_ipc_rx(uint8_t stream_id);
+
+/**
+ * @brief Process all IPC for a stream (both TX and RX)
+ *
+ * Convenience function to process both directions.
+ *
+ * @param stream_id     Stream to process
+ */
+void isoc_handler_process_ipc(uint8_t stream_id);
+
 #ifdef __cplusplus
 }
 #endif

@@ -15,6 +15,9 @@
 /* HCI ISOC API */
 #include "../bluetooth/hci_isoc.h"
 
+/* IPC for LC3 frame transfer with CM55 */
+#include "../ipc/audio_ipc.h"
+
 /* FreeRTOS for timing */
 #include "FreeRTOS.h"
 #include "task.h"
@@ -1436,3 +1439,113 @@ static void notify_error(isoc_stream_t *stream, int error)
                                            handler_ctx.config.user_data);
     }
 }
+
+/*******************************************************************************
+ * API Functions - IPC Integration (CM33 <-> CM55)
+ ******************************************************************************/
+
+/**
+ * @brief Process IPC TX - Get encoded frames from CM55 and transmit via ISOC
+ *
+ * Call this periodically from the BLE task to forward encoded LC3 frames
+ * from CM55 to Bluetooth ISOC streams.
+ *
+ * @param stream_id     Stream to transmit on
+ * @return Number of frames transmitted, or negative error code
+ */
+int isoc_handler_process_ipc_tx(uint8_t stream_id)
+{
+    audio_ipc_frame_t ipc_frame;
+    int frames_sent = 0;
+
+    if (!handler_ctx.initialized) {
+        return ISOC_HANDLER_ERROR_NOT_INITIALIZED;
+    }
+
+    if (!audio_ipc_is_ready()) {
+        return 0;  /* IPC not ready yet */
+    }
+
+    /* Process all available frames from CM55 */
+    while (audio_ipc_receive_from_encoder(&ipc_frame) == CY_RSLT_SUCCESS) {
+        /* Send via ISOC */
+        int result = isoc_handler_tx_frame(stream_id, ipc_frame.data,
+                                            ipc_frame.length, ipc_frame.timestamp);
+        if (result == ISOC_HANDLER_OK) {
+            frames_sent++;
+        } else if (result == ISOC_HANDLER_ERROR_BUFFER_FULL) {
+            /* ISOC buffer full - frame will be dropped */
+            break;
+        } else {
+            /* Other error */
+            return result;
+        }
+    }
+
+    return frames_sent;
+}
+
+/**
+ * @brief Process IPC RX - Forward received ISOC frames to CM55 for decoding
+ *
+ * Call this periodically from the BLE task to forward received LC3 frames
+ * from Bluetooth to CM55 for decoding.
+ *
+ * @param stream_id     Stream to receive from
+ * @return Number of frames forwarded, or negative error code
+ */
+int isoc_handler_process_ipc_rx(uint8_t stream_id)
+{
+    audio_ipc_frame_t ipc_frame;
+    uint8_t lc3_data[ISOC_HANDLER_MAX_SDU_SIZE];
+    uint16_t lc3_len;
+    uint32_t timestamp;
+    int frames_forwarded = 0;
+    static uint16_t rx_sequence = 0;
+
+    if (!handler_ctx.initialized) {
+        return ISOC_HANDLER_ERROR_NOT_INITIALIZED;
+    }
+
+    if (!audio_ipc_is_ready()) {
+        return 0;  /* IPC not ready yet */
+    }
+
+    /* Process all available frames from ISOC */
+    while (isoc_handler_rx_frame(stream_id, lc3_data, sizeof(lc3_data),
+                                  &lc3_len, &timestamp) == ISOC_HANDLER_OK) {
+        /* Build IPC frame */
+        memset(&ipc_frame, 0, sizeof(ipc_frame));
+        memcpy(ipc_frame.data, lc3_data, lc3_len);
+        ipc_frame.length = lc3_len;
+        ipc_frame.sequence = rx_sequence++;
+        ipc_frame.timestamp = timestamp;
+        ipc_frame.flags = AUDIO_IPC_FLAG_VALID;
+
+        /* Send to CM55 for decoding */
+        cy_rslt_t result = audio_ipc_send_to_decoder(&ipc_frame);
+        if (result == CY_RSLT_SUCCESS) {
+            frames_forwarded++;
+        } else {
+            /* IPC queue full - frame will be dropped */
+            break;
+        }
+    }
+
+    return frames_forwarded;
+}
+
+/**
+ * @brief Process all IPC for a stream (both TX and RX)
+ *
+ * Convenience function to process both directions.
+ *
+ * @param stream_id     Stream to process
+ */
+void isoc_handler_process_ipc(uint8_t stream_id)
+{
+    isoc_handler_process_ipc_tx(stream_id);
+    isoc_handler_process_ipc_rx(stream_id);
+}
+
+/* end of file */
