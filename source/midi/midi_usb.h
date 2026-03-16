@@ -322,6 +322,24 @@ void midi_usb_reset_stats(void);
  */
 int midi_usb_flush(void);
 
+/**
+ * @brief Receive a MIDI event from the RX queue
+ *
+ * This provides a polling-based alternative to the callback mechanism.
+ * Can be used in addition to or instead of the callback.
+ *
+ * @param event Pointer to event structure to fill
+ * @return 0 on success, -1 if queue is empty, negative error code on failure
+ */
+int midi_usb_receive(midi_usb_event_t *event);
+
+/**
+ * @brief Get number of events available in RX queue
+ *
+ * @return Number of events available, or 0 if empty
+ */
+uint16_t midi_usb_rx_available(void);
+
 #ifdef __cplusplus
 }
 #endif

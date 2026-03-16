@@ -52,9 +52,9 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
 
 ### Current Implementation Summary
 
-The project has **complete implementation** of all Bluetooth, LE Audio, and MIDI modules using Infineon BTSTACK APIs. Only **28 TODOs** remain, primarily in the Wi-Fi data path which requires hardware-specific HAL integration.
+The project has **complete implementation** of all Bluetooth, LE Audio, MIDI, and Wi-Fi modules. All **28 original TODOs have been implemented**, and critical data path issues identified during end-to-end analysis have been fixed.
 
-**What's Complete (✅ Implemented with BTSTACK APIs):**
+**What's Complete (✅ All Modules Fully Implemented):**
 - ✅ Full project structure with all source files
 - ✅ FreeRTOS task architecture with proper priorities
 - ✅ FreeRTOS synchronization (mutexes, queues, semaphores) in all modules
@@ -66,31 +66,34 @@ The project has **complete implementation** of all Bluetooth, LE Audio, and MIDI
 - ✅ **pacs.c** - PACS service with GATT client/server operations
 - ✅ **bap_unicast.c** - BAP Unicast with ASE Control Point writes
 - ✅ **bap_broadcast.c** - BAP Broadcast (Auracast) with periodic advertising
-- ✅ **le_audio_manager.c** - Full unicast/broadcast state machines
-- ✅ **audio_task.c** - LC3 encode/decode pipeline, ISOC transmission
+- ✅ **le_audio_manager.c** - Full unicast/broadcast state machines with timeout handling
+- ✅ **audio_task.c** - LC3 encode/decode pipeline, ISOC transmission, I2S silence handling
 - ✅ **i2s_stream.c** - DMA-based I2S with thread-safe ring buffers
 - ✅ **midi_ble_service.c** - BLE MIDI GATT service with notifications
-- ✅ **midi_router.c** - MIDI routing with UART HAL integration
+- ✅ **midi_usb.c** - USB MIDI class with emUSB-Device (TX and RX)
+- ✅ **midi_router.c** - MIDI routing with timestamps using FreeRTOS ticks
+- ✅ **wifi_sdio.c** - SDIO HAL with `cyhal_sdio_*` APIs (CMD52, CMD53, async DMA)
+- ✅ **wifi_bridge.c** - USB-Wi-Fi bridge with WHD and emUSB-Device bulk endpoints
 - ✅ LC3 wrapper API (calls to liblc3)
 - ✅ CMakeLists.txt with all dependencies
 - ✅ Library submodules (btstack, btstack-integration, liblc3, wifi-host-driver, emusb-device)
 
-**What's Remaining (28 TODOs):**
-- Wi-Fi SDIO HAL integration (`cyhal_sdio_*`)
-- Wi-Fi Host Driver (WHD) initialization
-- USB High-Speed bulk endpoint integration (emUSB-Device)
+**Critical Data Path Fixes (Applied after end-to-end analysis):**
+- ✅ **LE Audio TX**: Fixed `isoc_handler_send_sdu()` → `isoc_handler_tx_frame()` with proper stream_id lookup
+- ✅ **LE Audio RX**: Fixed disconnected buffers - now calls `isoc_handler_rx_frame()` directly
+- ✅ **USB MIDI RX**: Added `midi_usb_receive()` and `midi_usb_rx_available()` public APIs
 
 ### TODO Distribution by File
 
-| File | TODOs | Category | Priority |
-|------|-------|----------|----------|
-| `wifi_bridge.c` | 11 | Wi-Fi/USB Bridge | MEDIUM |
-| `wifi_sdio.c` | 9 | SDIO HAL | MEDIUM |
-| `midi_usb.c` | 4 | USB MIDI | LOW |
-| `midi_router.c` | 2 | Timestamp | LOW |
-| `audio_task.c` | 1 | I2S Silence | LOW |
-| `le_audio_manager.c` | 1 | Timeout | LOW |
-| **Total** | **28** | | |
+| File | TODOs | Status | Notes |
+|------|-------|--------|-------|
+| `wifi_bridge.c` | 0 | ✅ Complete | WHD + emUSB-Device bulk integration |
+| `wifi_sdio.c` | 0 | ✅ Complete | `cyhal_sdio_*` HAL APIs |
+| `midi_usb.c` | 0 | ✅ Complete | emUSB-Device MIDI class |
+| `midi_router.c` | 0 | ✅ Complete | FreeRTOS tick timestamps |
+| `audio_task.c` | 0 | ✅ Complete | I2S silence + ISOC TX/RX wiring |
+| `le_audio_manager.c` | 0 | ✅ Complete | Timeout with tick polling |
+| **Total** | **0** | ✅ | All TODOs implemented |
 
 ### Completed Modules (0 TODOs)
 
@@ -122,14 +125,16 @@ Main Controller → I2S RX → Audio Buffers → LC3 Encode → ISOC Handler →
 | Step | File | TODOs | Status |
 |------|------|-------|--------|
 | I2S RX DMA | `i2s_stream.c` | 0 | ✅ Ring buffer with critical sections |
-| LC3 Encode | `audio_task.c` | 1 | ✅ Wired to `lc3_encode()`, sends to ISOC |
-| ISOC TX | `isoc_handler.c` | 0 | ✅ `isoc_handler_send_sdu()` implemented |
+| LC3 Encode | `audio_task.c` | 0 | ✅ Wired to `lc3_encode()`, sends to ISOC |
+| ISOC TX | `isoc_handler.c` | 0 | ✅ `isoc_handler_tx_frame()` with stream lookup |
 | HCI Send | `hci_isoc.c` | 0 | ✅ `wiced_bt_isoc_write()` integration |
 
-**Remaining TODO:**
+**Data Path Wiring (Fixed):**
 ```c
-// audio_task.c - Write silence when no data available
-/* TODO: Write silence to I2S TX when no data available */
+// audio_task.c - process_tx_path()
+// Finds ISOC stream by handle, then calls correct API
+int isoc_stream_id = isoc_handler_find_by_iso_handle(stream->info.cis_handle);
+isoc_handler_tx_frame((uint8_t)isoc_stream_id, lc3_buffer, lc3_len, timestamp);
 ```
 
 ### Path 2: LE Audio RX (HCI ISOC RX → LC3 Decode → I2S TX) ✅ COMPLETE
@@ -143,10 +148,21 @@ CYW55512 → HCI → ISOC Handler → LC3 Decode → Audio Buffers → I2S TX �
 |------|------|-------|--------|
 | HCI RX | `hci_isoc.c` | 0 | ✅ BTSTACK ISOC data callback registered |
 | ISOC RX | `isoc_handler.c` | 0 | ✅ Process incoming SDUs with timestamps |
-| LC3 Decode | `audio_task.c` | 0 | ✅ Wired to `lc3_decode()` |
+| LC3 Decode | `audio_task.c` | 0 | ✅ Reads from ISOC handler, decodes with PLC |
 | I2S TX DMA | `i2s_stream.c` | 0 | ✅ Thread-safe ring buffer writes |
 
-### Path 3: BLE MIDI (USB ↔ GATT ↔ Controller) 🟡 6 TODOs
+**Data Path Wiring (Fixed):**
+```c
+// audio_task.c - process_rx_path()
+// Reads directly from ISOC handler's RX buffer (not audio_task's lc3_buffer)
+int isoc_stream_id = isoc_handler_find_by_iso_handle(stream->info.cis_handle);
+int result = isoc_handler_rx_frame((uint8_t)isoc_stream_id,
+                                   lc3_decode_buffer, MAX_LC3_BYTES_PER_FRAME,
+                                   &lc3_len, &rx_timestamp);
+// Then decode: decode_lc3_to_pcm(stream, lc3_decode_buffer, lc3_len, pcm_tx_buffer);
+```
+
+### Path 3: BLE MIDI (USB ↔ GATT ↔ Controller) ✅ COMPLETE
 
 ```
 USB Host ↔ USB MIDI Class ↔ MIDI Router ↔ BLE MIDI Service ↔ HCI ↔ CYW55512
@@ -157,27 +173,28 @@ USB Host ↔ USB MIDI Class ↔ MIDI Router ↔ BLE MIDI Service ↔ HCI ↔ CYW
 
 | Component | File | TODOs | Status |
 |-----------|------|-------|--------|
-| USB MIDI | `midi_usb.c` | 4 | 🟡 emUSB-Device endpoint callbacks |
+| USB MIDI | `midi_usb.c` | 0 | ✅ emUSB-Device MIDI class with TX/RX |
 | BLE MIDI | `midi_ble_service.c` | 0 | ✅ GATT service with notifications |
-| Router | `midi_router.c` | 2 | 🟡 Timestamp generation |
+| Router | `midi_router.c` | 0 | ✅ Timestamps using FreeRTOS ticks |
 
-**USB MIDI Remaining TODOs:**
+**USB MIDI Implementation:**
 ```c
-// midi_usb.c - emUSB-Device integration points
-/* TODO: Call USBD_MIDI_Read() for async receive */
-/* TODO: Call USBD_MIDI_Write() for async send */
-/* TODO: Check USBD_MIDI_GetNumBytesInBuffer() */
-/* TODO: Implement flush timeout with actual USB middleware */
+// midi_usb.c - emUSB-Device MIDI class
+USBD_MIDI_Add(&midi_init_data);           // Add MIDI class
+USBD_MIDI_Receive(handle, buffer, len, 0); // Non-blocking RX
+USBD_MIDI_Write(handle, data, len, 0);     // Non-blocking TX
+midi_usb_receive(&event);                  // Public API for RX queue
 ```
 
-**MIDI Router Remaining TODOs:**
+**MIDI Router Timestamps:**
 ```c
-// midi_router.c - Timestamp handling
-/* TODO: Implement BLE MIDI timestamp generation */
-/* TODO: Implement USB MIDI timestamp generation */
+// midi_router.c - FreeRTOS tick-based timestamps
+static uint32_t get_system_timestamp_ms(void) {
+    return (uint32_t)(xTaskGetTickCount() * (1000U / configTICK_RATE_HZ));
+}
 ```
 
-### Path 4: Wi-Fi Bridge (USB HS → SDIO → CYW55512 WLAN) 🟡 20 TODOs
+### Path 4: Wi-Fi Bridge (USB HS → SDIO → CYW55512 WLAN) ✅ COMPLETE
 
 ```
 App Processor → USB HS Bulk → Bridge Queues → SDIO Driver → WHD → CYW55512
@@ -186,29 +203,30 @@ App Processor → USB HS Bulk → Bridge Queues → SDIO Driver → WHD → CYW5
 
 | Component | File | TODOs | Status |
 |-----------|------|-------|--------|
-| SDIO Driver | `wifi_sdio.c` | 9 | 🟡 `cyhal_sdio_*` HAL calls |
-| WHD Init | `wifi_bridge.c` | 4 | 🟡 `whd_init()`, `whd_wifi_on()` |
-| USB Bulk | `wifi_bridge.c` | 4 | 🟡 emUSB-Device bulk endpoints |
-| Bridge Logic | `wifi_bridge.c` | 3 | 🟡 WHD packet callbacks |
+| SDIO Driver | `wifi_sdio.c` | 0 | ✅ `cyhal_sdio_*` HAL APIs |
+| WHD Init | `wifi_bridge.c` | 0 | ✅ `whd_init()`, `whd_wifi_on()` |
+| USB Bulk | `wifi_bridge.c` | 0 | ✅ emUSB-Device bulk endpoints |
+| Bridge Logic | `wifi_bridge.c` | 0 | ✅ WHD packet callbacks |
 
-**SDIO Critical TODOs:**
+**SDIO Implementation:**
 ```c
-// wifi_sdio.c - SDIO HAL integration
-/* TODO: Initialize SDIO HAL - cyhal_sdio_init() */
-/* TODO: Implement CMD52 using cyhal_sdio_send_cmd() */
-/* TODO: Implement CMD53 using cyhal_sdio_bulk_transfer() */
-/* TODO: Implement interrupt handling */
-/* TODO: Implement bus width configuration */
-/* TODO: Implement clock speed configuration */
+// wifi_sdio.c - SDIO HAL with cyhal_sdio_* APIs
+cyhal_sdio_init(&sdio_obj, cmd, clk, d0, d1, d2, d3);
+cyhal_sdio_send_cmd(&sdio_obj, CYHAL_SDIO_CMD_IO_RW_DIRECT, arg, &response);
+cyhal_sdio_bulk_transfer(&sdio_obj, direction, addr, data, len, &response);
+cyhal_sdio_register_callback(&sdio_obj, sdio_irq_handler, NULL);
 ```
 
-**WHD Critical TODOs:**
+**WHD Implementation:**
 ```c
 // wifi_bridge.c - Wi-Fi Host Driver integration
-/* TODO: Include WHD headers - whd.h, whd_wifi_api.h */
-/* TODO: Initialize WHD - whd_init() */
-/* TODO: Power on Wi-Fi - whd_wifi_on() */
-/* TODO: Register WHD packet callbacks */
+#include "whd.h"
+#include "whd_wifi_api.h"
+#include "whd_network_types.h"
+
+whd_init(&whd_config, &ctx->whd_driver, &buffer_ops, &netif_ops, &resource_ops);
+whd_wifi_on(ctx->whd_driver, &ctx->whd_interface);
+whd_network_register_link_callback(ctx->whd_interface, whd_link_state_callback, ctx);
 ```
 
 ### Path 5: Bluetooth HCI (All BLE Operations) ✅ COMPLETE
@@ -227,24 +245,18 @@ BTSTACK → HCI Commands → UART → CYW55512 Controller
 | BAP Unicast | `bap_unicast.c` | 0 | ✅ ASE Control Point operations |
 | BAP Broadcast | `bap_broadcast.c` | 0 | ✅ Auracast with periodic advertising |
 | PACS | `pacs.c` | 0 | ✅ Published Audio Capabilities |
-| LE Audio Mgr | `le_audio_manager.c` | 1 | 🟡 Timeout implementation |
-
-**Remaining TODO:**
-```c
-// le_audio_manager.c - Timeout handling
-/* TODO: Implement timeout */
-```
+| LE Audio Mgr | `le_audio_manager.c` | 0 | ✅ Timeout with FreeRTOS ticks |
 
 ### Path Summary
 
 | Path | Description | TODOs | Status |
 |------|-------------|-------|--------|
-| 1 | LE Audio TX | 1 | ✅ Complete |
+| 1 | LE Audio TX | 0 | ✅ Complete |
 | 2 | LE Audio RX | 0 | ✅ Complete |
-| 3 | BLE MIDI | 6 | 🟡 USB middleware |
-| 4 | Wi-Fi Bridge | 20 | 🟡 SDIO + WHD HAL |
-| 5 | Bluetooth HCI | 1 | ✅ Complete |
-| **Total** | | **28** | |
+| 3 | BLE MIDI | 0 | ✅ Complete |
+| 4 | Wi-Fi Bridge | 0 | ✅ Complete |
+| 5 | Bluetooth HCI | 0 | ✅ Complete |
+| **Total** | | **0** | ✅ All paths complete |
 
 ---
 
@@ -290,57 +302,96 @@ int gap_start_advertising(void) {
 }
 ```
 
-### 🟡 Remaining Gaps
+### ✅ All Gaps Closed
 
-#### Gap 3: USB High-Speed Middleware
+#### Gap 3: USB High-Speed Middleware - RESOLVED
 
-**Problem**: `emusb-device` library needs initialization for USB HS endpoints.
+**Status**: Fully implemented with Segger emUSB-Device.
 
-**Files Affected:**
-- `midi_usb.c` - USB MIDI class (4 TODOs)
-- `wifi_bridge.c` - USB bulk data (4 TODOs)
-
-**Required Integration:**
+**Implementation:**
 ```c
-// Need to implement using Segger emUSB-Device API
-USBD_Init();
-USBD_MIDI_Add(&midi_init_data);  // For USB MIDI
-USBD_BULK_Add(&bulk_init_data);  // For Wi-Fi bridge
-USBD_Start();
+// midi_usb.c - USB MIDI class
+USBD_AddEP(USB_DIR_IN, USB_TRANSFER_TYPE_BULK, 0, buffer, size);
+USBD_MIDI_Add(&midi_init_data);
+USBD_MIDI_Receive(handle, buffer, len, 0);  // Non-blocking RX
+USBD_MIDI_Write(handle, data, len, 0);      // Non-blocking TX
+
+// wifi_bridge.c - USB bulk endpoints
+USBD_AddEP(USB_DIR_OUT, USB_TRANSFER_TYPE_BULK, 0, buffer, size);
+USBD_BULK_Add(&bulk_init_data);
 ```
 
-#### Gap 4: Wi-Fi SDIO HAL
+#### Gap 4: Wi-Fi SDIO HAL - RESOLVED
 
-**Problem**: SDIO driver needs `cyhal_sdio_*` HAL integration.
+**Status**: Fully implemented with `cyhal_sdio_*` HAL APIs.
 
-**Files Affected:**
-- `wifi_sdio.c` - SDIO commands (9 TODOs)
-
-**Required Integration:**
+**Implementation:**
 ```c
-// Need to implement using PSoC Edge HAL
-cyhal_sdio_init(&sdio_obj, SDIO_CMD, SDIO_CLK, SDIO_D0, SDIO_D1, SDIO_D2, SDIO_D3);
-cyhal_sdio_send_cmd(&sdio_obj, direction, command, argument, &response);
-cyhal_sdio_bulk_transfer(&sdio_obj, direction, block_num, data, length, &response);
+// wifi_sdio.c
+cyhal_sdio_init(&ctx->sdio_obj, ctx->config.cmd_pin, ctx->config.clk_pin,
+                ctx->config.data_pins[0], ctx->config.data_pins[1],
+                ctx->config.data_pins[2], ctx->config.data_pins[3]);
+cyhal_sdio_send_cmd(&ctx->sdio_obj, CYHAL_SDIO_CMD_IO_RW_DIRECT, arg, &response);
+cyhal_sdio_bulk_transfer(&ctx->sdio_obj, direction, address, data, length, &response);
+cyhal_sdio_register_callback(&ctx->sdio_obj, sdio_irq_handler, NULL);
 ```
 
-#### Gap 5: Wi-Fi Host Driver (WHD)
+#### Gap 5: Wi-Fi Host Driver (WHD) - RESOLVED
 
-**Problem**: WHD library needs initialization and callback registration.
+**Status**: Fully implemented with WHD initialization and callbacks.
 
-**Files Affected:**
-- `wifi_bridge.c` - WHD integration (7 TODOs)
-
-**Required Integration:**
+**Implementation:**
 ```c
-// Need to implement WHD initialization
+// wifi_bridge.c
 #include "whd.h"
 #include "whd_wifi_api.h"
+#include "whd_network_types.h"
 
-whd_init_config_t config = WHD_INIT_CONFIG_DEFAULT;
-whd_init(&config, &whd_driver);
-whd_wifi_on(whd_driver, &primary_interface);
-whd_wifi_register_multicast_address(primary_interface, &mac_addr);
+whd_init(&whd_config, &ctx->whd_driver, &buffer_ops, &netif_ops, &resource_ops);
+whd_wifi_on(ctx->whd_driver, &ctx->whd_interface);
+whd_network_register_link_callback(ctx->whd_interface, whd_link_state_callback, ctx);
+```
+
+### Data Path Fixes (Critical Issues Resolved)
+
+During end-to-end analysis, three critical data path issues were identified and fixed:
+
+#### Fix 1: LE Audio TX - Incorrect Function Call
+
+**Problem**: `audio_task.c` called `isoc_handler_send_sdu()` which doesn't exist.
+
+**Solution**: Changed to `isoc_handler_tx_frame()` with proper stream ID lookup:
+```c
+// Before (broken):
+isoc_handler_send_sdu(stream->info.cis_handle, buffer, len, timestamp);
+
+// After (fixed):
+int isoc_stream_id = isoc_handler_find_by_iso_handle(stream->info.cis_handle);
+isoc_handler_tx_frame((uint8_t)isoc_stream_id, buffer, len, timestamp);
+```
+
+#### Fix 2: LE Audio RX - Disconnected Buffers
+
+**Problem**: `process_rx_path()` read from `stream->lc3_buffer` (audio_task's buffer), but ISOC data was stored in `isoc_handler`'s `rx_buffer` - different buffers with no connection.
+
+**Solution**: Changed to read directly from ISOC handler:
+```c
+// Before (broken):
+audio_ring_buffer_read_frame(stream->lc3_buffer, decode_buffer, &meta);
+
+// After (fixed):
+int isoc_stream_id = isoc_handler_find_by_iso_handle(stream->info.cis_handle);
+isoc_handler_rx_frame((uint8_t)isoc_stream_id, decode_buffer, max_len, &len, &timestamp);
+```
+
+#### Fix 3: USB MIDI RX - No Public API
+
+**Problem**: `rx_queue_push()` stored received MIDI events, but `rx_queue_pop()` was private with no public API to drain the queue.
+
+**Solution**: Added public APIs in `midi_usb.h`:
+```c
+int midi_usb_receive(midi_usb_event_t *event);  // Pop from RX queue
+uint16_t midi_usb_rx_available(void);           // Check queue level
 ```
 
 ---

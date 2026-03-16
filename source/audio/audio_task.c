@@ -1045,15 +1045,18 @@ static int process_tx_path(stream_context_t *stream)
     }
 
     /* Send to ISOC handler based on stream type */
+    int isoc_stream_id = -1;
     if (stream->info.type == AUDIO_STREAM_TYPE_UNICAST) {
-        /* Unicast: send via CIS handle */
-        isoc_handler_send_sdu(stream->info.cis_handle,
-                              g_audio_task.lc3_encode_buffer, lc3_len,
-                              meta.timestamp);
+        /* Unicast: find ISOC stream by CIS handle */
+        isoc_stream_id = isoc_handler_find_by_iso_handle(stream->info.cis_handle);
     } else if (stream->info.type == AUDIO_STREAM_TYPE_BROADCAST) {
-        /* Broadcast: send via BIS handle (derived from big_handle + bis_index) */
-        uint16_t bis_handle = (uint16_t)((stream->info.big_handle << 8) | stream->info.bis_index);
-        isoc_handler_send_sdu(bis_handle,
+        /* Broadcast: find ISOC stream by BIG/BIS */
+        isoc_stream_id = isoc_handler_find_by_big_bis(stream->info.big_handle,
+                                                       stream->info.bis_index);
+    }
+
+    if (isoc_stream_id >= 0) {
+        isoc_handler_tx_frame((uint8_t)isoc_stream_id,
                               g_audio_task.lc3_encode_buffer, lc3_len,
                               meta.timestamp);
     }
@@ -1073,15 +1076,31 @@ static int process_rx_path(stream_context_t *stream)
     const audio_stream_config_t *config = &stream->info.config;
     uint16_t samples_per_frame = calculate_samples_per_frame(config);
 
-    /* Read LC3 frame from ISOC handler */
-    audio_frame_meta_t meta;
-    int read_result = audio_ring_buffer_read_frame(stream->lc3_buffer,
-                                                    g_audio_task.lc3_decode_buffer,
-                                                    &meta);
+    /* Find the ISOC stream to read from */
+    int isoc_stream_id = -1;
+    if (stream->info.type == AUDIO_STREAM_TYPE_UNICAST) {
+        isoc_stream_id = isoc_handler_find_by_iso_handle(stream->info.cis_handle);
+    } else if (stream->info.type == AUDIO_STREAM_TYPE_BROADCAST) {
+        isoc_stream_id = isoc_handler_find_by_big_bis(stream->info.big_handle,
+                                                       stream->info.bis_index);
+    }
+
+    /* Read LC3 frame from ISOC handler's RX buffer */
+    uint16_t lc3_len = 0;
+    uint32_t rx_timestamp = 0;
+    int read_result = -1;
+
+    if (isoc_stream_id >= 0) {
+        read_result = isoc_handler_rx_frame((uint8_t)isoc_stream_id,
+                                             g_audio_task.lc3_decode_buffer,
+                                             MAX_LC3_BYTES_PER_FRAME,
+                                             &lc3_len,
+                                             &rx_timestamp);
+    }
 
     /* Handle missing frames with PLC */
     bool use_plc = false;
-    if (read_result != 0 || !meta.valid) {
+    if (read_result != ISOC_HANDLER_OK || lc3_len == 0) {
         if (g_audio_task.config.enable_plc) {
             use_plc = true;
             g_audio_task.stats.plc_frames++;
@@ -1106,7 +1125,7 @@ static int process_rx_path(stream_context_t *stream)
         result = decode_lc3_to_pcm(stream, NULL, 0, g_audio_task.pcm_tx_buffer);
     } else {
         result = decode_lc3_to_pcm(stream, g_audio_task.lc3_decode_buffer,
-                                   meta.length, g_audio_task.pcm_tx_buffer);
+                                   lc3_len, g_audio_task.pcm_tx_buffer);
     }
     uint32_t decode_time = GET_TIME_US() - decode_start;
 

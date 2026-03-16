@@ -87,9 +87,9 @@ PCM audio from main controller is encoded to LC3 and transmitted over Bluetooth.
 - [x] Audio ring buffers with metadata
 - [x] LC3 wrapper calling liblc3
 - [x] ISOC handler state machine
-- [ ] `cyhal_i2s_init()` - HAL integration
-- [ ] `isoc_handler_send_sdu()` - Wire to audio task
-- [ ] `hci_isoc_send_data()` - Wire to BTSTACK
+- [x] `cyhal_i2s_init()` - HAL integration complete
+- [x] `isoc_handler_tx_frame()` - Wired to audio task with stream ID lookup
+- [x] `hci_isoc_send_data()` - Wired to BTSTACK via `wiced_bt_isoc_write()`
 
 ### Path 2: LE Audio RX (ISOC → LC3 → I2S)
 
@@ -107,8 +107,9 @@ LC3 audio from Bluetooth is decoded and sent to main controller.
 - [x] ISOC RX buffer structure
 - [x] LC3 decode with PLC (packet loss concealment)
 - [x] I2S TX buffer management
-- [ ] BTSTACK ISOC data callback registration
-- [ ] `cyhal_i2s_write_async()` - HAL integration
+- [x] BTSTACK ISOC data callback registration
+- [x] `isoc_handler_rx_frame()` - Wired to audio task (reads from ISOC handler's buffer)
+- [x] `cyhal_i2s_write_async()` - HAL integration via `i2s_stream_write()`
 
 ### Path 3: MIDI (USB ↔ BLE ↔ Controller)
 
@@ -150,9 +151,11 @@ Internal → All (for generated events)
 - [x] BLE MIDI packet format (timestamps)
 - [x] USB MIDI packet format (cable numbers)
 - [x] FreeRTOS routing queues with mutex
-- [ ] `emUSB-Device` initialization
-- [ ] BTSTACK GATT service registration
-- [ ] Controller UART initialization
+- [x] `emUSB-Device` initialization with MIDI class
+- [x] BTSTACK GATT service registration
+- [x] USB MIDI TX/RX with `USBD_MIDI_Write()` / `USBD_MIDI_Receive()`
+- [x] FreeRTOS tick-based timestamp generation
+- [x] Public `midi_usb_receive()` API for polling RX queue
 
 ### Path 4: Wi-Fi Bridge (USB HS → SDIO)
 
@@ -172,9 +175,14 @@ Network data bridged from USB to Wi-Fi for the main controller.
 - [x] Packet buffer management (16 buffers)
 - [x] TX/RX queues with FreeRTOS
 - [x] SDIO command scaffolding
-- [ ] `emUSB-Device` bulk endpoint init
-- [ ] `whd_init()` - Wi-Fi Host Driver
-- [ ] `cyhal_sdio_init()` - HAL integration
+- [x] `emUSB-Device` bulk endpoint init (`USBD_BULK_Add()`)
+- [x] `whd_init()` - Wi-Fi Host Driver initialization
+- [x] `whd_wifi_on()` - Wi-Fi power on
+- [x] `whd_network_register_link_callback()` - Link state notifications
+- [x] `cyhal_sdio_init()` - HAL integration
+- [x] `cyhal_sdio_send_cmd()` - CMD52 (register read/write)
+- [x] `cyhal_sdio_bulk_transfer()` - CMD53 (block data)
+- [x] `cyhal_sdio_register_callback()` - Async DMA with IRQ
 
 ---
 

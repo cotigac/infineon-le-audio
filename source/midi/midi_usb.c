@@ -1163,3 +1163,26 @@ int midi_usb_send_continue(uint8_t cable)
 {
     return midi_usb_send_realtime(cable, 0xFB);
 }
+
+int midi_usb_receive(midi_usb_event_t *event)
+{
+    if (!g_midi_usb_ctx.initialized) {
+        return -2;
+    }
+
+    if (event == NULL) {
+        return -3;
+    }
+
+    /* Use the existing private function to pop from RX queue */
+    return rx_queue_pop(event);
+}
+
+uint16_t midi_usb_rx_available(void)
+{
+    if (!g_midi_usb_ctx.initialized) {
+        return 0;
+    }
+
+    return g_midi_usb_ctx.rx_count;
+}
