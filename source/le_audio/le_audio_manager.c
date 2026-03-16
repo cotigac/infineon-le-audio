@@ -15,7 +15,7 @@
  */
 
 #include "le_audio_manager.h"
-#include "../audio/lc3_wrapper.h"
+#include "../ipc/audio_ipc.h"
 #include "../config/lc3_config.h"
 
 #include <stdlib.h>
@@ -154,8 +154,9 @@ typedef struct {
     /* Configuration */
     le_audio_codec_config_t codec_config;
 
-    /* LC3 codec context */
-    lc3_codec_ctx_t *lc3_ctx;
+    /* IPC frame size cache (from codec config) */
+    uint16_t octets_per_frame;  /**< LC3 frame size in bytes */
+    uint16_t samples_per_frame; /**< PCM samples per LC3 frame */
 
     /* Mode-specific state */
     union {
@@ -364,54 +365,93 @@ static void notify_error(int error_code)
 }
 
 /*******************************************************************************
- * LC3 Codec Operations
+ * LC3 Codec Operations (via IPC to CM55)
+ *
+ * LC3 encoding/decoding runs on CM55 (audio DSP core).
+ * These functions use IPC to communicate with CM55:
+ * - Encoding: CM55 encodes I2S audio -> sends LC3 via IPC -> CM33 sends via ISOC
+ * - Decoding: CM33 receives ISOC -> sends LC3 via IPC -> CM55 decodes to I2S
  ******************************************************************************/
 
+/**
+ * @brief Get encoded LC3 frame from CM55 via IPC
+ *
+ * CM55 continuously encodes I2S audio and sends LC3 frames via IPC.
+ * This function retrieves the next available encoded frame.
+ */
 static int encode_audio_frame(const int16_t *pcm_in, uint8_t *lc3_out,
                               uint16_t *lc3_len)
 {
-    int result;
+    audio_ipc_frame_t ipc_frame;
+    cy_rslt_t result;
 
-    if (g_le_audio_ctx.lc3_ctx == NULL) {
+    (void)pcm_in;  /* PCM comes from I2S on CM55, not passed from CM33 */
+
+    if (!audio_ipc_is_ready()) {
         return -1;
     }
 
-    /* Encode using LC3 wrapper */
-    result = lc3_wrapper_encode(g_le_audio_ctx.lc3_ctx, pcm_in, lc3_out, 0);
-
-    if (result == 0) {
-        *lc3_len = lc3_wrapper_get_frame_bytes(g_le_audio_ctx.lc3_ctx);
-    } else {
-        g_le_audio_ctx.encode_errors++;
+    /* Get encoded frame from CM55 via IPC */
+    result = audio_ipc_receive_from_encoder(&ipc_frame);
+    if (result != CY_RSLT_SUCCESS) {
+        /* No frame available */
+        return -2;
     }
 
-    return result;
+    /* Copy encoded data */
+    if (ipc_frame.length > 0 && ipc_frame.length <= AUDIO_IPC_MAX_LC3_FRAME_SIZE) {
+        memcpy(lc3_out, ipc_frame.data, ipc_frame.length);
+        *lc3_len = ipc_frame.length;
+        return 0;
+    }
+
+    g_le_audio_ctx.encode_errors++;
+    return -3;
 }
 
+/**
+ * @brief Send LC3 frame to CM55 for decoding via IPC
+ *
+ * Received LC3 frames are sent to CM55 for decoding.
+ * CM55 decodes and outputs to I2S.
+ */
 static int decode_audio_frame(const uint8_t *lc3_in, uint16_t lc3_len,
                               int16_t *pcm_out)
 {
-    int result;
+    audio_ipc_frame_t ipc_frame;
+    cy_rslt_t result;
 
-    (void)lc3_len;  /* Length is configured at init */
+    (void)pcm_out;  /* PCM goes to I2S on CM55, not returned to CM33 */
 
-    if (g_le_audio_ctx.lc3_ctx == NULL) {
+    if (!audio_ipc_is_ready()) {
         return -1;
     }
 
-    if (lc3_in == NULL) {
-        /* Packet loss - use PLC */
-        result = lc3_wrapper_decode_plc(g_le_audio_ctx.lc3_ctx, pcm_out, 0);
+    /* Prepare IPC frame */
+    memset(&ipc_frame, 0, sizeof(ipc_frame));
+
+    if (lc3_in == NULL || lc3_len == 0) {
+        /* Packet loss - signal PLC to CM55 */
+        ipc_frame.length = 0;
+        ipc_frame.flags = AUDIO_IPC_FLAG_PLC;
     } else {
-        /* Normal decode */
-        result = lc3_wrapper_decode(g_le_audio_ctx.lc3_ctx, lc3_in, pcm_out, 0);
+        /* Copy LC3 data */
+        if (lc3_len > AUDIO_IPC_MAX_LC3_FRAME_SIZE) {
+            lc3_len = AUDIO_IPC_MAX_LC3_FRAME_SIZE;
+        }
+        memcpy(ipc_frame.data, lc3_in, lc3_len);
+        ipc_frame.length = lc3_len;
+        ipc_frame.flags = AUDIO_IPC_FLAG_VALID;
     }
 
-    if (result != 0) {
+    /* Send to CM55 for decoding */
+    result = audio_ipc_send_to_decoder(&ipc_frame);
+    if (result != CY_RSLT_SUCCESS) {
         g_le_audio_ctx.decode_errors++;
+        return -2;
     }
 
-    return result;
+    return 0;
 }
 
 /*******************************************************************************
@@ -1050,7 +1090,6 @@ static void le_audio_isoc_event_handler(const hci_isoc_event_t *event, void *use
 
 int le_audio_init(const le_audio_codec_config_t *codec_config)
 {
-    lc3_config_t lc3_config;
     int result;
 
     if (codec_config == NULL) {
@@ -1067,16 +1106,13 @@ int le_audio_init(const le_audio_codec_config_t *codec_config)
     /* Store codec configuration */
     g_le_audio_ctx.codec_config = *codec_config;
 
-    /* Initialize LC3 codec */
-    lc3_config.sample_rate = codec_config->sample_rate;
-    lc3_config.frame_duration = (codec_config->frame_duration_us == 7500) ?
-                                 LC3_FRAME_DURATION_7_5MS : LC3_FRAME_DURATION_10MS;
-    lc3_config.octets_per_frame = codec_config->octets_per_frame;
-    lc3_config.channels = codec_config->channels;
-
-    g_le_audio_ctx.lc3_ctx = lc3_wrapper_init(&lc3_config);
-    if (g_le_audio_ctx.lc3_ctx == NULL) {
-        return -3;
+    /* Cache frame parameters for IPC with CM55 (LC3 codec runs on CM55) */
+    g_le_audio_ctx.octets_per_frame = codec_config->octets_per_frame;
+    if (codec_config->frame_duration_us == 7500) {
+        g_le_audio_ctx.samples_per_frame = (codec_config->sample_rate * 75) / 10000;
+    } else {
+        /* 10ms frame duration */
+        g_le_audio_ctx.samples_per_frame = codec_config->sample_rate / 100;
     }
 
     /* Initialize TX queue (PCM buffers) */
@@ -1085,7 +1121,6 @@ int le_audio_init(const le_audio_codec_config_t *codec_config)
                               sizeof(pcm_buffer_t),
                               LE_AUDIO_FRAME_QUEUE_DEPTH);
     if (result != 0) {
-        lc3_wrapper_deinit(g_le_audio_ctx.lc3_ctx);
         return -4;
     }
 
@@ -1095,7 +1130,6 @@ int le_audio_init(const le_audio_codec_config_t *codec_config)
                               sizeof(lc3_frame_t),
                               LE_AUDIO_FRAME_QUEUE_DEPTH);
     if (result != 0) {
-        lc3_wrapper_deinit(g_le_audio_ctx.lc3_ctx);
         return -5;
     }
 
@@ -1114,7 +1148,6 @@ int le_audio_init(const le_audio_codec_config_t *codec_config)
     /* Initialize HCI ISOC module */
     result = hci_isoc_init();
     if (result != HCI_ISOC_OK) {
-        lc3_wrapper_deinit(g_le_audio_ctx.lc3_ctx);
         vQueueDelete(g_le_audio_ctx.tx_queue_handle);
         vQueueDelete(g_le_audio_ctx.rx_queue_handle);
         vSemaphoreDelete(g_le_audio_ctx.state_mutex);
@@ -1128,7 +1161,6 @@ int le_audio_init(const le_audio_codec_config_t *codec_config)
     result = bap_unicast_init();
     if (result != BAP_UNICAST_OK) {
         hci_isoc_deinit();
-        lc3_wrapper_deinit(g_le_audio_ctx.lc3_ctx);
         vQueueDelete(g_le_audio_ctx.tx_queue_handle);
         vQueueDelete(g_le_audio_ctx.rx_queue_handle);
         vSemaphoreDelete(g_le_audio_ctx.state_mutex);
@@ -1140,7 +1172,6 @@ int le_audio_init(const le_audio_codec_config_t *codec_config)
     if (result != BAP_BROADCAST_OK) {
         bap_unicast_deinit();
         hci_isoc_deinit();
-        lc3_wrapper_deinit(g_le_audio_ctx.lc3_ctx);
         vQueueDelete(g_le_audio_ctx.tx_queue_handle);
         vQueueDelete(g_le_audio_ctx.rx_queue_handle);
         vSemaphoreDelete(g_le_audio_ctx.state_mutex);
@@ -1183,11 +1214,7 @@ void le_audio_deinit(void)
         }
     }
 
-    /* Deinitialize LC3 codec */
-    if (g_le_audio_ctx.lc3_ctx != NULL) {
-        lc3_wrapper_deinit(g_le_audio_ctx.lc3_ctx);
-        g_le_audio_ctx.lc3_ctx = NULL;
-    }
+    /* LC3 codec runs on CM55 - no cleanup needed here */
 
     /* Delete FreeRTOS synchronization */
     if (g_le_audio_ctx.tx_queue_handle != NULL) {
@@ -1384,7 +1411,7 @@ int le_audio_send_audio(const int16_t *pcm_data, uint16_t sample_count)
     }
 
     /* Get samples per frame from LC3 context */
-    samples_per_frame = lc3_wrapper_get_samples_per_frame(g_le_audio_ctx.lc3_ctx);
+    samples_per_frame = g_le_audio_ctx.samples_per_frame;
 
     /* Validate sample count */
     if (sample_count > samples_per_frame) {
@@ -1457,7 +1484,7 @@ int le_audio_receive_audio(int16_t *pcm_data, uint16_t sample_count, uint32_t ti
     }
 
     /* Get samples per frame */
-    samples_per_frame = lc3_wrapper_get_samples_per_frame(g_le_audio_ctx.lc3_ctx);
+    samples_per_frame = g_le_audio_ctx.samples_per_frame;
 
     /* Check if we have enough space */
     if (sample_count < samples_per_frame) {

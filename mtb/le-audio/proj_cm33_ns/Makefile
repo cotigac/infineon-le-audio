@@ -141,7 +141,8 @@ INCLUDES+= \
     ../../../libs/wifi-host-driver/WHD/COMPONENT_WIFI6/inc \
     ../../../libs/wifi-host-driver/WHD/COMPONENT_WIFI6/src/include \
     ../../../libs/emusb-device/USBD \
-    ../../../libs/emusb-device/USBD/COMPONENT_USBD_BASE/COMPONENT_PSE84/CONFIG_Debug
+    ../../../libs/emusb-device/USBD/COMPONENT_PSE84 \
+    ../../../libs/emusb-device/USBD/COMPONENT_USBD_BASE/COMPONENT_PSE84/CONFIG_$(CONFIG)
 
 # Add additional defines to the build process (without a leading -D).
 DEFINES+=CY_RETARGET_IO_CONVERT_LF_TO_CRLF
@@ -171,7 +172,8 @@ ASFLAGS+=
 LDFLAGS+=
 
 # Additional / custom libraries to link in to the application.
-LDLIBS+=
+# emUSB-Device library (prebuilt for PSE84 CM33)
+LDLIBS+=$(SEARCH_emusb-device)/USBD/COMPONENT_USBD_BASE/COMPONENT_PSE84/CONFIG_$(CONFIG)/COMPONENT_CM33/COMPONENT_SOFTFP/TOOLCHAIN_GCC_ARM/gcc.a
 
 # Path to the linker script to use (if empty, use the default linker script).
 LINKER_SCRIPT=
