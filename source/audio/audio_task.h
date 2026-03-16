@@ -89,6 +89,7 @@ typedef enum {
     AUDIO_TASK_STATE_STARTING,      /**< Task starting up */
     AUDIO_TASK_STATE_RUNNING,       /**< Task actively processing audio */
     AUDIO_TASK_STATE_STOPPING,      /**< Task stopping */
+    AUDIO_TASK_STATE_SUSPENDED,     /**< Task suspended (power saving) */
     AUDIO_TASK_STATE_ERROR          /**< Task encountered error */
 } audio_task_state_t;
 

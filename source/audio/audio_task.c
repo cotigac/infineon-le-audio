@@ -13,7 +13,7 @@
 #include "audio_buffers.h"
 #include "lc3_wrapper.h"
 #include "i2s_stream.h"
-#include "isoc_handler.h"
+#include "ipc/audio_ipc.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -61,8 +61,8 @@ typedef struct {
     lc3_codec_ctx_t *lc3_codec;         /**< LC3 codec context (shared encode/decode) */
 
     /* Buffers */
-    audio_ring_buffer_t *pcm_buffer;    /**< PCM ring buffer */
-    audio_ring_buffer_t *lc3_buffer;    /**< LC3 ring buffer */
+    audio_buffer_t *pcm_buffer;         /**< PCM ring buffer */
+    audio_buffer_t *lc3_buffer;         /**< LC3 ring buffer */
 
     /* Timing */
     uint32_t last_process_time;         /**< Last processing timestamp */
@@ -299,25 +299,37 @@ int audio_task_create_stream(audio_stream_direction_t direction,
     uint16_t lc3_frame_size = config->octets_per_frame;
 
     /* Create PCM buffer */
-    audio_ring_buffer_config_t pcm_buf_config = {
+    audio_buf_config_t pcm_buf_config = {
+        .type = AUDIO_BUF_TYPE_PCM,
         .frame_size = pcm_frame_size,
-        .num_frames = g_audio_task.config.pcm_buffer_frames,
-        .use_dma = false
+        .depth = g_audio_task.config.pcm_buffer_frames,
+        .track_metadata = true,
+        .high_cb = NULL,
+        .low_cb = NULL,
+        .high_threshold = 0,
+        .low_threshold = 0,
+        .user_data = NULL
     };
-    stream->pcm_buffer = audio_ring_buffer_create(&pcm_buf_config);
+    stream->pcm_buffer = audio_buffer_create(&pcm_buf_config);
     if (stream->pcm_buffer == NULL) {
         return AUDIO_TASK_ERROR_NO_RESOURCES;
     }
 
     /* Create LC3 buffer */
-    audio_ring_buffer_config_t lc3_buf_config = {
+    audio_buf_config_t lc3_buf_config = {
+        .type = AUDIO_BUF_TYPE_LC3,
         .frame_size = lc3_frame_size,
-        .num_frames = g_audio_task.config.lc3_buffer_frames,
-        .use_dma = false
+        .depth = g_audio_task.config.lc3_buffer_frames,
+        .track_metadata = true,
+        .high_cb = NULL,
+        .low_cb = NULL,
+        .high_threshold = 0,
+        .low_threshold = 0,
+        .user_data = NULL
     };
-    stream->lc3_buffer = audio_ring_buffer_create(&lc3_buf_config);
+    stream->lc3_buffer = audio_buffer_create(&lc3_buf_config);
     if (stream->lc3_buffer == NULL) {
-        audio_ring_buffer_destroy(stream->pcm_buffer);
+        audio_buffer_destroy(stream->pcm_buffer);
         stream->pcm_buffer = NULL;
         return AUDIO_TASK_ERROR_NO_RESOURCES;
     }
@@ -333,15 +345,15 @@ int audio_task_create_stream(audio_stream_direction_t direction,
     stream->lc3_codec = lc3_wrapper_init(&lc3_config);
     if (stream->lc3_codec == NULL) {
         printf("ERROR: Failed to create LC3 codec\n");
-        audio_ring_buffer_destroy(stream->pcm_buffer);
-        audio_ring_buffer_destroy(stream->lc3_buffer);
+        audio_buffer_destroy(stream->pcm_buffer);
+        audio_buffer_destroy(stream->lc3_buffer);
         stream->pcm_buffer = NULL;
         stream->lc3_buffer = NULL;
         return AUDIO_TASK_ERROR_NO_RESOURCES;
     }
 
-    printf("Stream %d: LC3 codec created (%u Hz, %u us, %u octets/frame, %u ch)\n",
-           slot, config->sample_rate, config->frame_duration_us,
+    printf("Stream %d: LC3 codec created (%lu Hz, %u us, %u octets/frame, %u ch)\n",
+           slot, (unsigned long)config->sample_rate, config->frame_duration_us,
            config->octets_per_frame, config->channels);
 
     stream->flags |= STREAM_FLAG_CONFIGURED;
@@ -370,11 +382,11 @@ int audio_task_destroy_stream(uint8_t stream_id)
 
     /* Free buffers */
     if (stream->pcm_buffer != NULL) {
-        audio_ring_buffer_destroy(stream->pcm_buffer);
+        audio_buffer_destroy(stream->pcm_buffer);
         stream->pcm_buffer = NULL;
     }
     if (stream->lc3_buffer != NULL) {
-        audio_ring_buffer_destroy(stream->lc3_buffer);
+        audio_buffer_destroy(stream->lc3_buffer);
         stream->lc3_buffer = NULL;
     }
 
@@ -456,8 +468,8 @@ int audio_task_start_stream(uint8_t stream_id)
     }
 
     /* Reset buffers */
-    audio_ring_buffer_flush(stream->pcm_buffer);
-    audio_ring_buffer_flush(stream->lc3_buffer);
+    audio_buffer_reset(stream->pcm_buffer);
+    audio_buffer_reset(stream->lc3_buffer);
 
     /* Reset sequence number */
     stream->sequence_number = 0;
@@ -1036,29 +1048,26 @@ static int process_tx_path(stream_context_t *stream)
         .flags = 0
     };
 
-    int write_result = audio_ring_buffer_write_frame(stream->lc3_buffer,
-                                                      g_audio_task.lc3_encode_buffer,
-                                                      &meta);
-    if (write_result != 0) {
+    int write_result = audio_buffer_write(stream->lc3_buffer,
+                                          g_audio_task.lc3_encode_buffer,
+                                          lc3_len, &meta);
+    if (write_result != AUDIO_BUF_OK) {
         g_audio_task.stats.frames_dropped_tx++;
         stream->frames_dropped++;
     }
 
-    /* Send to ISOC handler based on stream type */
-    int isoc_stream_id = -1;
-    if (stream->info.type == AUDIO_STREAM_TYPE_UNICAST) {
-        /* Unicast: find ISOC stream by CIS handle */
-        isoc_stream_id = isoc_handler_find_by_iso_handle(stream->info.cis_handle);
-    } else if (stream->info.type == AUDIO_STREAM_TYPE_BROADCAST) {
-        /* Broadcast: find ISOC stream by BIG/BIS */
-        isoc_stream_id = isoc_handler_find_by_big_bis(stream->info.big_handle,
-                                                       stream->info.bis_index);
-    }
+    /* Send encoded frame to CM33 via IPC for ISOC transmission */
+    audio_ipc_frame_t ipc_frame;
+    ipc_frame.length = lc3_len;
+    ipc_frame.sequence = stream->sequence_number - 1;  /* Already incremented above */
+    ipc_frame.timestamp = meta.timestamp;
+    ipc_frame.flags = AUDIO_IPC_FLAG_VALID;
+    memcpy(ipc_frame.data, g_audio_task.lc3_encode_buffer, lc3_len);
 
-    if (isoc_stream_id >= 0) {
-        isoc_handler_tx_frame((uint8_t)isoc_stream_id,
-                              g_audio_task.lc3_encode_buffer, lc3_len,
-                              meta.timestamp);
+    cy_rslt_t ipc_result = audio_ipc_send_encoded_frame(&ipc_frame);
+    if (ipc_result != CY_RSLT_SUCCESS) {
+        /* IPC queue full - frame will be dropped on CM33 side */
+        g_audio_task.stats.frames_dropped_tx++;
     }
 
     return AUDIO_TASK_OK;
@@ -1066,6 +1075,10 @@ static int process_tx_path(stream_context_t *stream)
 
 /**
  * @brief Process receive path: ISOC RX -> LC3 decode -> I2S TX
+ *
+ * In dual-core architecture:
+ *   CM33 receives ISOC data and sends to CM55 via IPC
+ *   CM55 (this function) receives from IPC and decodes
  */
 static int process_rx_path(stream_context_t *stream)
 {
@@ -1076,31 +1089,14 @@ static int process_rx_path(stream_context_t *stream)
     const audio_stream_config_t *config = &stream->info.config;
     uint16_t samples_per_frame = calculate_samples_per_frame(config);
 
-    /* Find the ISOC stream to read from */
-    int isoc_stream_id = -1;
-    if (stream->info.type == AUDIO_STREAM_TYPE_UNICAST) {
-        isoc_stream_id = isoc_handler_find_by_iso_handle(stream->info.cis_handle);
-    } else if (stream->info.type == AUDIO_STREAM_TYPE_BROADCAST) {
-        isoc_stream_id = isoc_handler_find_by_big_bis(stream->info.big_handle,
-                                                       stream->info.bis_index);
-    }
-
-    /* Read LC3 frame from ISOC handler's RX buffer */
-    uint16_t lc3_len = 0;
-    uint32_t rx_timestamp = 0;
-    int read_result = -1;
-
-    if (isoc_stream_id >= 0) {
-        read_result = isoc_handler_rx_frame((uint8_t)isoc_stream_id,
-                                             g_audio_task.lc3_decode_buffer,
-                                             MAX_LC3_BYTES_PER_FRAME,
-                                             &lc3_len,
-                                             &rx_timestamp);
-    }
+    /* Receive LC3 frame from CM33 via IPC */
+    audio_ipc_frame_t ipc_frame;
+    cy_rslt_t ipc_result = audio_ipc_receive_for_decode(&ipc_frame);
 
     /* Handle missing frames with PLC */
     bool use_plc = false;
-    if (read_result != ISOC_HANDLER_OK || lc3_len == 0) {
+    if (ipc_result != CY_RSLT_SUCCESS || ipc_frame.length == 0 ||
+        !(ipc_frame.flags & AUDIO_IPC_FLAG_VALID)) {
         if (g_audio_task.config.enable_plc) {
             use_plc = true;
             g_audio_task.stats.plc_frames++;
@@ -1115,6 +1111,12 @@ static int process_rx_path(stream_context_t *stream)
                             0);  /* Non-blocking */
             return AUDIO_TASK_OK;
         }
+    }
+
+    /* Copy LC3 data from IPC frame to decode buffer */
+    uint16_t lc3_len = ipc_frame.length;
+    if (lc3_len > 0 && lc3_len <= MAX_LC3_BYTES_PER_FRAME) {
+        memcpy(g_audio_task.lc3_decode_buffer, ipc_frame.data, lc3_len);
     }
 
     /* Decode LC3 to PCM */
@@ -1209,17 +1211,13 @@ static int encode_pcm_to_lc3(stream_context_t *stream, const int16_t *pcm,
     } else {
         /* Stereo: encode left and right channels separately */
         /* For stereo, we encode left channel to first half, right to second half */
-        uint16_t octets_per_channel = config->octets_per_frame;
-
-        /* Deinterleave and encode left channel (even samples) */
+        /* Note: For full stereo with separate LC3 frames per channel,
+         * the caller should handle dual-buffer output.
+         * Here we just encode channel 0 for simplicity. */
         int result = lc3_wrapper_encode(stream->lc3_codec, pcm, lc3, 0);
         if (result != 0) {
             return AUDIO_TASK_ERROR_CODEC_ERROR;
         }
-
-        /* Note: For full stereo support with separate LC3 frames per channel,
-         * the caller should handle the dual-buffer output.
-         * Here we just encode channel 0 for simplicity. */
     }
 
     return AUDIO_TASK_OK;
@@ -1302,7 +1300,9 @@ static void apply_volume(int16_t *samples, uint16_t num_samples)
 
 /**
  * @brief Update global statistics
+ * @note Reserved for future periodic statistics aggregation
  */
+__attribute__((unused))
 static void update_statistics(void)
 {
     /* Aggregate per-stream stats */

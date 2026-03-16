@@ -1,9 +1,22 @@
 /**
- * @file main.c
- * @brief Infineon LE Audio Demo - Main Application Entry
+ * @file main_non_mtb.c
+ * @brief Infineon LE Audio Demo - CM33 Main Application (Standalone/CMake Build)
  *
- * This application demonstrates full-duplex LE Audio (LC3), Auracast broadcast,
- * and MIDI over BLE/USB on PSoC Edge E81 with CYW55511 Bluetooth.
+ * This is the CM33 core main application for standalone/CMake builds.
+ * It handles:
+ *   - Bluetooth LE Audio (ISOC transport, BAP, PACS)
+ *   - USB MIDI and BLE MIDI
+ *   - Wi-Fi data bridge
+ *   - IPC communication with CM55 for LC3 codec
+ *
+ * Note: This file is for non-ModusToolbox builds. The MTB build uses
+ * proj_cm33_ns/main.c and proj_cm55/main.c instead.
+ *
+ * Architecture (dual-core PSoC Edge E84):
+ *   CM33: BLE stack, USB, Wi-Fi, MIDI, IPC (this file)
+ *   CM55: LC3 codec, I2S audio DSP (separate main)
+ *
+ * Hardware: PSoC Edge E84 (CM33+CM55) + CYW55512 (BLE 6.0 + Wi-Fi 6)
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -11,6 +24,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 
 /* FreeRTOS headers */
 #include "FreeRTOS.h"
@@ -24,9 +38,9 @@
 #include "cy_retarget_io.h"
 
 /* Application headers */
-#include "audio/lc3_wrapper.h"
-#include "audio/i2s_stream.h"
+#include "ipc/audio_ipc.h"
 #include "le_audio/le_audio_manager.h"
+#include "le_audio/isoc_handler.h"
 #include "midi/midi_ble_service.h"
 #include "midi/midi_usb.h"
 #include "midi/midi_router.h"
@@ -37,32 +51,23 @@
  * Definitions
  ******************************************************************************/
 
-/** Task stack sizes */
-#define AUDIO_TASK_STACK_SIZE   (4096)
+/** Task stack sizes (words, not bytes on ARM) */
 #define BLE_TASK_STACK_SIZE     (4096)
 #define USB_TASK_STACK_SIZE     (2048)
 #define MIDI_TASK_STACK_SIZE    (1024)
 #define WIFI_TASK_STACK_SIZE    (4096)
+#define ISOC_TASK_STACK_SIZE    (2048)
 
 /** Task priorities (higher number = higher priority) */
-#define I2S_TASK_PRIORITY       (7)
-#define AUDIO_TASK_PRIORITY     (6)
 #define BLE_TASK_PRIORITY       (5)
 #define USB_TASK_PRIORITY       (4)
 #define WIFI_TASK_PRIORITY      (3)
 #define MIDI_TASK_PRIORITY      (2)
-
-/** Audio configuration */
-#define AUDIO_SAMPLE_RATE       (48000)
-#define AUDIO_FRAME_DURATION_MS (10)
-#define AUDIO_SAMPLES_PER_FRAME (AUDIO_SAMPLE_RATE * AUDIO_FRAME_DURATION_MS / 1000)
+#define ISOC_TASK_PRIORITY      (6)
 
 /*******************************************************************************
  * Global Variables
  ******************************************************************************/
-
-/** LC3 codec context */
-static lc3_codec_ctx_t *g_lc3_ctx = NULL;
 
 /** Application state */
 static volatile bool g_app_running = false;
@@ -71,23 +76,83 @@ static volatile bool g_app_running = false;
  * Task Handles
  ******************************************************************************/
 
-static TaskHandle_t g_audio_task_handle = NULL;
 static TaskHandle_t g_ble_task_handle = NULL;
 static TaskHandle_t g_usb_task_handle = NULL;
 static TaskHandle_t g_midi_task_handle = NULL;
 static TaskHandle_t g_wifi_task_handle = NULL;
+static TaskHandle_t g_isoc_task_handle = NULL;
 
 /*******************************************************************************
  * Function Prototypes
  ******************************************************************************/
 
 static int app_init(void);
-static void audio_task(void *pvParameters);
 static void ble_task(void *pvParameters);
 static void usb_task(void *pvParameters);
 static void midi_task(void *pvParameters);
 static void wifi_task(void *pvParameters);
+static void isoc_task(void *pvParameters);
 static void le_audio_event_handler(const le_audio_event_t *event, void *user_data);
+
+/*******************************************************************************
+ * ISOC Handler Callbacks
+ ******************************************************************************/
+
+/**
+ * @brief TX data callback - get LC3 data from CM55 via IPC
+ */
+static bool isoc_tx_data_callback(uint8_t stream_id, isoc_sdu_t *sdu, void *user_data)
+{
+    (void)stream_id;
+    (void)user_data;
+
+    audio_ipc_frame_t frame;
+
+    /* Get encoded LC3 frame from CM55 via IPC */
+    cy_rslt_t result = audio_ipc_receive_from_encoder(&frame);
+    if (result != CY_RSLT_SUCCESS) {
+        return false;  /* No data available */
+    }
+
+    /* Copy to SDU */
+    if (frame.length > ISOC_HANDLER_MAX_SDU_SIZE) {
+        return false;
+    }
+
+    memcpy(sdu->data, frame.data, frame.length);
+    sdu->length = frame.length;
+    sdu->sequence_number = frame.sequence;
+    sdu->timestamp = frame.timestamp;
+    sdu->num_frames = 1;
+    sdu->valid = (frame.flags & AUDIO_IPC_FLAG_VALID) != 0;
+
+    return true;
+}
+
+/**
+ * @brief RX data callback - send LC3 data to CM55 via IPC for decoding
+ */
+static void isoc_rx_data_callback(uint8_t stream_id, const isoc_sdu_t *sdu, void *user_data)
+{
+    (void)stream_id;
+    (void)user_data;
+
+    audio_ipc_frame_t frame;
+
+    /* Build IPC frame */
+    if (sdu->length > AUDIO_IPC_MAX_LC3_FRAME_SIZE) {
+        return;
+    }
+
+    memcpy(frame.data, sdu->data, sdu->length);
+    frame.length = sdu->length;
+    frame.sequence = sdu->sequence_number;
+    frame.timestamp = sdu->timestamp;
+    frame.flags = sdu->valid ? AUDIO_IPC_FLAG_VALID : 0;
+
+    /* Send to CM55 for decoding */
+    audio_ipc_send_to_decoder(&frame);
+}
 
 /*******************************************************************************
  * Main Function
@@ -106,54 +171,55 @@ int main(void)
 
     printf("\n");
     printf("==============================================\n");
-    printf("   Infineon LE Audio Demo - PSoC Edge E82\n");
+    printf("   Infineon LE Audio Demo - PSoC Edge E84\n");
+    printf("        CM33 Core (Standalone Build)\n");
     printf("==============================================\n");
-    printf("Hardware: PSoC Edge E82 + CYW55512\n");
+    printf("Hardware: PSoC Edge E84 + CYW55512\n");
     printf("Features:\n");
-    printf("  - LE Audio Full-Duplex (LC3)\n");
-    printf("  - Auracast Broadcast\n");
-    printf("  - BLE MIDI\n");
-    printf("  - USB MIDI (High-Speed)\n");
-    printf("  - I2S Audio Streaming\n");
-    printf("  - Wi-Fi Data Bridge\n");
+    printf("  - LE Audio Full-Duplex (ISOC transport)\n");
+    printf("  - Auracast Broadcast (BIS)\n");
+    printf("  - BLE MIDI 1.0\n");
+    printf("  - USB MIDI (High-Speed 480 Mbps)\n");
+    printf("  - Wi-Fi 6 Data Bridge\n");
+    printf("  - IPC to CM55 for LC3 codec\n");
     printf("\n");
     printf("Creating FreeRTOS tasks...\n");
 
     /* Create FreeRTOS tasks */
     BaseType_t task_result;
 
-    task_result = xTaskCreate(audio_task, "Audio", AUDIO_TASK_STACK_SIZE, NULL,
-                              AUDIO_TASK_PRIORITY, &g_audio_task_handle);
-    if (task_result != pdPASS) {
-        printf("ERROR: Failed to create Audio task\n");
-        return -10;
-    }
-
     task_result = xTaskCreate(ble_task, "BLE", BLE_TASK_STACK_SIZE, NULL,
                               BLE_TASK_PRIORITY, &g_ble_task_handle);
     if (task_result != pdPASS) {
         printf("ERROR: Failed to create BLE task\n");
-        return -11;
+        return -10;
     }
 
     task_result = xTaskCreate(usb_task, "USB", USB_TASK_STACK_SIZE, NULL,
                               USB_TASK_PRIORITY, &g_usb_task_handle);
     if (task_result != pdPASS) {
         printf("ERROR: Failed to create USB task\n");
-        return -12;
+        return -11;
     }
 
     task_result = xTaskCreate(midi_task, "MIDI", MIDI_TASK_STACK_SIZE, NULL,
                               MIDI_TASK_PRIORITY, &g_midi_task_handle);
     if (task_result != pdPASS) {
         printf("ERROR: Failed to create MIDI task\n");
-        return -13;
+        return -12;
     }
 
     task_result = xTaskCreate(wifi_task, "WiFi", WIFI_TASK_STACK_SIZE, NULL,
                               WIFI_TASK_PRIORITY, &g_wifi_task_handle);
     if (task_result != pdPASS) {
         printf("ERROR: Failed to create Wi-Fi task\n");
+        return -13;
+    }
+
+    task_result = xTaskCreate(isoc_task, "ISOC", ISOC_TASK_STACK_SIZE, NULL,
+                              ISOC_TASK_PRIORITY, &g_isoc_task_handle);
+    if (task_result != pdPASS) {
+        printf("ERROR: Failed to create ISOC task\n");
         return -14;
     }
 
@@ -204,32 +270,24 @@ static int app_init(void)
 
     /* Now printf works - print startup message */
     printf("\n\n");
-    printf("Board initialized: PSoC Edge E82\n");
+    printf("Board initialized: PSoC Edge E84 (CM33 core)\n");
     printf("Debug UART ready at %lu baud\n", (unsigned long)CY_RETARGET_IO_BAUDRATE);
 
     /***************************************************************************
-     * Phase 2: Application Module Initialization
+     * Phase 2: IPC Initialization (must be before CM55 boots)
      **************************************************************************/
 
-    /* Initialize LC3 codec */
-    printf("Initializing LC3 codec...\n");
-    lc3_config_t lc3_config = LC3_CONFIG_DEFAULT;
-    g_lc3_ctx = lc3_wrapper_init(&lc3_config);
-    if (g_lc3_ctx == NULL) {
-        printf("ERROR: LC3 codec initialization failed\n");
+    printf("Initializing IPC (CM33 primary)...\n");
+    cy_result = audio_ipc_init_primary();
+    if (cy_result != CY_RSLT_SUCCESS) {
+        printf("ERROR: IPC initialization failed: 0x%08lx\n", (unsigned long)cy_result);
         return -2;
     }
-    printf("  LC3 codec: OK\n");
+    printf("  IPC: OK (waiting for CM55)\n");
 
-    /* Initialize I2S stream */
-    printf("Initializing I2S stream...\n");
-    i2s_stream_config_t i2s_config = I2S_STREAM_CONFIG_DEFAULT;
-    result = i2s_stream_init(&i2s_config);
-    if (result != 0) {
-        printf("ERROR: I2S initialization failed: %d\n", result);
-        return -3;
-    }
-    printf("  I2S stream: OK\n");
+    /***************************************************************************
+     * Phase 3: Application Module Initialization
+     **************************************************************************/
 
     /* Initialize LE Audio manager */
     printf("Initializing LE Audio manager...\n");
@@ -237,12 +295,28 @@ static int app_init(void)
     result = le_audio_init(&le_codec_config);
     if (result != 0) {
         printf("ERROR: LE Audio initialization failed: %d\n", result);
-        return -4;
+        return -3;
     }
     printf("  LE Audio manager: OK\n");
 
     /* Register LE Audio event callback */
     le_audio_register_callback(le_audio_event_handler, NULL);
+
+    /* Initialize ISOC handler with IPC callbacks */
+    printf("Initializing ISOC handler...\n");
+    isoc_handler_config_t isoc_config = {
+        .tx_callback = isoc_tx_data_callback,
+        .rx_callback = isoc_rx_data_callback,
+        .state_callback = NULL,
+        .error_callback = NULL,
+        .user_data = NULL
+    };
+    result = isoc_handler_init(&isoc_config);
+    if (result != 0) {
+        printf("ERROR: ISOC handler initialization failed: %d\n", result);
+        return -4;
+    }
+    printf("  ISOC handler: OK\n");
 
     /* Initialize Bluetooth stack */
     printf("Initializing Bluetooth stack...\n");
@@ -291,7 +365,8 @@ static int app_init(void)
     }
 
     g_app_running = true;
-    printf("\nApplication initialization complete!\n");
+    printf("\nCM33 initialization complete!\n");
+    printf("Note: CM55 must be running for audio (LC3/I2S)\n");
 
     return 0;
 }
@@ -299,46 +374,6 @@ static int app_init(void)
 /*******************************************************************************
  * FreeRTOS Tasks
  ******************************************************************************/
-
-/**
- * @brief Audio task - handles LC3 encoding/decoding and I2S streaming
- */
-static void audio_task(void *pvParameters)
-{
-    (void)pvParameters;
-
-    int16_t pcm_rx_buffer[AUDIO_SAMPLES_PER_FRAME];
-    int16_t pcm_tx_buffer[AUDIO_SAMPLES_PER_FRAME];
-    uint8_t lc3_buffer[100];  /* Encoded LC3 frame */
-
-    printf("Audio task started\n");
-
-    /* Start I2S streaming */
-    i2s_stream_start();
-
-    while (g_app_running) {
-        /* Read PCM samples from I2S (from main controller) */
-        int samples = i2s_stream_read(pcm_rx_buffer, AUDIO_SAMPLES_PER_FRAME, 20);
-        if (samples > 0) {
-            /* Encode to LC3 */
-            int result = lc3_wrapper_encode(g_lc3_ctx, pcm_rx_buffer, lc3_buffer, 0);
-            if (result == 0) {
-                /* Send LC3 frame to LE Audio for transmission */
-                le_audio_send_audio(pcm_rx_buffer, samples);
-            }
-        }
-
-        /* Check for received LE Audio data */
-        int received = le_audio_receive_audio(pcm_tx_buffer, AUDIO_SAMPLES_PER_FRAME, 0);
-        if (received > 0) {
-            /* Write to I2S (to main controller) */
-            i2s_stream_write(pcm_tx_buffer, received, 10);
-        }
-
-        /* Short delay - audio timing is driven by I2S DMA interrupts */
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-}
 
 /**
  * @brief BLE task - handles Bluetooth stack and LE Audio profiles
@@ -422,6 +457,51 @@ static void wifi_task(void *pvParameters)
 
     /* Stop Wi-Fi bridge on task exit */
     wifi_bridge_stop();
+}
+
+/**
+ * @brief ISOC task - handles isochronous audio data path via IPC
+ *
+ * This task bridges the ISOC handler (BLE isochronous transport) with
+ * the CM55 core (LC3 codec) via IPC.
+ *
+ * TX Path: CM55 encodes PCM -> IPC -> ISOC TX -> BLE
+ * RX Path: BLE -> ISOC RX -> IPC -> CM55 decodes to PCM
+ */
+static void isoc_task(void *pvParameters)
+{
+    (void)pvParameters;
+
+    printf("ISOC task started (CM33 <-> CM55 IPC bridge)\n");
+
+    /* Wait for IPC to be ready (CM55 must initialize) */
+    uint32_t timeout = 0;
+    while (!audio_ipc_is_ready() && timeout < 5000) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        timeout += 10;
+    }
+
+    if (audio_ipc_is_ready()) {
+        printf("  IPC ready - CM55 connected\n");
+    } else {
+        printf("  WARNING: IPC not ready - CM55 may not be running\n");
+    }
+
+    while (g_app_running) {
+        /* Process ISOC TX/RX data via IPC
+         * This calls the callbacks registered in app_init() */
+        isoc_handler_process();
+
+        /* Check for IPC frames and forward to ISOC streams */
+        uint32_t frames_available = audio_ipc_encoder_frames_available();
+        if (frames_available > 0) {
+            /* Frames available from CM55 encoder - process TX */
+            isoc_handler_process_tx();
+        }
+
+        /* Yield - ISOC timing is driven by BLE controller */
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
 }
 
 /*******************************************************************************

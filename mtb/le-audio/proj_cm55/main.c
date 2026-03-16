@@ -4,8 +4,8 @@
  *
  * This is the main entry point for the CM55 core which handles:
  * - LC3 codec encoding/decoding (leveraging Helium DSP)
- * - I2S audio streaming with DMA ping-pong buffers
- * - Audio buffer management
+ * - I2S audio streaming with DMA
+ * - Audio buffer management via audio_task module
  * - Inter-processor communication with CM33 for ISOC data
  *
  * Architecture:
@@ -36,11 +36,9 @@
 #include "cyabs_rtos_impl.h"
 #include "cy_time.h"
 
-/* Custom audio modules */
-#include "audio/lc3_wrapper.h"
-#include "audio/i2s_stream.h"
-#include "audio/audio_buffers.h"
+/* Audio modules */
 #include "audio/audio_task.h"
+#include "audio/i2s_stream.h"
 #include "ipc/audio_ipc.h"
 
 /*******************************************************************************
@@ -51,11 +49,6 @@
 #define LPTIMER_1_WAIT_TIME_USEC        (62U)
 #define APP_LPTIMER_INTERRUPT_PRIORITY  (1U)
 
-/* Audio task configuration */
-#define AUDIO_TASK_NAME         "Audio"
-#define AUDIO_TASK_STACK_SIZE   (4096U)
-#define AUDIO_TASK_PRIORITY     (configMAX_PRIORITIES - 1U)  /* Highest priority */
-
 /* IPC task for CM33 communication */
 #define IPC_TASK_NAME           "IPC"
 #define IPC_TASK_STACK_SIZE     (2048U)
@@ -64,12 +57,10 @@
 /* Audio configuration */
 #define AUDIO_SAMPLE_RATE       (48000U)
 #define AUDIO_FRAME_DURATION_US (10000U)  /* 10ms frames */
-#define AUDIO_SAMPLES_PER_FRAME (AUDIO_SAMPLE_RATE * AUDIO_FRAME_DURATION_US / 1000000U)
 #define AUDIO_CHANNELS          (1U)      /* Mono for LE Audio */
 
 /* LC3 configuration */
-#define LC3_BITRATE_BPS         (96000U)  /* 96 kbps for high quality */
-#define LC3_FRAME_BYTES         (100U)    /* Encoded frame size */
+#define LC3_FRAME_BYTES         (100U)    /* Encoded frame size at 96 kbps */
 
 /*******************************************************************************
  * Global Variables
@@ -81,29 +72,14 @@ static mtb_hal_lptimer_t lptimer_obj;
 /* RTC HAL object */
 static mtb_hal_rtc_t rtc_obj;
 
-/* LC3 codec context */
-static lc3_codec_ctx_t *g_lc3_ctx = NULL;
-
 /* Application state */
-static volatile bool g_audio_running = false;
+static volatile bool g_app_running = false;
 
 /* Task handles */
-static TaskHandle_t g_audio_task_handle = NULL;
 static TaskHandle_t g_ipc_task_handle = NULL;
 
-/* Audio buffers - ping-pong for DMA */
-static int16_t g_pcm_rx_buffer_a[AUDIO_SAMPLES_PER_FRAME];
-static int16_t g_pcm_rx_buffer_b[AUDIO_SAMPLES_PER_FRAME];
-static int16_t g_pcm_tx_buffer_a[AUDIO_SAMPLES_PER_FRAME];
-static int16_t g_pcm_tx_buffer_b[AUDIO_SAMPLES_PER_FRAME];
-
-/* LC3 encoded frame buffers */
-static uint8_t g_lc3_tx_buffer[LC3_FRAME_BYTES];
-static uint8_t g_lc3_rx_buffer[LC3_FRAME_BYTES];
-
-/* Synchronization */
-static SemaphoreHandle_t g_audio_ready_sem = NULL;
-/* LC3 frame queues are now handled via IPC (see ipc/audio_ipc.c) */
+/* Audio stream ID (created by audio_task module) */
+static uint8_t g_audio_stream_id = 0xFF;
 
 /*******************************************************************************
  * Function Prototypes
@@ -113,11 +89,13 @@ static void handle_app_error(void);
 static void lptimer_interrupt_handler(void);
 static void setup_clib_support(void);
 static void setup_tickless_idle_timer(void);
-static int init_audio_modules(void);
-static void audio_task(void *pvParameters);
+static int init_audio_system(void);
 static void ipc_task(void *pvParameters);
-static void i2s_rx_callback(int16_t *buffer, uint16_t sample_count, void *user_data);
-static void i2s_tx_callback(int16_t *buffer, uint16_t sample_count, void *user_data);
+static void audio_state_callback(audio_task_state_t state, void *user_data);
+static void audio_stream_callback(uint8_t stream_id, int event, void *user_data);
+static void audio_pcm_callback(int16_t *samples, uint16_t num_samples,
+                               uint8_t channels, audio_stream_direction_t direction,
+                               void *user_data);
 
 /*******************************************************************************
  * Platform Setup Functions (from Infineon example)
@@ -177,237 +155,255 @@ static void setup_tickless_idle_timer(void)
 }
 
 /*******************************************************************************
- * Audio Module Initialization
+ * Audio System Initialization
  ******************************************************************************/
 
 /**
- * @brief Initialize audio DSP modules (runs on CM55)
+ * @brief Initialize the complete audio system
  *
- * Initializes LC3 codec and I2S streaming with DMA.
+ * This initializes:
+ * 1. IPC with CM33 (must wait for CM33 to be ready)
+ * 2. Audio task module (handles LC3, I2S, buffers)
+ * 3. Creates an audio stream for LE Audio
  */
-static int init_audio_modules(void)
+static int init_audio_system(void)
 {
     int result;
 
-    printf("[CM55] Initializing audio modules...\n");
+    printf("[CM55] Initializing audio system...\n");
 
-    /* Initialize LC3 codec (leverages Helium DSP) */
-    printf("  LC3 codec...\n");
-    lc3_config_t lc3_config = {
-        .sample_rate = AUDIO_SAMPLE_RATE,
-        .frame_duration = LC3_FRAME_DURATION_10MS,
-        .octets_per_frame = LC3_FRAME_BYTES,
-        .channels = AUDIO_CHANNELS
-    };
-
-    g_lc3_ctx = lc3_wrapper_init(&lc3_config);
-    if (g_lc3_ctx == NULL) {
-        printf("  ERROR: LC3 codec init failed\n");
+    /***************************************************************************
+     * Step 1: Initialize IPC with CM33
+     **************************************************************************/
+    printf("  IPC with CM33...\n");
+    if (audio_ipc_init_secondary() != CY_RSLT_SUCCESS) {
+        printf("  ERROR: IPC init failed - CM33 not ready?\n");
         return -1;
     }
-    printf("  LC3 codec: OK (48kHz, 10ms, %d bytes/frame)\n", LC3_FRAME_BYTES);
+    printf("  IPC: OK\n");
 
-    /* Initialize I2S stream with DMA ping-pong buffers */
+    /***************************************************************************
+     * Step 2: Initialize I2S stream
+     **************************************************************************/
     printf("  I2S stream...\n");
     i2s_stream_config_t i2s_config = {
         .direction = I2S_STREAM_DUPLEX,
         .sample_rate = I2S_SAMPLE_RATE_48000,
         .bit_depth = I2S_BITS_16,
         .channels = AUDIO_CHANNELS,
-        .buffer_size_samples = AUDIO_SAMPLES_PER_FRAME
+        .buffer_size_samples = AUDIO_SAMPLE_RATE * AUDIO_FRAME_DURATION_US / 1000000
     };
 
     result = i2s_stream_init(&i2s_config);
     if (result != 0) {
-        printf("  WARNING: I2S init failed: %d\n", result);
-        /* Continue anyway - might work without hardware */
+        printf("  WARNING: I2S init returned %d (may work without hardware)\n", result);
     } else {
-        printf("  I2S stream: OK (48kHz, 16-bit, %d samples/frame)\n",
-               AUDIO_SAMPLES_PER_FRAME);
+        printf("  I2S: OK (48kHz, 16-bit, %lu samples/frame)\n",
+               (unsigned long)(AUDIO_SAMPLE_RATE * AUDIO_FRAME_DURATION_US / 1000000));
     }
 
-    /* Register I2S callbacks for DMA completion */
-    i2s_stream_register_rx_callback(i2s_rx_callback, NULL);
-    i2s_stream_register_tx_callback(i2s_tx_callback, NULL);
+    /***************************************************************************
+     * Step 3: Initialize audio task module
+     **************************************************************************/
+    printf("  Audio task module...\n");
 
-    /* Audio buffers: Using static ping-pong buffers (declared globally)
-     * LC3 frames are transferred via IPC (audio_ipc.c) */
-    printf("  Audio buffers: static ping-pong (no init required)\n");
+    /* Default stream configuration for LE Audio */
+    audio_stream_config_t default_stream_config = {
+        .sample_rate = AUDIO_SAMPLE_RATE,
+        .frame_duration_us = AUDIO_FRAME_DURATION_US,
+        .channels = AUDIO_CHANNELS,
+        .octets_per_frame = LC3_FRAME_BYTES
+    };
 
-    printf("[CM55] Audio module initialization complete\n\n");
+    audio_task_config_t audio_config = {
+        .task_name = "AudioDSP",
+        .stack_size = AUDIO_TASK_STACK_SIZE,
+        .priority = AUDIO_TASK_PRIORITY,
+        .pcm_buffer_frames = 4,      /* 4 frames of PCM buffering */
+        .lc3_buffer_frames = 4,      /* 4 frames of LC3 buffering */
+        .enable_plc = true,          /* Enable packet loss concealment */
+        .default_config = default_stream_config,
+        .state_callback = audio_state_callback,
+        .stream_callback = audio_stream_callback,
+        .pcm_callback = audio_pcm_callback,
+        .user_data = NULL
+    };
+
+    result = audio_task_init(&audio_config);
+    if (result != AUDIO_TASK_OK) {
+        printf("  ERROR: Audio task init failed: %d\n", result);
+        return -2;
+    }
+    printf("  Audio task: OK\n");
+
+    /***************************************************************************
+     * Step 4: Create audio stream for LE Audio
+     **************************************************************************/
+    printf("  Creating audio stream...\n");
+
+    audio_stream_config_t stream_config = {
+        .sample_rate = AUDIO_SAMPLE_RATE,
+        .frame_duration_us = AUDIO_FRAME_DURATION_US,
+        .channels = AUDIO_CHANNELS,
+        .octets_per_frame = LC3_FRAME_BYTES
+    };
+
+    result = audio_task_create_stream(
+        AUDIO_STREAM_DIRECTION_BIDIR,  /* Full duplex */
+        AUDIO_STREAM_TYPE_UNICAST,     /* CIS unicast (default) */
+        &stream_config,
+        &g_audio_stream_id
+    );
+
+    if (result != AUDIO_TASK_OK) {
+        printf("  ERROR: Stream creation failed: %d\n", result);
+        return -3;
+    }
+    printf("  Audio stream: OK (ID=%d, bidir, 48kHz, %d bytes/frame)\n",
+           g_audio_stream_id, LC3_FRAME_BYTES);
+
+    /***************************************************************************
+     * Step 5: Start audio processing
+     **************************************************************************/
+    printf("  Starting audio task...\n");
+    result = audio_task_start();
+    if (result != AUDIO_TASK_OK) {
+        printf("  ERROR: Audio task start failed: %d\n", result);
+        return -4;
+    }
+
+    result = audio_task_start_stream(g_audio_stream_id);
+    if (result != AUDIO_TASK_OK) {
+        printf("  ERROR: Stream start failed: %d\n", result);
+        return -5;
+    }
+
+    /* Start I2S hardware */
+    i2s_stream_start();
+
+    g_app_running = true;
+    printf("[CM55] Audio system initialized and running!\n\n");
+
     return 0;
 }
 
 /*******************************************************************************
- * I2S Callbacks (called from DMA ISR context)
+ * Audio Task Callbacks
  ******************************************************************************/
 
 /**
- * @brief I2S RX callback - called when PCM data received from codec
- *
- * Encodes PCM to LC3 and sends to CM33 via IPC for ISOC transmission.
+ * @brief Audio task state change callback
  */
-static void i2s_rx_callback(int16_t *buffer, uint16_t sample_count, void *user_data)
+static void audio_state_callback(audio_task_state_t state, void *user_data)
 {
     (void)user_data;
-    (void)sample_count;
-    static uint16_t tx_sequence = 0;
 
-    if (!g_audio_running || g_lc3_ctx == NULL) {
-        return;
-    }
+    const char *state_names[] = {
+        "IDLE", "STARTING", "RUNNING", "STOPPING", "ERROR"
+    };
 
-    /* Encode PCM to LC3 using Helium-optimized codec */
-    int result = lc3_wrapper_encode(g_lc3_ctx, buffer, g_lc3_tx_buffer, 0);
-    if (result == 0) {
-        /* Prepare IPC frame and send to CM33 */
-        audio_ipc_frame_t frame;
-        frame.length = LC3_FRAME_BYTES;
-        frame.sequence = tx_sequence++;
-        frame.timestamp = xTaskGetTickCountFromISR() * 1000 / configTICK_RATE_HZ;
-        frame.flags = AUDIO_IPC_FLAG_VALID;
-        memcpy(frame.data, g_lc3_tx_buffer, LC3_FRAME_BYTES);
-
-        /* Send to CM33 via IPC (non-blocking) */
-        audio_ipc_send_encoded_frame(&frame);
+    if (state < sizeof(state_names)/sizeof(state_names[0])) {
+        printf("[Audio] State: %s\n", state_names[state]);
     }
 }
 
 /**
- * @brief I2S TX callback - called when codec needs PCM data
- *
- * Receives LC3 from CM33 via IPC and decodes to PCM for playback.
+ * @brief Audio stream event callback
  */
-static void i2s_tx_callback(int16_t *buffer, uint16_t sample_count, void *user_data)
+static void audio_stream_callback(uint8_t stream_id, int event, void *user_data)
 {
     (void)user_data;
-    (void)sample_count;
 
-    if (!g_audio_running || g_lc3_ctx == NULL) {
-        /* Output silence if not running */
-        memset(buffer, 0, sample_count * sizeof(int16_t));
-        return;
-    }
+    printf("[Audio] Stream %d event: %d\n", stream_id, event);
+}
 
-    /* Try to get LC3 frame from CM33 via IPC */
-    audio_ipc_frame_t frame;
-    if (audio_ipc_receive_for_decode(&frame) == CY_RSLT_SUCCESS) {
-        /* Copy to local buffer and decode */
-        memcpy(g_lc3_rx_buffer, frame.data, frame.length);
+/**
+ * @brief PCM data callback - integrates with IPC
+ *
+ * This callback is called by audio_task after encoding (TX direction)
+ * or before decoding (RX direction). We use it to transfer data via IPC.
+ */
+static void audio_pcm_callback(int16_t *samples, uint16_t num_samples,
+                               uint8_t channels, audio_stream_direction_t direction,
+                               void *user_data)
+{
+    (void)user_data;
+    (void)samples;
+    (void)num_samples;
+    (void)channels;
+    (void)direction;
 
-        /* Decode LC3 to PCM using Helium-optimized codec */
-        int result = lc3_wrapper_decode(g_lc3_ctx, g_lc3_rx_buffer, buffer, 0);
-        if (result != 0) {
-            /* Decode failed - use PLC (Packet Loss Concealment) */
-            lc3_wrapper_decode_plc(g_lc3_ctx, buffer, 0);
-        }
-    } else {
-        /* No data available - use PLC */
-        lc3_wrapper_decode_plc(g_lc3_ctx, buffer, 0);
-    }
+    /* Note: The actual IPC transfer is handled internally by audio_task
+     * when it interacts with isoc_handler. This callback is for any
+     * additional processing needed (e.g., monitoring, side effects). */
 }
 
 /*******************************************************************************
- * FreeRTOS Tasks
+ * IPC Task
  ******************************************************************************/
 
 /**
- * @brief Audio task - manages I2S streaming and LC3 processing
+ * @brief IPC task - monitors IPC health and audio statistics
  *
- * Highest priority task on CM55. Handles real-time audio requirements.
- */
-static void audio_task(void *pvParameters)
-{
-    (void)pvParameters;
-
-    printf("[Audio] Task started on CM55\n");
-
-    /* Initialize IPC with CM33 (must wait for CM33 to init first) */
-    printf("[Audio] Waiting for IPC with CM33...\n");
-    if (audio_ipc_init_secondary() != CY_RSLT_SUCCESS) {
-        printf("[Audio] ERROR: IPC init failed - CM33 not ready?\n");
-        vTaskDelete(NULL);
-        return;
-    }
-    printf("[Audio] IPC with CM33 established\n");
-
-    /* Initialize audio modules */
-    if (init_audio_modules() != 0) {
-        printf("[Audio] ERROR: Module init failed\n");
-        vTaskDelete(NULL);
-        return;
-    }
-
-    /* Signal that audio is ready */
-    xSemaphoreGive(g_audio_ready_sem);
-
-    /* Start I2S streaming */
-    printf("[Audio] Starting I2S stream\n");
-    i2s_stream_start();
-    g_audio_running = true;
-
-    /* Main audio processing loop */
-    while (g_audio_running) {
-        /* Most work is done in ISR callbacks
-         * This loop handles any deferred processing */
-
-        /* Check for audio buffer statistics */
-        i2s_stream_stats_t stats;
-        i2s_stream_get_stats(&stats);
-
-        if (stats.buffer_underruns > 0 || stats.buffer_overruns > 0) {
-            /* Log buffer issues (rate limit this in production) */
-        }
-
-        /* Yield to allow other tasks to run */
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-
-    /* Cleanup */
-    i2s_stream_stop();
-    printf("[Audio] Task stopped\n");
-}
-
-/**
- * @brief IPC task - monitors IPC health and statistics
- *
- * The actual LC3 frame transfer is handled in I2S callbacks using
- * the audio_ipc module. This task monitors IPC health and logs stats.
+ * This task monitors the IPC connection with CM33 and logs
+ * audio processing statistics periodically.
  */
 static void ipc_task(void *pvParameters)
 {
     (void)pvParameters;
-    audio_ipc_stats_t stats;
-    audio_ipc_stats_t prev_stats = {0};
+    audio_ipc_stats_t ipc_stats;
+    audio_ipc_stats_t prev_ipc_stats = {0};
+    audio_task_stats_t audio_stats;
+    uint32_t print_counter = 0;
 
     printf("[IPC] Task started on CM55\n");
 
-    /* Wait for audio to be ready */
-    xSemaphoreTake(g_audio_ready_sem, portMAX_DELAY);
-    xSemaphoreGive(g_audio_ready_sem);
+    /* Wait for audio system to initialize */
+    while (!g_app_running) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
 
-    printf("[IPC] Audio ready, monitoring IPC\n");
+    printf("[IPC] Audio running, monitoring IPC and stats\n");
 
-    while (g_audio_running) {
+    while (g_app_running) {
         /* Check IPC health */
         if (!audio_ipc_is_ready()) {
             printf("[IPC] WARNING: IPC connection lost!\n");
         }
 
-        /* Get and log statistics periodically */
-        audio_ipc_get_stats(&stats);
+        /* Get IPC statistics */
+        audio_ipc_get_stats(&ipc_stats);
 
-        /* Log if there are issues */
-        if (stats.tx_queue_full > prev_stats.tx_queue_full) {
+        /* Log IPC issues */
+        if (ipc_stats.tx_queue_full > prev_ipc_stats.tx_queue_full) {
             printf("[IPC] TX queue full (dropped %lu frames)\n",
-                   stats.tx_queue_full - prev_stats.tx_queue_full);
+                   ipc_stats.tx_queue_full - prev_ipc_stats.tx_queue_full);
         }
-        if (stats.rx_queue_empty > prev_stats.rx_queue_empty) {
+        if (ipc_stats.rx_queue_empty > prev_ipc_stats.rx_queue_empty) {
             printf("[IPC] RX underrun (%lu events)\n",
-                   stats.rx_queue_empty - prev_stats.rx_queue_empty);
+                   ipc_stats.rx_queue_empty - prev_ipc_stats.rx_queue_empty);
         }
 
-        prev_stats = stats;
+        prev_ipc_stats = ipc_stats;
+
+        /* Periodically print audio statistics (every 10 seconds) */
+        print_counter++;
+        if (print_counter >= 100) {  /* 100 * 100ms = 10s */
+            print_counter = 0;
+
+            if (audio_task_get_stats(&audio_stats) == AUDIO_TASK_OK) {
+                printf("[Stats] Encoded: %lu, Decoded: %lu, CPU: %d%%\n",
+                       (unsigned long)audio_stats.frames_encoded,
+                       (unsigned long)audio_stats.frames_decoded,
+                       audio_task_get_cpu_usage());
+
+                if (audio_stats.encode_errors > 0 || audio_stats.decode_errors > 0) {
+                    printf("[Stats] Errors - Encode: %lu, Decode: %lu\n",
+                           (unsigned long)audio_stats.encode_errors,
+                           (unsigned long)audio_stats.decode_errors);
+                }
+            }
+        }
 
         /* Check every 100ms */
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -453,42 +449,34 @@ int main(void)
     printf("   CM55 Audio DSP - LC3 Codec + I2S Streaming\n");
     printf("==============================================================\n");
     printf("Cortex-M55 with Helium (MVE) for efficient DSP\n");
+    printf("Using audio_task module for stream management\n");
     printf("LC3: 48kHz, 10ms frames, %d bytes encoded\n", LC3_FRAME_BYTES);
     printf("==============================================================\n\n");
 
     /***************************************************************************
-     * Phase 3: Create Synchronization Primitives
+     * Phase 3: Initialize Audio System
      **************************************************************************/
 
-    g_audio_ready_sem = xSemaphoreCreateBinary();
-    if (g_audio_ready_sem == NULL) {
+    if (init_audio_system() != 0) {
+        printf("FATAL: Audio system initialization failed!\n");
         handle_app_error();
     }
-
-    /* Note: LC3 frame queues are handled via IPC (audio_ipc.c)
-     * IPC initialization happens in audio_task after CM33 is ready */
 
     /***************************************************************************
-     * Phase 4: Create FreeRTOS Tasks
+     * Phase 4: Create IPC Monitoring Task
      **************************************************************************/
 
-    printf("Creating FreeRTOS tasks (CM55 audio DSP)...\n");
-
-    task_result = xTaskCreate(audio_task, AUDIO_TASK_NAME,
-                              AUDIO_TASK_STACK_SIZE, NULL,
-                              AUDIO_TASK_PRIORITY, &g_audio_task_handle);
-    if (task_result != pdPASS) {
-        handle_app_error();
-    }
+    printf("Creating IPC monitoring task...\n");
 
     task_result = xTaskCreate(ipc_task, IPC_TASK_NAME,
                               IPC_TASK_STACK_SIZE, NULL,
                               IPC_TASK_PRIORITY, &g_ipc_task_handle);
     if (task_result != pdPASS) {
+        printf("ERROR: Failed to create IPC task\n");
         handle_app_error();
     }
 
-    printf("CM55 tasks created!\n\n");
+    printf("CM55 ready!\n\n");
 
     /***************************************************************************
      * Phase 5: Start FreeRTOS Scheduler

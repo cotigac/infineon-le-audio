@@ -77,14 +77,15 @@ CY_IGNORE+=main_example.c
 # CM55 Audio DSP Sources
 # These leverage the Cortex-M55 Helium (MVE) for efficient DSP operations
 #
-# NOTE: audio_task.c is NOT included because main.c implements its own
-#       audio processing directly using IPC for CM33 communication.
-#
-# i2s_stream.c has been ported to use the TDM PDL driver (cy_tdm.h)
-# instead of the old cyhal_i2s HAL which is not available on PSoC Edge.
+# audio_task.c - Comprehensive audio task with stream management, stats, volume
+# i2s_stream.c - Ported to use TDM PDL driver (cy_tdm.h) for PSoC Edge
+# lc3_wrapper.c - LC3 codec wrapper
+# audio_buffers.c - Ring buffer management
+# audio_ipc.c - Inter-processor communication with CM33
 #
 SOURCES+= \
     ../../../source/audio/audio_buffers.c \
+    ../../../source/audio/audio_task.c \
     ../../../source/audio/i2s_stream.c \
     ../../../source/audio/lc3_wrapper.c \
     ../../../source/ipc/audio_ipc.c
