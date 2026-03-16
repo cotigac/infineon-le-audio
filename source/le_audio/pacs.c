@@ -507,10 +507,6 @@ int pacs_read_sink_pac(uint16_t conn_handle)
     }
 
     /* Read Sink PAC characteristic from remote device */
-    wiced_bt_gatt_read_by_handle_t read_req;
-    read_req.auth_req = GATT_AUTH_REQ_NONE;
-    read_req.handle = conn->remote_handles.sink_pac_handle;
-
     wiced_bt_gatt_status_t status = wiced_bt_gatt_client_send_read_handle(
         conn_handle,
         conn->remote_handles.sink_pac_handle,
