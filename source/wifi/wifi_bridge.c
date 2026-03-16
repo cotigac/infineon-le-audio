@@ -15,13 +15,15 @@
 #include "queue.h"
 #include "semphr.h"
 
-/* TODO: Include WHD headers */
-/* #include "whd.h" */
-/* #include "whd_wifi_api.h" */
+/* Wi-Fi Host Driver (WHD) headers */
+#include "whd.h"
+#include "whd_wifi_api.h"
+#include "whd_network_types.h"
+#include "whd_buffer_api.h"
 
-/* TODO: Include USB headers */
-/* #include "USB.h" */
-/* #include "USB_Bulk.h" */
+/* Segger emUSB-Device headers */
+#include "USB.h"
+#include "USB_Bulk.h"
 
 /*******************************************************************************
  * Private Definitions
@@ -51,12 +53,17 @@ typedef struct {
     uint8_t rx_head;
     uint8_t rx_tail;
 
-    /* USB endpoint handles */
-    /* TODO: Add USB handles */
+    /* USB bulk endpoint handle (emUSB-Device) */
+    USB_BULK_HANDLE usb_bulk_handle;
+    volatile bool usb_rx_pending;
+    uint8_t usb_rx_buffer[WIFI_BRIDGE_USB_BUFFER_SIZE];
+    uint8_t usb_tx_buffer[WIFI_BRIDGE_USB_BUFFER_SIZE];
 
-    /* WHD interface */
-    /* TODO: Add WHD handles */
-    /* whd_interface_t whd_iface; */
+    /* WHD (Wi-Fi Host Driver) handles */
+    whd_driver_t whd_driver;
+    whd_interface_t whd_iface;
+    bool whd_initialized;
+    bool wifi_connected;
 
     /* FreeRTOS synchronization */
     SemaphoreHandle_t buffer_mutex;
@@ -70,6 +77,142 @@ typedef struct {
  ******************************************************************************/
 
 static wifi_bridge_state_t bridge_state = {0};
+
+/*******************************************************************************
+ * USB Bulk Callbacks (emUSB-Device)
+ ******************************************************************************/
+
+/**
+ * @brief USB bulk OUT (receive) callback
+ *
+ * Called by emUSB-Device when data is received from the host.
+ */
+static void usb_bulk_on_rx(void)
+{
+    int bytes_read;
+    wifi_bridge_buffer_t *buffer;
+
+    /* Read data from USB bulk endpoint */
+    bytes_read = USBD_BULK_Read(bridge_state.usb_bulk_handle,
+                                bridge_state.usb_rx_buffer,
+                                WIFI_BRIDGE_USB_BUFFER_SIZE,
+                                0);  /* Non-blocking */
+
+    if (bytes_read > 0) {
+        /* Get a free TX buffer to queue the data */
+        if (xSemaphoreTake(bridge_state.buffer_mutex, 0) == pdTRUE) {
+            buffer = NULL;
+            for (int i = 0; i < WIFI_BRIDGE_NUM_BUFFERS; i++) {
+                if (!bridge_state.tx_buffers[i].in_use) {
+                    bridge_state.tx_buffers[i].in_use = true;
+                    buffer = &bridge_state.tx_buffers[i];
+                    break;
+                }
+            }
+
+            if (buffer != NULL) {
+                memcpy(buffer->data, bridge_state.usb_rx_buffer, bytes_read);
+                buffer->length = (uint16_t)bytes_read;
+                bridge_state.stats.usb_bytes_rx += bytes_read;
+
+                /* Queue for Wi-Fi transmission */
+                if (xQueueSendFromISR(bridge_state.tx_queue, &buffer, NULL) != pdTRUE) {
+                    buffer->in_use = false;
+                    bridge_state.stats.buffer_overflows++;
+                }
+            } else {
+                bridge_state.stats.buffer_overflows++;
+            }
+
+            xSemaphoreGive(bridge_state.buffer_mutex);
+        }
+    }
+}
+
+/**
+ * @brief USB bulk IN (transmit) complete callback
+ */
+static void usb_bulk_on_tx_complete(void)
+{
+    /* TX complete - can send more data if available */
+    bridge_state.usb_rx_pending = false;
+}
+
+/*******************************************************************************
+ * WHD Callbacks (Wi-Fi Host Driver)
+ ******************************************************************************/
+
+/**
+ * @brief WHD network packet receive callback
+ *
+ * Called by WHD when a packet is received from the Wi-Fi network.
+ */
+static void whd_network_rx_callback(whd_interface_t iface,
+                                    whd_buffer_t buffer,
+                                    void *user_data)
+{
+    (void)iface;
+    (void)user_data;
+    wifi_bridge_buffer_t *bridge_buffer;
+    uint8_t *packet_data;
+    uint16_t packet_len;
+
+    /* Get packet data from WHD buffer */
+    packet_data = whd_buffer_get_current_piece_data_pointer(bridge_state.whd_driver, buffer);
+    packet_len = whd_buffer_get_current_piece_size(bridge_state.whd_driver, buffer);
+
+    if (packet_data != NULL && packet_len > 0 && packet_len <= WIFI_BRIDGE_MAX_PACKET_SIZE) {
+        /* Get a free RX buffer */
+        if (xSemaphoreTake(bridge_state.buffer_mutex, 0) == pdTRUE) {
+            bridge_buffer = NULL;
+            for (int i = 0; i < WIFI_BRIDGE_NUM_BUFFERS; i++) {
+                if (!bridge_state.rx_buffers[i].in_use) {
+                    bridge_state.rx_buffers[i].in_use = true;
+                    bridge_buffer = &bridge_state.rx_buffers[i];
+                    break;
+                }
+            }
+
+            if (bridge_buffer != NULL) {
+                memcpy(bridge_buffer->data, packet_data, packet_len);
+                bridge_buffer->length = packet_len;
+                bridge_state.stats.wifi_bytes_rx += packet_len;
+
+                /* Queue for USB transmission */
+                if (xQueueSendFromISR(bridge_state.rx_queue, &bridge_buffer, NULL) != pdTRUE) {
+                    bridge_buffer->in_use = false;
+                    bridge_state.stats.buffer_overflows++;
+                }
+            } else {
+                bridge_state.stats.buffer_overflows++;
+            }
+
+            xSemaphoreGive(bridge_state.buffer_mutex);
+        }
+    }
+
+    /* Release WHD buffer */
+    whd_buffer_release(bridge_state.whd_driver, buffer, WHD_NETWORK_RX);
+}
+
+/**
+ * @brief WHD link state change callback
+ */
+static void whd_link_state_callback(whd_interface_t iface,
+                                    whd_bool_t link_up,
+                                    void *user_data)
+{
+    (void)iface;
+    (void)user_data;
+
+    bridge_state.wifi_connected = (link_up == WHD_TRUE);
+
+    if (link_up == WHD_TRUE) {
+        send_event(WIFI_BRIDGE_EVENT_CONNECTED, NULL);
+    } else {
+        send_event(WIFI_BRIDGE_EVENT_DISCONNECTED, NULL);
+    }
+}
 
 /*******************************************************************************
  * Private Functions
@@ -166,14 +309,26 @@ static void process_usb_rx(void)
 static void process_usb_tx(void)
 {
     wifi_bridge_buffer_t *buffer;
+    int bytes_written;
 
     /* Check RX queue for pending Wi-Fi data to forward to USB */
     while (xQueueReceive(bridge_state.rx_queue, &buffer, 0) == pdTRUE) {
         if (buffer != NULL && buffer->in_use && buffer->length > 0) {
-            /* USB bulk send would go here - data forwarded to USB callback */
-            /* Since USB middleware uses async callbacks, we queue the data */
-            bridge_state.stats.usb_bytes_tx += buffer->length;
-            bridge_state.stats.packets_forwarded++;
+            /* Send data to USB bulk IN endpoint */
+            bytes_written = USBD_BULK_Write(bridge_state.usb_bulk_handle,
+                                            buffer->data,
+                                            buffer->length,
+                                            0);  /* Non-blocking */
+
+            if (bytes_written > 0) {
+                bridge_state.stats.usb_bytes_tx += bytes_written;
+                bridge_state.stats.packets_forwarded++;
+            } else if (bytes_written < 0) {
+                bridge_state.stats.usb_errors++;
+                bridge_state.stats.packets_dropped++;
+            }
+            /* bytes_written == 0 means endpoint busy, packet will be retried */
+
             release_buffer(buffer);
         }
     }
@@ -250,6 +405,10 @@ static void process_wifi_tx(void)
 
 int wifi_bridge_init(const wifi_bridge_config_t *config)
 {
+    whd_init_config_t whd_config;
+    whd_result_t whd_result;
+    USB_BULK_INIT_DATA usb_bulk_init;
+
     if (bridge_state.initialized) {
         return -1; /* Already initialized */
     }
@@ -270,6 +429,9 @@ int wifi_bridge_init(const wifi_bridge_config_t *config)
     bridge_state.tx_tail = 0;
     bridge_state.rx_head = 0;
     bridge_state.rx_tail = 0;
+    bridge_state.usb_rx_pending = false;
+    bridge_state.whd_initialized = false;
+    bridge_state.wifi_connected = false;
 
     /* Create FreeRTOS synchronization primitives */
     bridge_state.buffer_mutex = xSemaphoreCreateMutex();
@@ -283,28 +445,50 @@ int wifi_bridge_init(const wifi_bridge_config_t *config)
 
     /* Initialize SDIO for Wi-Fi */
     if (wifi_sdio_init(NULL) != 0) {
-        return -2;
+        return -3;
     }
 
-    /* TODO: Initialize WHD (Wi-Fi Host Driver)
-     *
-     * whd_init_config_t whd_config = {0};
-     * if (whd_init(&whd_config, &bridge_state.whd_iface) != WHD_SUCCESS) {
-     *     wifi_sdio_deinit();
-     *     return -3;
-     * }
-     *
-     * if (whd_wifi_on() != WHD_SUCCESS) {
-     *     whd_deinit(bridge_state.whd_iface);
-     *     wifi_sdio_deinit();
-     *     return -4;
-     * }
-     */
+    /* Initialize WHD (Wi-Fi Host Driver) */
+    memset(&whd_config, 0, sizeof(whd_init_config_t));
+    whd_config.thread_stack_size = 4096;
+    whd_config.thread_priority = osPriorityNormal;
+    whd_config.country = WHD_COUNTRY_UNITED_STATES;
 
-    /* TODO: Initialize USB bulk endpoints
-     *
-     * USBD_BULK_Init();
-     */
+    whd_result = whd_init(&bridge_state.whd_driver, &whd_config,
+                          NULL,    /* Resource interface (use default) */
+                          NULL,    /* Buffer interface (use default) */
+                          NULL);   /* SDIO interface (use default) */
+    if (whd_result != WHD_SUCCESS) {
+        wifi_sdio_deinit();
+        return -4;
+    }
+
+    /* Power on Wi-Fi */
+    whd_result = whd_wifi_on(bridge_state.whd_driver, &bridge_state.whd_iface);
+    if (whd_result != WHD_SUCCESS) {
+        whd_deinit(bridge_state.whd_driver);
+        wifi_sdio_deinit();
+        return -5;
+    }
+
+    bridge_state.whd_initialized = true;
+
+    /* Initialize USB bulk endpoint for data bridge */
+    memset(&usb_bulk_init, 0, sizeof(USB_BULK_INIT_DATA));
+    usb_bulk_init.EPIn = USBD_AddEP(USB_DIR_IN, USB_TRANSFER_TYPE_BULK, 0,
+                                    bridge_state.usb_tx_buffer,
+                                    WIFI_BRIDGE_USB_BUFFER_SIZE);
+    usb_bulk_init.EPOut = USBD_AddEP(USB_DIR_OUT, USB_TRANSFER_TYPE_BULK, 0,
+                                     bridge_state.usb_rx_buffer,
+                                     WIFI_BRIDGE_USB_BUFFER_SIZE);
+
+    bridge_state.usb_bulk_handle = USBD_BULK_Add(&usb_bulk_init);
+    if (bridge_state.usb_bulk_handle == 0) {
+        whd_wifi_off(bridge_state.whd_driver, bridge_state.whd_iface);
+        whd_deinit(bridge_state.whd_driver);
+        wifi_sdio_deinit();
+        return -6;
+    }
 
     bridge_state.status = WIFI_BRIDGE_STATUS_STOPPED;
     bridge_state.initialized = true;
@@ -318,13 +502,33 @@ void wifi_bridge_deinit(void)
         return;
     }
 
+    /* Stop bridge if running */
     wifi_bridge_stop();
 
-    /* TODO: Deinitialize WHD
-     * whd_wifi_off();
-     * whd_deinit(bridge_state.whd_iface);
-     */
+    /* Deinitialize WHD */
+    if (bridge_state.whd_initialized) {
+        /* Disconnect from network if connected */
+        if (bridge_state.wifi_connected) {
+            whd_wifi_leave(bridge_state.whd_iface);
+            bridge_state.wifi_connected = false;
+        }
 
+        /* Power off Wi-Fi */
+        whd_wifi_off(bridge_state.whd_driver, bridge_state.whd_iface);
+
+        /* Deinitialize WHD driver */
+        whd_deinit(bridge_state.whd_driver);
+
+        bridge_state.whd_initialized = false;
+        bridge_state.whd_driver = NULL;
+        bridge_state.whd_iface = NULL;
+    }
+
+    /* Note: USB bulk handle is managed by emUSB-Device stack
+     * It will be cleaned up when USB is deinitialized */
+    bridge_state.usb_bulk_handle = 0;
+
+    /* Deinitialize SDIO */
     wifi_sdio_deinit();
 
     /* Delete FreeRTOS synchronization primitives */
@@ -346,6 +550,8 @@ void wifi_bridge_deinit(void)
 
 int wifi_bridge_start(void)
 {
+    whd_result_t whd_result;
+
     if (!bridge_state.initialized) {
         return -1;
     }
@@ -356,12 +562,36 @@ int wifi_bridge_start(void)
 
     bridge_state.status = WIFI_BRIDGE_STATUS_STARTING;
 
-    /* TODO: Start USB endpoints
-     *
-     * USBD_BULK_SetContinuousReadMode(1);
-     */
+    /* Enable continuous read mode on USB bulk endpoint */
+    USBD_BULK_SetContinuousReadMode(bridge_state.usb_bulk_handle, 1);
 
-    /* TODO: Register WHD callbacks for packet reception */
+    /* Register WHD callbacks for packet reception */
+    whd_result = whd_network_register_multicast_address(bridge_state.whd_iface, NULL);
+    if (whd_result != WHD_SUCCESS) {
+        /* Non-fatal: continue without multicast */
+    }
+
+    /* Register packet receive callback */
+    whd_result = whd_wifi_register_link_callback(bridge_state.whd_iface,
+                                                  whd_link_state_callback,
+                                                  NULL);
+    if (whd_result != WHD_SUCCESS) {
+        bridge_state.status = WIFI_BRIDGE_STATUS_ERROR;
+        return -2;
+    }
+
+    /* Set promiscuous mode callback for raw packet reception (Ethernet bridge mode) */
+    if (bridge_state.config.mode == WIFI_BRIDGE_MODE_ETHERNET) {
+        whd_wifi_set_raw_packet_processor(bridge_state.whd_iface,
+                                          whd_network_rx_callback,
+                                          NULL);
+    }
+
+    /* Start USB bulk data transfer */
+    USBD_BULK_ReadAsync(bridge_state.usb_bulk_handle,
+                        bridge_state.usb_rx_buffer,
+                        WIFI_BRIDGE_USB_BUFFER_SIZE,
+                        0);
 
     bridge_state.status = WIFI_BRIDGE_STATUS_RUNNING;
     send_event(WIFI_BRIDGE_EVENT_STARTED, NULL);
@@ -379,9 +609,34 @@ int wifi_bridge_stop(void)
         return 0; /* Already stopped */
     }
 
-    /* TODO: Stop USB endpoints */
+    /* Disable continuous read mode on USB bulk endpoint */
+    USBD_BULK_SetContinuousReadMode(bridge_state.usb_bulk_handle, 0);
 
-    /* TODO: Unregister WHD callbacks */
+    /* Cancel any pending USB operations */
+    USBD_BULK_CancelRead(bridge_state.usb_bulk_handle);
+    USBD_BULK_CancelWrite(bridge_state.usb_bulk_handle);
+
+    /* Unregister WHD callbacks */
+    whd_wifi_deregister_link_callback(bridge_state.whd_iface,
+                                       whd_link_state_callback);
+
+    /* Remove raw packet processor */
+    if (bridge_state.config.mode == WIFI_BRIDGE_MODE_ETHERNET) {
+        whd_wifi_set_raw_packet_processor(bridge_state.whd_iface, NULL, NULL);
+    }
+
+    /* Flush queues */
+    wifi_bridge_buffer_t *buffer;
+    while (xQueueReceive(bridge_state.tx_queue, &buffer, 0) == pdTRUE) {
+        if (buffer != NULL) {
+            buffer->in_use = false;
+        }
+    }
+    while (xQueueReceive(bridge_state.rx_queue, &buffer, 0) == pdTRUE) {
+        if (buffer != NULL) {
+            buffer->in_use = false;
+        }
+    }
 
     /* Release all buffers */
     for (int i = 0; i < WIFI_BRIDGE_NUM_BUFFERS; i++) {
