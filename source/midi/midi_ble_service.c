@@ -21,17 +21,16 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* TODO: Include Infineon BTSTACK headers */
-/* #include "wiced_bt_stack.h" */
-/* #include "wiced_bt_gatt.h" */
-/* #include "wiced_bt_ble.h" */
-/* #include "wiced_bt_cfg.h" */
+/* Infineon BTSTACK headers */
+#include "wiced_bt_stack.h"
+#include "wiced_bt_gatt.h"
+#include "wiced_bt_ble.h"
+#include "wiced_bt_cfg.h"
 
-/* TODO: Include FreeRTOS headers */
-/* #include "FreeRTOS.h" */
-/* #include "task.h" */
-/* #include "semphr.h" */
-
+/* FreeRTOS headers */
+#include "FreeRTOS.h"
+#include "task.h"
+#include "semphr.h"
 /*******************************************************************************
  * Private Definitions
  ******************************************************************************/

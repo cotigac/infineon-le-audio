@@ -26,12 +26,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* TODO: Include FreeRTOS headers */
-/* #include "FreeRTOS.h" */
-/* #include "queue.h" */
-/* #include "semphr.h" */
-/* #include "task.h" */
-
+/* FreeRTOS headers */
+#include "FreeRTOS.h"
+#include "queue.h"
+#include "semphr.h"
+#include "task.h"
 /*******************************************************************************
  * Private Definitions
  ******************************************************************************/

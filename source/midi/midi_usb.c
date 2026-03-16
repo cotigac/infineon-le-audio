@@ -20,16 +20,16 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* TODO: Include Segger emUSB-Device middleware headers */
-/* #include "USB.h" */
-/* #include "USB_HID.h" */
-/* #include "USB_Bulk.h" */
+/* USB Device middleware headers */
+/* Note: Using Infineon USB device middleware */
+/* #include "cy_usb_dev.h" */
+/* #include "cy_usb_dev_audio.h" */
 
-/* TODO: Include FreeRTOS headers */
-/* #include "FreeRTOS.h" */
-/* #include "queue.h" */
-/* #include "semphr.h" */
-
+/* FreeRTOS headers */
+#include "FreeRTOS.h"
+#include "queue.h"
+#include "semphr.h"
+#include "task.h"
 /*******************************************************************************
  * Private Definitions
  ******************************************************************************/
