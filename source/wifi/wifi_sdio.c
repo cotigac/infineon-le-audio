@@ -8,6 +8,10 @@
 #include "wifi_sdio.h"
 #include <string.h>
 
+/* FreeRTOS headers */
+#include "FreeRTOS.h"
+#include "semphr.h"
+
 /* TODO: Include PSoC Edge SDIO HAL headers */
 /* #include "cy_sd_host.h" */
 /* #include "cyhal_sdio.h" */
@@ -45,6 +49,9 @@ typedef struct {
     wifi_sdio_stats_t stats;
     /* TODO: Add HAL handle */
     /* cyhal_sdio_t sdio_obj; */
+
+    /* FreeRTOS synchronization for thread-safe bus access */
+    SemaphoreHandle_t bus_mutex;
 } wifi_sdio_state_t;
 
 /*******************************************************************************
@@ -88,6 +95,12 @@ int wifi_sdio_init(const wifi_sdio_config_t *config)
     /* Reset statistics */
     memset(&sdio_state.stats, 0, sizeof(wifi_sdio_stats_t));
 
+    /* Create FreeRTOS mutex for thread-safe bus access */
+    sdio_state.bus_mutex = xSemaphoreCreateMutex();
+    if (sdio_state.bus_mutex == NULL) {
+        return -2;  /* FreeRTOS resource allocation failed */
+    }
+
     /* TODO: Initialize SDIO HAL
      *
      * cyhal_sdio_cfg_t sdio_cfg = {
@@ -126,6 +139,12 @@ void wifi_sdio_deinit(void)
     /* TODO: Deinitialize SDIO HAL
      * cyhal_sdio_free(&sdio_state.sdio_obj);
      */
+
+    /* Delete FreeRTOS mutex */
+    if (sdio_state.bus_mutex != NULL) {
+        vSemaphoreDelete(sdio_state.bus_mutex);
+        sdio_state.bus_mutex = NULL;
+    }
 
     sdio_state.initialized = false;
 }

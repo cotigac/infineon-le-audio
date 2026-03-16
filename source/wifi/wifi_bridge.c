@@ -58,6 +58,11 @@ typedef struct {
     /* TODO: Add WHD handles */
     /* whd_interface_t whd_iface; */
 
+    /* FreeRTOS synchronization */
+    SemaphoreHandle_t buffer_mutex;
+    QueueHandle_t tx_queue;
+    QueueHandle_t rx_queue;
+
 } wifi_bridge_state_t;
 
 /*******************************************************************************
@@ -206,6 +211,16 @@ int wifi_bridge_init(const wifi_bridge_config_t *config)
     bridge_state.rx_head = 0;
     bridge_state.rx_tail = 0;
 
+    /* Create FreeRTOS synchronization primitives */
+    bridge_state.buffer_mutex = xSemaphoreCreateMutex();
+    bridge_state.tx_queue = xQueueCreate(WIFI_BRIDGE_NUM_BUFFERS, sizeof(wifi_bridge_buffer_t *));
+    bridge_state.rx_queue = xQueueCreate(WIFI_BRIDGE_NUM_BUFFERS, sizeof(wifi_bridge_buffer_t *));
+    if (bridge_state.buffer_mutex == NULL ||
+        bridge_state.tx_queue == NULL ||
+        bridge_state.rx_queue == NULL) {
+        return -2;  /* FreeRTOS resource allocation failed */
+    }
+
     /* Initialize SDIO for Wi-Fi */
     if (wifi_sdio_init(NULL) != 0) {
         return -2;
@@ -251,6 +266,20 @@ void wifi_bridge_deinit(void)
      */
 
     wifi_sdio_deinit();
+
+    /* Delete FreeRTOS synchronization primitives */
+    if (bridge_state.buffer_mutex != NULL) {
+        vSemaphoreDelete(bridge_state.buffer_mutex);
+        bridge_state.buffer_mutex = NULL;
+    }
+    if (bridge_state.tx_queue != NULL) {
+        vQueueDelete(bridge_state.tx_queue);
+        bridge_state.tx_queue = NULL;
+    }
+    if (bridge_state.rx_queue != NULL) {
+        vQueueDelete(bridge_state.rx_queue);
+        bridge_state.rx_queue = NULL;
+    }
 
     bridge_state.initialized = false;
 }
