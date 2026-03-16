@@ -16,3 +16,21 @@
 [submodule "libs/btstack-integration"]
 	path = libs/btstack-integration
 	url = https://github.com/Infineon/btstack-integration.git
+[submodule "libs/abstraction-rtos"]
+	path = libs/abstraction-rtos
+	url = https://github.com/Infineon/abstraction-rtos.git
+[submodule "libs/mtb-hal-cat1"]
+	path = libs/mtb-hal-cat1
+	url = https://github.com/Infineon/mtb-hal-cat1.git
+[submodule "libs/core-lib"]
+	path = libs/core-lib
+	url = https://github.com/Infineon/core-lib.git
+[submodule "libs/mtb-pdl-cat1"]
+	path = libs/mtb-pdl-cat1
+	url = https://github.com/Infineon/mtb-pdl-cat1.git
+[submodule "libs/TARGET_KIT_PSE84_EVAL_EPC2"]
+	path = libs/TARGET_KIT_PSE84_EVAL_EPC2
+	url = https://github.com/Infineon/TARGET_KIT_PSE84_EVAL_EPC2.git
+[submodule "libs/TARGET_CYW955513EVK-01"]
+	path = libs/TARGET_CYW955513EVK-01
+	url = https://github.com/Infineon/TARGET_CYW955513EVK-01.git
