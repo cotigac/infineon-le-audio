@@ -234,50 +234,73 @@ target_compile_options(lc3 PRIVATE
 )
 
 #-------------------------------------------------------------------------------
-# BTStack Library (Infineon)
+# BTStack Library (Infineon AIROC BTSTACK)
 #-------------------------------------------------------------------------------
 
 set(BTSTACK_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libs/btstack)
+set(BTSTACK_INTEGRATION_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libs/btstack-integration)
 
-# Core BTStack sources (subset - full list depends on features needed)
-set(BTSTACK_SOURCES
-    ${BTSTACK_DIR}/src/btstack_memory.c
-    ${BTSTACK_DIR}/src/btstack_linked_list.c
-    ${BTSTACK_DIR}/src/btstack_run_loop.c
-    ${BTSTACK_DIR}/src/btstack_util.c
-    ${BTSTACK_DIR}/src/hci.c
-    ${BTSTACK_DIR}/src/hci_cmd.c
-    ${BTSTACK_DIR}/src/hci_dump.c
-    ${BTSTACK_DIR}/src/hci_transport_h4.c
-    ${BTSTACK_DIR}/src/l2cap.c
-    ${BTSTACK_DIR}/src/l2cap_signaling.c
-    ${BTSTACK_DIR}/src/ad_parser.c
-    ${BTSTACK_DIR}/src/btstack_crypto.c
-    # BLE
-    ${BTSTACK_DIR}/src/ble/att_db.c
-    ${BTSTACK_DIR}/src/ble/att_dispatch.c
-    ${BTSTACK_DIR}/src/ble/att_server.c
-    ${BTSTACK_DIR}/src/ble/gatt_client.c
-    ${BTSTACK_DIR}/src/ble/le_device_db_memory.c
-    ${BTSTACK_DIR}/src/ble/sm.c
-    # GAP
-    ${BTSTACK_DIR}/src/gap.c
-)
-
-# BTStack include directories
+# BTStack include directories (Infineon pre-built library headers)
 set(BTSTACK_INCLUDE_DIRS
-    ${BTSTACK_DIR}/src
-    ${BTSTACK_DIR}/src/ble
-    ${BTSTACK_DIR}/platform/freertos
-    ${BTSTACK_DIR}/3rd-party/micro-ecc
+    ${BTSTACK_DIR}/wiced_include
+    ${BTSTACK_DIR}/platform/include
 )
 
-add_library(btstack STATIC ${BTSTACK_SOURCES})
-target_include_directories(btstack PUBLIC ${BTSTACK_INCLUDE_DIRS})
-target_link_libraries(btstack PUBLIC freertos)
-target_compile_definitions(btstack PUBLIC
-    ENABLE_LOG_INFO
-    ENABLE_LOG_ERROR
+# Pre-built BTStack library path (CM55 for PSoC Edge)
+# Note: The actual library path depends on the BSP and toolchain
+# For now, we create an interface library until the proper BSP is integrated
+set(BTSTACK_LIB_PATH ${BTSTACK_DIR}/stack/COMPONENT_WICED_BLE/COMPONENT_CM55/TOOLCHAIN_GCC_ARM/libwiced_ble.a)
+
+if(EXISTS ${BTSTACK_LIB_PATH})
+    add_library(btstack STATIC IMPORTED)
+    set_target_properties(btstack PROPERTIES
+        IMPORTED_LOCATION ${BTSTACK_LIB_PATH}
+    )
+    message(STATUS "Found BTStack library: ${BTSTACK_LIB_PATH}")
+else()
+    # Create interface library as placeholder until BSP integration
+    add_library(btstack INTERFACE)
+    message(STATUS "BTStack: Using interface library (pre-built lib not found)")
+endif()
+
+# BTStack include interface
+add_library(btstack-includes INTERFACE)
+target_include_directories(btstack-includes INTERFACE ${BTSTACK_INCLUDE_DIRS})
+
+#-------------------------------------------------------------------------------
+# BTStack Integration (HCI-UART Porting Layer for PSoC Edge + CYW55512)
+#-------------------------------------------------------------------------------
+
+# btstack-integration provides the platform adaptation layer
+set(BTSTACK_INTEGRATION_INCLUDE_DIRS
+    ${BTSTACK_INTEGRATION_DIR}/COMPONENT_HCI-UART/include
+    ${BTSTACK_INTEGRATION_DIR}/COMPONENT_HCI-UART/common
+    ${BTSTACK_INTEGRATION_DIR}/COMPONENT_HCI-UART/freertos
+)
+
+# HCI-UART porting layer sources
+set(BTSTACK_INTEGRATION_SOURCES
+    ${BTSTACK_INTEGRATION_DIR}/COMPONENT_HCI-UART/common/cybt_hci_rx_task.c
+    ${BTSTACK_INTEGRATION_DIR}/COMPONENT_HCI-UART/common/cybt_hci_tx_task.c
+    ${BTSTACK_INTEGRATION_DIR}/COMPONENT_HCI-UART/common/cybt_host_stack_platform_interface.c
+    ${BTSTACK_INTEGRATION_DIR}/COMPONENT_HCI-UART/common/cybt_patchram_download.c
+    ${BTSTACK_INTEGRATION_DIR}/COMPONENT_HCI-UART/common/cybt_platform_main.c
+    ${BTSTACK_INTEGRATION_DIR}/COMPONENT_HCI-UART/common/cybt_platform_task.c
+    ${BTSTACK_INTEGRATION_DIR}/COMPONENT_HCI-UART/common/cybt_platform_trace.c
+    ${BTSTACK_INTEGRATION_DIR}/COMPONENT_HCI-UART/common/cybt_prm.c
+    ${BTSTACK_INTEGRATION_DIR}/COMPONENT_HCI-UART/common/cybt_serialize.c
+    ${BTSTACK_INTEGRATION_DIR}/COMPONENT_HCI-UART/freertos/cybt_platform_freertos.c
+    ${BTSTACK_INTEGRATION_DIR}/COMPONENT_HCI-UART/platform_hal_wrappers/platform_hal_wrapper.c
+)
+
+add_library(btstack-integration STATIC ${BTSTACK_INTEGRATION_SOURCES})
+target_include_directories(btstack-integration PUBLIC ${BTSTACK_INTEGRATION_INCLUDE_DIRS})
+target_include_directories(btstack-integration PUBLIC ${BTSTACK_INCLUDE_DIRS})
+target_link_libraries(btstack-integration PUBLIC freertos)
+target_compile_definitions(btstack-integration PUBLIC
+    CY_USING_HAL
+    COMPONENT_HCI_UART
+    CYBT_PLATFORM_TRACE_ENABLE=1
 )
 
 #-------------------------------------------------------------------------------
@@ -369,6 +392,7 @@ set(AUDIO_SOURCES
 # Bluetooth module sources
 set(BLUETOOTH_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/source/bluetooth/bt_init.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/bluetooth/bt_platform_config.c
     ${CMAKE_CURRENT_SOURCE_DIR}/source/bluetooth/hci_isoc.c
     ${CMAKE_CURRENT_SOURCE_DIR}/source/bluetooth/gap_config.c
     ${CMAKE_CURRENT_SOURCE_DIR}/source/bluetooth/gatt_db.c
@@ -431,6 +455,8 @@ target_link_libraries(${PROJECT_NAME}
     freertos
     lc3
     btstack
+    btstack-includes
+    btstack-integration
     $<$<BOOL:${ENABLE_USB}>:emusb-device>
     $<$<BOOL:${ENABLE_USB}>:emusb-device-includes>
     $<$<BOOL:${ENABLE_WIFI}>:whd>
@@ -532,14 +558,15 @@ message(STATUS "  Debug:           ${ENABLE_DEBUG}")
 message(STATUS "  Statistics:      ${ENABLE_STATS}")
 message(STATUS "")
 message(STATUS "Libraries:")
-message(STATUS "  FreeRTOS:        ${FREERTOS_DIR}")
-message(STATUS "  liblc3:          ${LC3_DIR}")
-message(STATUS "  BTStack:         ${BTSTACK_DIR}")
+message(STATUS "  FreeRTOS:            ${FREERTOS_DIR}")
+message(STATUS "  liblc3:              ${LC3_DIR}")
+message(STATUS "  BTStack:             ${BTSTACK_DIR}")
+message(STATUS "  BTStack-Integration: ${BTSTACK_INTEGRATION_DIR} (HCI-UART)")
 if(ENABLE_USB)
-    message(STATUS "  emUSB-Device:    ${EMUSB_DIR} (USB High-Speed)")
+    message(STATUS "  emUSB-Device:        ${EMUSB_DIR} (USB High-Speed)")
 endif()
 if(ENABLE_WIFI)
-    message(STATUS "  WHD:             ${WHD_DIR} (SDIO)")
+    message(STATUS "  WHD:                 ${WHD_DIR} (SDIO)")
 endif()
 message(STATUS "")
 message(STATUS "==============================================")

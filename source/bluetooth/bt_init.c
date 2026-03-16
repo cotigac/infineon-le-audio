@@ -9,6 +9,7 @@
  */
 
 #include "bt_init.h"
+#include "bt_platform_config.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -16,35 +17,26 @@
  * Platform Includes (Infineon BTSTACK)
  ******************************************************************************/
 
-/*
- * TODO: Include Infineon BTSTACK headers when integrating with real hardware
- *
- * #include "wiced_bt_stack.h"
- * #include "wiced_bt_dev.h"
- * #include "wiced_bt_ble.h"
- * #include "wiced_bt_gatt.h"
- * #include "wiced_bt_cfg.h"
- * #include "wiced_bt_isoc.h"
- * #include "wiced_hal_nvram.h"
- * #include "wiced_transport.h"
- * #include "cyhal.h"
- * #include "cybsp.h"
- */
+/* Infineon BTSTACK headers */
+#include "wiced_bt_stack.h"
+#include "wiced_bt_dev.h"
+#include "wiced_bt_ble.h"
+#include "wiced_bt_gatt.h"
+#include "wiced_bt_cfg.h"
+#include "wiced_bt_isoc.h"
+#include "wiced_memory.h"
+#include "cybt_platform_config.h"
+#include "cybt_platform_trace.h"
+
+/* Infineon HAL */
+#include "cyhal.h"
+#include "cybsp.h"
 
 /* FreeRTOS */
-#ifdef FREERTOS
 #include "FreeRTOS.h"
 #include "task.h"
 #include "semphr.h"
 #include "queue.h"
-#else
-/* Stubs for non-FreeRTOS builds */
-typedef void* SemaphoreHandle_t;
-typedef void* QueueHandle_t;
-#define pdTRUE 1
-#define pdFALSE 0
-#define portMAX_DELAY 0xFFFFFFFF
-#endif
 
 /*******************************************************************************
  * Constants
@@ -89,6 +81,91 @@ typedef void* QueueHandle_t;
 #define ADV_FLAGS_BR_EDR_NOT    0x04
 
 /*******************************************************************************
+ * BTSTACK Configuration
+ ******************************************************************************/
+
+/* Forward declaration of management callback */
+static wiced_result_t bt_management_callback(wiced_bt_management_evt_t event,
+                                              wiced_bt_management_evt_data_t *p_event_data);
+
+/* Bluetooth stack configuration */
+static wiced_bt_cfg_settings_t bt_cfg_settings = {
+    .device_name = (uint8_t *)"Infineon LE Audio",
+    .device_class = {0x00, 0x00, 0x00},  /* Not used for BLE-only */
+    .security_required_mask = BTM_SEC_NONE,
+    .max_simultaneous_links = 2,
+    .br_edr_scan_cfg = { 0 },  /* BR/EDR disabled */
+
+    /* BLE scan settings */
+    .ble_scan_cfg = {
+        .scan_mode = BTM_BLE_SCAN_MODE_PASSIVE,
+        .high_duty_scan_interval = 96,   /* 60ms */
+        .high_duty_scan_window = 48,     /* 30ms */
+        .high_duty_scan_duration = 30,   /* 30 seconds */
+        .low_duty_scan_interval = 2048,  /* 1.28s */
+        .low_duty_scan_window = 48,      /* 30ms */
+        .low_duty_scan_duration = 30,
+        .high_duty_conn_scan_interval = 96,
+        .high_duty_conn_scan_window = 48,
+        .high_duty_conn_duration = 30,
+        .low_duty_conn_scan_interval = 2048,
+        .low_duty_conn_scan_window = 48,
+        .low_duty_conn_duration = 30,
+        .conn_min_interval = 12,         /* 15ms */
+        .conn_max_interval = 12,
+        .conn_latency = 0,
+        .conn_supervision_timeout = 100  /* 1s */
+    },
+
+    /* BLE advertising settings */
+    .ble_advert_cfg = {
+        .channel_map = BTM_BLE_ADVERT_CHNL_37 | BTM_BLE_ADVERT_CHNL_38 | BTM_BLE_ADVERT_CHNL_39,
+        .high_duty_min_interval = 48,    /* 30ms */
+        .high_duty_max_interval = 48,
+        .high_duty_duration = 0,         /* Continuous */
+        .low_duty_min_interval = 160,    /* 100ms */
+        .low_duty_max_interval = 160,
+        .low_duty_duration = 0,
+        .high_duty_directed_min_interval = 400,
+        .high_duty_directed_max_interval = 800,
+        .low_duty_directed_min_interval = 48,
+        .low_duty_directed_max_interval = 48,
+        .low_duty_directed_duration = 30,
+        .high_duty_nonconn_min_interval = 160,
+        .high_duty_nonconn_max_interval = 160,
+        .high_duty_nonconn_duration = 0,
+        .low_duty_nonconn_min_interval = 160,
+        .low_duty_nonconn_max_interval = 160,
+        .low_duty_nonconn_duration = 0
+    },
+
+    /* GATT configuration */
+    .gatt_cfg = {
+        .appearance = 0x0000,            /* Unknown */
+        .client_max_links = 2,
+        .server_max_links = 2,
+        .max_attr_len = 512,
+        .max_mtu_size = 517
+    },
+
+    /* L2CAP configuration */
+    .l2cap_application = {
+        .max_app_l2cap_psms = 0,
+        .max_app_l2cap_channels = 0,
+        .max_app_l2cap_le_fixed_channels = 0
+    },
+
+    /* LE Audio / ISOC configuration */
+    .isoc_cfg = {
+        .max_cis_conn = 2,               /* Max CIS connections */
+        .max_cig_count = 1,              /* Max CIG groups */
+        .max_sdu_size = 240,             /* Max SDU for LC3 */
+        .channel_count = 2,              /* Stereo */
+        .max_buffers_per_cis = 4
+    }
+};
+
+/*******************************************************************************
  * Types
  ******************************************************************************/
 
@@ -121,15 +198,9 @@ typedef struct {
     uint8_t scan_rsp_len;
 
     /* FreeRTOS handles */
-    SemaphoreHandle_t init_semaphore;
-    SemaphoreHandle_t cmd_semaphore;
-    QueueHandle_t event_queue;
-
-    /* HCI command response */
-    volatile bool cmd_complete;
-    volatile int cmd_status;
-    uint8_t cmd_response[256];
-    uint16_t cmd_response_len;
+    SemaphoreHandle_t init_semaphore;    /* Signaled when BTM_ENABLED_EVT received */
+    SemaphoreHandle_t cmd_semaphore;     /* For synchronous operations */
+    QueueHandle_t event_queue;           /* Application event queue */
 
 } bt_context_t;
 
@@ -143,292 +214,25 @@ static bt_context_t bt_ctx;
  * Private Function Prototypes
  ******************************************************************************/
 
-static int hci_transport_init(const bt_hci_config_t *config);
-static void hci_transport_deinit(void);
-static int hci_send_command(uint16_t opcode, const uint8_t *params, uint8_t len);
-static int hci_wait_command_complete(uint32_t timeout_ms);
-static int controller_init(void);
-static int controller_read_local_info(void);
-static int controller_configure_le_features(uint16_t features);
-static int firmware_download(const char *path);
 static void dispatch_event(const bt_event_t *event);
 static void set_state(bt_state_t new_state);
 static int build_default_adv_data(void);
-static void hci_event_handler(uint8_t *event, uint16_t len);
-static void process_connection_complete(const uint8_t *data);
-static void process_disconnection_complete(const uint8_t *data);
-static void process_le_meta_event(const uint8_t *data, uint16_t len);
 
 /*******************************************************************************
- * HCI Transport (Platform Abstraction)
+ * NOTE: HCI Transport and Controller Management
+ *
+ * The btstack-integration library (COMPONENT_HCI-UART) handles all HCI
+ * transport, firmware download, and controller initialization internally.
+ *
+ * - cybt_platform_config_init() configures the HCI UART pins and baud rates
+ * - wiced_bt_stack_init() handles:
+ *   - Firmware patchram download to CYW55512
+ *   - HCI reset and controller initialization
+ *   - Reading controller capabilities
+ *
+ * The management callback (bt_management_callback) receives BTM_ENABLED_EVT
+ * when initialization is complete.
  ******************************************************************************/
-
-/**
- * @brief Initialize HCI UART transport
- */
-static int hci_transport_init(const bt_hci_config_t *config)
-{
-    /*
-     * TODO: Implement for Infineon PSoC Edge + CYW55511
-     *
-     * This should:
-     * 1. Configure UART peripheral for HCI
-     * 2. Set baud rate (typically 3 Mbps for CYW55511)
-     * 3. Enable hardware flow control (CTS/RTS)
-     * 4. Configure DMA for efficient transfer
-     * 5. Register HCI event callback
-     *
-     * Example with Infineon PDL:
-     *
-     * cy_stc_scb_uart_config_t uart_config = {
-     *     .uartMode = CY_SCB_UART_STANDARD,
-     *     .oversample = 8,
-     *     .enableMsbFirst = false,
-     *     .dataWidth = 8,
-     *     .parity = CY_SCB_UART_PARITY_NONE,
-     *     .stopBits = CY_SCB_UART_STOP_BITS_1,
-     *     .enableInputFilter = false,
-     *     .dropOnParityError = false,
-     *     .dropOnFrameError = false,
-     *     .enableCts = true,
-     *     .ctsPolarity = CY_SCB_UART_ACTIVE_LOW,
-     *     .rtsRxFifoLevel = 0,
-     *     .rtsPolarity = CY_SCB_UART_ACTIVE_LOW
-     * };
-     *
-     * Cy_SCB_UART_Init(HCI_UART_HW, &uart_config, &hci_uart_context);
-     * Cy_SCB_UART_Enable(HCI_UART_HW);
-     *
-     * // Set baud rate
-     * Cy_SysClk_PeriphSetDivider(...);
-     *
-     * // Enable interrupts
-     * Cy_SysInt_Init(&hci_uart_isr_cfg, hci_uart_isr);
-     * NVIC_EnableIRQ(hci_uart_isr_cfg.intrSrc);
-     */
-
-    (void)config; /* Unused in stub */
-
-    /* Simulate successful initialization */
-    return BT_OK;
-}
-
-/**
- * @brief Deinitialize HCI transport
- */
-static void hci_transport_deinit(void)
-{
-    /*
-     * TODO: Disable UART, release resources
-     *
-     * Cy_SCB_UART_Disable(HCI_UART_HW);
-     * NVIC_DisableIRQ(hci_uart_isr_cfg.intrSrc);
-     */
-}
-
-/**
- * @brief Send HCI command
- */
-static int hci_send_command(uint16_t opcode, const uint8_t *params, uint8_t len)
-{
-    /*
-     * TODO: Send HCI command packet
-     *
-     * HCI Command Packet format:
-     * - Packet type: 0x01
-     * - Opcode: 2 bytes (little endian)
-     * - Parameter length: 1 byte
-     * - Parameters: variable
-     *
-     * uint8_t packet[256];
-     * packet[0] = 0x01;  // HCI command
-     * packet[1] = opcode & 0xFF;
-     * packet[2] = (opcode >> 8) & 0xFF;
-     * packet[3] = len;
-     * memcpy(&packet[4], params, len);
-     *
-     * return hci_uart_send(packet, 4 + len);
-     */
-
-    (void)opcode;
-    (void)params;
-    (void)len;
-
-    bt_ctx.cmd_complete = false;
-
-    /* Simulate command sent */
-    return BT_OK;
-}
-
-/**
- * @brief Wait for HCI command complete event
- */
-static int hci_wait_command_complete(uint32_t timeout_ms)
-{
-    /*
-     * TODO: Wait for command complete using semaphore
-     *
-     * if (xSemaphoreTake(bt_ctx.cmd_semaphore, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
-     *     return BT_ERROR_TIMEOUT;
-     * }
-     * return bt_ctx.cmd_status;
-     */
-
-    (void)timeout_ms;
-
-    /* Simulate success */
-    bt_ctx.cmd_complete = true;
-    bt_ctx.cmd_status = BT_OK;
-
-    return BT_OK;
-}
-
-/*******************************************************************************
- * Controller Management
- ******************************************************************************/
-
-/**
- * @brief Initialize the controller
- */
-static int controller_init(void)
-{
-    int result;
-
-    /* Send HCI Reset */
-    result = hci_send_command(HCI_RESET, NULL, 0);
-    if (result != BT_OK) {
-        return result;
-    }
-
-    result = hci_wait_command_complete(HCI_RESET_TIMEOUT_MS);
-    if (result != BT_OK) {
-        return BT_ERROR_CONTROLLER_INIT;
-    }
-
-    /* Read local version info */
-    result = controller_read_local_info();
-    if (result != BT_OK) {
-        return result;
-    }
-
-    /* Configure LE features */
-    result = controller_configure_le_features(bt_ctx.config.le_features);
-    if (result != BT_OK) {
-        return result;
-    }
-
-    return BT_OK;
-}
-
-/**
- * @brief Read controller local information
- */
-static int controller_read_local_info(void)
-{
-    /*
-     * TODO: Read HCI version, BD_ADDR, supported features
-     *
-     * // Read Local Version
-     * hci_send_command(HCI_READ_LOCAL_VERSION, NULL, 0);
-     * hci_wait_command_complete(1000);
-     * // Parse response into bt_ctx.controller_info
-     *
-     * // Read BD_ADDR
-     * hci_send_command(HCI_READ_BD_ADDR, NULL, 0);
-     * hci_wait_command_complete(1000);
-     *
-     * // Read LE features
-     * hci_send_command(HCI_LE_READ_LOCAL_FEAT, NULL, 0);
-     * hci_wait_command_complete(1000);
-     */
-
-    /* Populate with simulated CYW55512 info */
-    bt_ctx.controller_info.type = BT_CONTROLLER_CYW55511;  /* TODO: Add BT_CONTROLLER_CYW55512 enum */
-    bt_ctx.controller_info.hci_version = 0x0F;  /* Bluetooth 6.0 */
-    bt_ctx.controller_info.hci_revision = 0x0001;
-    bt_ctx.controller_info.lmp_version = 0x0F;
-    bt_ctx.controller_info.manufacturer = MANUFACTURER_INFINEON;
-    bt_ctx.controller_info.lmp_subversion = 0x0001;
-
-    /* Generate random-ish BD_ADDR for simulation */
-    bt_ctx.controller_info.bd_addr[0] = 0x00;
-    bt_ctx.controller_info.bd_addr[1] = 0xA0;
-    bt_ctx.controller_info.bd_addr[2] = 0x50;
-    bt_ctx.controller_info.bd_addr[3] = 0x00;
-    bt_ctx.controller_info.bd_addr[4] = 0x00;
-    bt_ctx.controller_info.bd_addr[5] = 0x01;
-
-    snprintf(bt_ctx.controller_info.fw_version,
-             sizeof(bt_ctx.controller_info.fw_version),
-             "CYW55511 v1.0.0");
-
-    /* LE Audio capabilities */
-    bt_ctx.controller_info.le_audio_supported = true;
-    bt_ctx.controller_info.isoc_supported = true;
-    bt_ctx.controller_info.max_cig = 2;
-    bt_ctx.controller_info.max_cis_per_cig = 4;
-    bt_ctx.controller_info.max_big = 2;
-    bt_ctx.controller_info.max_bis_per_big = 4;
-
-    return BT_OK;
-}
-
-/**
- * @brief Configure LE features on controller
- */
-static int controller_configure_le_features(uint16_t features)
-{
-    /*
-     * TODO: Configure LE features via HCI commands
-     *
-     * This would typically include:
-     * - LE Set Host Supported Features (for ISOC, etc.)
-     * - Vendor-specific commands for CYW55511
-     *
-     * Example:
-     * uint8_t params[8] = {0};
-     * if (features & BT_LE_FEATURE_ISOC) {
-     *     params[0] |= 0x20;  // ISOC bit
-     * }
-     * hci_send_command(HCI_LE_SET_HOST_FEAT, params, 8);
-     */
-
-    (void)features;
-
-    return BT_OK;
-}
-
-/**
- * @brief Download firmware to controller
- */
-static int firmware_download(const char *path)
-{
-    /*
-     * TODO: Implement firmware download for CYW55511
-     *
-     * The CYW55511 requires firmware download over HCI at startup.
-     * Infineon provides firmware files (.hcd format) and download utilities.
-     *
-     * Steps:
-     * 1. Put controller in download mode
-     * 2. Send firmware chunks via vendor HCI commands
-     * 3. Verify firmware CRC
-     * 4. Launch firmware
-     *
-     * With Infineon BTSTACK:
-     * wiced_bt_stack_init(bt_management_callback, &bt_cfg_settings);
-     *
-     * The stack handles firmware download internally.
-     */
-
-    if (path != NULL) {
-        /* Would read firmware from file */
-        (void)path;
-    }
-
-    /* Simulate firmware download success */
-    return BT_OK;
-}
 
 /*******************************************************************************
  * Event Handling
@@ -450,6 +254,7 @@ static void dispatch_event(const bt_event_t *event)
 static void set_state(bt_state_t new_state)
 {
     if (bt_ctx.state != new_state) {
+        printf("BT State: %d -> %d\n", bt_ctx.state, new_state);
         bt_ctx.state = new_state;
 
         bt_event_t event = {
@@ -460,253 +265,198 @@ static void set_state(bt_state_t new_state)
     }
 }
 
-/**
- * @brief HCI event handler (called from HCI transport ISR/task)
+/*
+ * NOTE: HCI event handling (connection complete, disconnection, LE meta events)
+ * is now handled internally by btstack-integration and the BTSTACK library.
+ * Events are dispatched through the bt_management_callback() above.
  */
-static void hci_event_handler(uint8_t *event, uint16_t len)
-{
-    if (len < 2) {
-        return;
-    }
 
-    uint8_t event_code = event[0];
-    uint8_t param_len = event[1];
-
-    (void)param_len;
-
-    switch (event_code) {
-        case 0x0E:  /* Command Complete */
-            bt_ctx.cmd_complete = true;
-            bt_ctx.cmd_status = BT_OK;
-            if (len > 6) {
-                bt_ctx.cmd_response_len = len - 6;
-                memcpy(bt_ctx.cmd_response, &event[6], bt_ctx.cmd_response_len);
-            }
-#ifdef FREERTOS
-            if (bt_ctx.cmd_semaphore != NULL) {
-                xSemaphoreGive(bt_ctx.cmd_semaphore);
-            }
-#endif
-            break;
-
-        case 0x0F:  /* Command Status */
-            bt_ctx.cmd_complete = true;
-            bt_ctx.cmd_status = (event[2] == 0) ? BT_OK : -event[2];
-#ifdef FREERTOS
-            if (bt_ctx.cmd_semaphore != NULL) {
-                xSemaphoreGive(bt_ctx.cmd_semaphore);
-            }
-#endif
-            break;
-
-        case 0x03:  /* Connection Complete */
-            process_connection_complete(&event[2]);
-            break;
-
-        case 0x05:  /* Disconnection Complete */
-            process_disconnection_complete(&event[2]);
-            break;
-
-        case 0x3E:  /* LE Meta Event */
-            process_le_meta_event(&event[2], len - 2);
-            break;
-
-        default:
-            /* Other events */
-            break;
-    }
-
-    bt_ctx.stats.rx_packets++;
-    bt_ctx.stats.rx_bytes += len;
-}
+/*******************************************************************************
+ * BTSTACK Management Callback
+ ******************************************************************************/
 
 /**
- * @brief Process connection complete event
+ * @brief BTSTACK management event callback
+ *
+ * This is called by the BTSTACK for all Bluetooth management events.
  */
-static void process_connection_complete(const uint8_t *data)
+static wiced_result_t bt_management_callback(wiced_bt_management_evt_t event,
+                                              wiced_bt_management_evt_data_t *p_event_data)
 {
-    uint8_t status = data[0];
+    wiced_result_t result = WICED_BT_SUCCESS;
 
-    if (status != 0) {
-        return;
-    }
+    printf("BT Mgmt: Event %d\n", event);
 
-    uint16_t conn_handle = data[1] | (data[2] << 8);
+    switch (event) {
+        case BTM_ENABLED_EVT:
+            /* Bluetooth stack enabled */
+            if (p_event_data->enabled.status == WICED_BT_SUCCESS) {
+                printf("BT Mgmt: Stack enabled successfully\n");
 
-    /* Add to connection list */
-    if (bt_ctx.num_connections < 8) {
-        bt_connection_info_t *conn = &bt_ctx.connections[bt_ctx.num_connections];
-        conn->conn_handle = conn_handle;
-        memcpy(conn->peer_addr, &data[5], BT_ADDR_SIZE);
-        bt_ctx.num_connections++;
+                /* Read local BD address */
+                wiced_bt_dev_read_local_addr(bt_ctx.controller_info.bd_addr);
+                printf("BT Mgmt: BD_ADDR: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                       bt_ctx.controller_info.bd_addr[0],
+                       bt_ctx.controller_info.bd_addr[1],
+                       bt_ctx.controller_info.bd_addr[2],
+                       bt_ctx.controller_info.bd_addr[3],
+                       bt_ctx.controller_info.bd_addr[4],
+                       bt_ctx.controller_info.bd_addr[5]);
 
-        bt_ctx.stats.connections++;
-        set_state(BT_STATE_CONNECTED);
+                /* Mark controller as initialized */
+                bt_ctx.controller_info.type = BT_CONTROLLER_CYW55512;
+                bt_ctx.controller_info.hci_version = 0x0F;  /* BT 6.0 */
+                bt_ctx.controller_info.manufacturer = MANUFACTURER_INFINEON;
+                bt_ctx.controller_info.le_audio_supported = true;
+                bt_ctx.controller_info.isoc_supported = true;
+                bt_ctx.controller_info.max_cig = 1;
+                bt_ctx.controller_info.max_cis_per_cig = 2;
+                bt_ctx.controller_info.max_big = 1;
+                bt_ctx.controller_info.max_bis_per_big = 2;
+                snprintf(bt_ctx.controller_info.fw_version,
+                         sizeof(bt_ctx.controller_info.fw_version),
+                         "CYW55512");
 
-        /* Dispatch event */
-        bt_event_t event = {
-            .type = BT_EVENT_CONNECTION_UP,
-            .data.connection = *conn
-        };
-        dispatch_event(&event);
-    }
-}
+                /* Build default advertising data */
+                build_default_adv_data();
 
-/**
- * @brief Process disconnection complete event
- */
-static void process_disconnection_complete(const uint8_t *data)
-{
-    uint8_t status = data[0];
+                /* Update state */
+                bt_ctx.initialized = true;
+                bt_ctx.power_mode = BT_POWER_ACTIVE;
+                set_state(BT_STATE_READY);
 
-    if (status != 0) {
-        return;
-    }
+                /* Signal initialization complete */
+                if (bt_ctx.init_semaphore != NULL) {
+                    xSemaphoreGive(bt_ctx.init_semaphore);
+                }
 
-    uint16_t conn_handle = data[1] | (data[2] << 8);
+                /* Dispatch initialization event */
+                bt_event_t bt_event = {
+                    .type = BT_EVENT_INITIALIZED
+                };
+                dispatch_event(&bt_event);
+            } else {
+                printf("BT Mgmt: Stack enable failed: %d\n", p_event_data->enabled.status);
+                set_state(BT_STATE_ERROR);
 
-    /* Remove from connection list */
-    for (int i = 0; i < bt_ctx.num_connections; i++) {
-        if (bt_ctx.connections[i].conn_handle == conn_handle) {
-            /* Shift remaining connections */
-            for (int j = i; j < bt_ctx.num_connections - 1; j++) {
-                bt_ctx.connections[j] = bt_ctx.connections[j + 1];
-            }
-            bt_ctx.num_connections--;
-            break;
-        }
-    }
-
-    bt_ctx.stats.disconnections++;
-
-    /* Update state */
-    if (bt_ctx.num_connections == 0) {
-        if (bt_ctx.advertising) {
-            set_state(BT_STATE_ADVERTISING);
-        } else {
-            set_state(BT_STATE_READY);
-        }
-    }
-
-    /* Dispatch event */
-    bt_event_t event = {
-        .type = BT_EVENT_CONNECTION_DOWN,
-        .data.conn_handle = conn_handle
-    };
-    dispatch_event(&event);
-}
-
-/**
- * @brief Process LE Meta Event
- */
-static void process_le_meta_event(const uint8_t *data, uint16_t len)
-{
-    if (len < 1) {
-        return;
-    }
-
-    uint8_t subevent = data[0];
-
-    switch (subevent) {
-        case 0x01:  /* LE Connection Complete */
-            /* Similar to connection complete but with LE-specific fields */
-            if (data[1] == 0) {  /* Success */
-                uint16_t conn_handle = data[2] | (data[3] << 8);
-
-                if (bt_ctx.num_connections < 8) {
-                    bt_connection_info_t *conn = &bt_ctx.connections[bt_ctx.num_connections];
-                    conn->conn_handle = conn_handle;
-                    conn->peer_addr_type = data[5];
-                    memcpy(conn->peer_addr, &data[6], BT_ADDR_SIZE);
-                    conn->conn_interval = data[12] | (data[13] << 8);
-                    conn->conn_latency = data[14] | (data[15] << 8);
-                    conn->supervision_timeout = data[16] | (data[17] << 8);
-                    bt_ctx.num_connections++;
-
-                    bt_ctx.stats.connections++;
-                    set_state(BT_STATE_CONNECTED);
-
-                    bt_event_t event = {
-                        .type = BT_EVENT_CONNECTION_UP,
-                        .data.connection = *conn
-                    };
-                    dispatch_event(&event);
+                /* Signal initialization failed */
+                if (bt_ctx.init_semaphore != NULL) {
+                    xSemaphoreGive(bt_ctx.init_semaphore);
                 }
             }
             break;
 
-        case 0x03:  /* LE Connection Update Complete */
-            {
-                uint16_t conn_handle = data[2] | (data[3] << 8);
+        case BTM_DISABLED_EVT:
+            /* Bluetooth stack disabled */
+            printf("BT Mgmt: Stack disabled\n");
+            set_state(BT_STATE_OFF);
+            break;
 
-                /* Update connection parameters */
-                for (int i = 0; i < bt_ctx.num_connections; i++) {
-                    if (bt_ctx.connections[i].conn_handle == conn_handle) {
-                        bt_ctx.connections[i].conn_interval = data[4] | (data[5] << 8);
-                        bt_ctx.connections[i].conn_latency = data[6] | (data[7] << 8);
-                        bt_ctx.connections[i].supervision_timeout = data[8] | (data[9] << 8);
-                        break;
+        case BTM_BLE_ADVERT_STATE_CHANGED_EVT:
+            /* Advertising state changed */
+            {
+                wiced_bt_ble_advert_mode_t mode = p_event_data->ble_advert_state_changed;
+                printf("BT Mgmt: Advert state changed: %d\n", mode);
+
+                if (mode == BTM_BLE_ADVERT_OFF) {
+                    bt_ctx.advertising = false;
+                    if (bt_ctx.num_connections == 0) {
+                        set_state(BT_STATE_READY);
+                    }
+                } else {
+                    bt_ctx.advertising = true;
+                    if (bt_ctx.num_connections == 0) {
+                        set_state(BT_STATE_ADVERTISING);
                     }
                 }
             }
             break;
 
-        case 0x0C:  /* LE PHY Update Complete */
+        case BTM_BLE_CONNECTION_PARAM_UPDATE:
+            /* Connection parameters updated */
+            printf("BT Mgmt: Connection params updated\n");
+            break;
+
+        case BTM_PAIRING_IO_CAPABILITIES_BLE_REQUEST_EVT:
+            /* Pairing IO capabilities request */
+            printf("BT Mgmt: Pairing IO caps request\n");
+            p_event_data->pairing_io_capabilities_ble_request.local_io_cap = BTM_IO_CAPABILITIES_NONE;
+            p_event_data->pairing_io_capabilities_ble_request.oob_data = BTM_OOB_NONE;
+            p_event_data->pairing_io_capabilities_ble_request.auth_req = BTM_LE_AUTH_REQ_SC_BOND;
+            p_event_data->pairing_io_capabilities_ble_request.max_key_size = 16;
+            p_event_data->pairing_io_capabilities_ble_request.init_keys =
+                BTM_LE_KEY_PENC | BTM_LE_KEY_PID | BTM_LE_KEY_PCSRK | BTM_LE_KEY_LENC;
+            p_event_data->pairing_io_capabilities_ble_request.resp_keys =
+                BTM_LE_KEY_PENC | BTM_LE_KEY_PID | BTM_LE_KEY_PCSRK | BTM_LE_KEY_LENC;
+            break;
+
+        case BTM_PAIRING_COMPLETE_EVT:
+            /* Pairing complete */
+            printf("BT Mgmt: Pairing complete: %d\n",
+                   p_event_data->pairing_complete.pairing_complete_info.ble.status);
             {
-                bt_event_t event = {
+                bt_event_t bt_event = {
+                    .type = BT_EVENT_PAIRING_COMPLETE
+                };
+                dispatch_event(&bt_event);
+            }
+            break;
+
+        case BTM_ENCRYPTION_STATUS_EVT:
+            /* Encryption status change */
+            printf("BT Mgmt: Encryption status: %d\n",
+                   p_event_data->encryption_status.result);
+            break;
+
+        case BTM_SECURITY_REQUEST_EVT:
+            /* Security request from peer */
+            printf("BT Mgmt: Security request\n");
+            wiced_bt_ble_security_grant(p_event_data->security_request.bd_addr,
+                                        WICED_BT_SUCCESS);
+            break;
+
+        case BTM_PAIRED_DEVICE_LINK_KEYS_UPDATE_EVT:
+            /* Link keys updated */
+            printf("BT Mgmt: Link keys updated\n");
+            break;
+
+        case BTM_PAIRED_DEVICE_LINK_KEYS_REQUEST_EVT:
+            /* Link keys requested */
+            printf("BT Mgmt: Link keys requested\n");
+            result = WICED_BT_ERROR;  /* No stored keys */
+            break;
+
+        case BTM_LOCAL_IDENTITY_KEYS_UPDATE_EVT:
+            /* Local identity keys updated */
+            printf("BT Mgmt: Local identity keys updated\n");
+            break;
+
+        case BTM_LOCAL_IDENTITY_KEYS_REQUEST_EVT:
+            /* Local identity keys requested */
+            printf("BT Mgmt: Local identity keys requested\n");
+            result = WICED_BT_ERROR;  /* No stored keys */
+            break;
+
+        case BTM_BLE_PHY_UPDATE_EVT:
+            /* PHY updated */
+            printf("BT Mgmt: PHY updated - TX: %d, RX: %d\n",
+                   p_event_data->ble_phy_update_event.tx_phy,
+                   p_event_data->ble_phy_update_event.rx_phy);
+            {
+                bt_event_t bt_event = {
                     .type = BT_EVENT_PHY_UPDATED,
-                    .data.conn_handle = data[2] | (data[3] << 8)
+                    .data.conn_handle = p_event_data->ble_phy_update_event.conn_handle
                 };
-                dispatch_event(&event);
-            }
-            break;
-
-        case 0x19:  /* LE CIS Established */
-            {
-                bt_event_t event = {
-                    .type = BT_EVENT_ISOC_ESTABLISHED
-                };
-                event.data.isoc.cis_handle = data[2] | (data[3] << 8);
-                event.data.isoc.is_broadcast = false;
-                dispatch_event(&event);
-
-                set_state(BT_STATE_STREAMING);
-            }
-            break;
-
-        case 0x1A:  /* LE CIS Request */
-            /* Auto-accept CIS for now */
-            /* TODO: Send LE Accept CIS Request */
-            break;
-
-        case 0x1B:  /* LE Create BIG Complete */
-            {
-                bt_event_t event = {
-                    .type = BT_EVENT_ISOC_ESTABLISHED
-                };
-                event.data.isoc.big_handle = data[1];
-                event.data.isoc.is_broadcast = true;
-                dispatch_event(&event);
-
-                set_state(BT_STATE_STREAMING);
-            }
-            break;
-
-        case 0x1D:  /* LE Terminate BIG Complete */
-            {
-                bt_event_t event = {
-                    .type = BT_EVENT_ISOC_TERMINATED
-                };
-                event.data.isoc.big_handle = data[1];
-                event.data.isoc.is_broadcast = true;
-                dispatch_event(&event);
+                dispatch_event(&bt_event);
             }
             break;
 
         default:
-            /* Other LE events */
+            printf("BT Mgmt: Unhandled event %d\n", event);
             break;
     }
+
+    return result;
 }
 
 /*******************************************************************************
@@ -753,7 +503,7 @@ static int build_default_adv_data(void)
 
 int bt_init(const bt_config_t *config)
 {
-    int result;
+    wiced_result_t wiced_result;
 
     if (bt_ctx.initialized) {
         return BT_ERROR_ALREADY_INITIALIZED;
@@ -773,7 +523,8 @@ int bt_init(const bt_config_t *config)
 
     set_state(BT_STATE_INITIALIZING);
 
-#ifdef FREERTOS
+    printf("BT Init: Starting Bluetooth stack initialization\n");
+
     /* Create synchronization primitives */
     bt_ctx.init_semaphore = xSemaphoreCreateBinary();
     bt_ctx.cmd_semaphore = xSemaphoreCreateBinary();
@@ -782,57 +533,58 @@ int bt_init(const bt_config_t *config)
     if (bt_ctx.init_semaphore == NULL ||
         bt_ctx.cmd_semaphore == NULL ||
         bt_ctx.event_queue == NULL) {
+        printf("BT Init: Failed to create FreeRTOS primitives\n");
         bt_deinit();
         return BT_ERROR_NO_MEMORY;
     }
-#endif
 
-    /* Initialize HCI transport */
-    result = hci_transport_init(&bt_ctx.config.hci);
-    if (result != BT_OK) {
+    /* Initialize the btstack-integration platform layer */
+    printf("BT Init: Configuring HCI UART platform\n");
+    if (bt_platform_init() != 0) {
+        printf("BT Init: Platform init failed\n");
         bt_deinit();
         return BT_ERROR_HCI_TRANSPORT;
     }
 
-    /* Download firmware if configured */
-    if (bt_ctx.config.hci.download_firmware) {
-        result = firmware_download(bt_ctx.config.hci.firmware_path);
-        if (result != BT_OK) {
-            bt_deinit();
-            return BT_ERROR_FIRMWARE_DOWNLOAD;
-        }
+    /* Update BTSTACK config with device name if provided */
+    if (bt_ctx.config.device_name[0] != '\0') {
+        bt_cfg_settings.device_name = (uint8_t *)bt_ctx.config.device_name;
     }
 
-    /* Initialize controller */
-    result = controller_init();
-    if (result != BT_OK) {
+    /* Initialize BTSTACK
+     *
+     * This will:
+     * 1. Download firmware to CYW55512 (patchram)
+     * 2. Initialize HCI transport
+     * 3. Send HCI Reset
+     * 4. Configure the controller
+     * 5. Call bt_management_callback with BTM_ENABLED_EVT on success
+     */
+    printf("BT Init: Calling wiced_bt_stack_init()\n");
+    wiced_result = wiced_bt_stack_init(bt_management_callback, &bt_cfg_settings);
+
+    if (wiced_result != WICED_BT_SUCCESS) {
+        printf("BT Init: wiced_bt_stack_init failed: %d\n", wiced_result);
         bt_deinit();
         return BT_ERROR_CONTROLLER_INIT;
     }
 
-    /* Set device address if specified */
-    if (bt_ctx.config.device_addr[0] != 0 ||
-        bt_ctx.config.device_addr[1] != 0 ||
-        bt_ctx.config.device_addr[2] != 0) {
-        result = bt_set_device_address(bt_ctx.config.device_addr,
-                                        bt_ctx.config.use_random_addr);
-        if (result != BT_OK) {
-            /* Non-fatal, use default address */
-        }
+    /* Wait for BTM_ENABLED_EVT (signaled by init_semaphore) */
+    printf("BT Init: Waiting for BTM_ENABLED_EVT...\n");
+    if (xSemaphoreTake(bt_ctx.init_semaphore, pdMS_TO_TICKS(FW_DOWNLOAD_TIMEOUT_MS)) != pdTRUE) {
+        printf("BT Init: Timeout waiting for BTM_ENABLED_EVT\n");
+        bt_deinit();
+        return BT_ERROR_TIMEOUT;
     }
 
-    /* Build default advertising data */
-    build_default_adv_data();
+    /* Check if initialization was successful */
+    if (bt_ctx.state == BT_STATE_ERROR) {
+        printf("BT Init: Stack initialization failed\n");
+        bt_deinit();
+        return BT_ERROR_CONTROLLER_INIT;
+    }
 
-    bt_ctx.initialized = true;
-    bt_ctx.power_mode = BT_POWER_ACTIVE;
-    set_state(BT_STATE_READY);
-
-    /* Dispatch initialization event */
-    bt_event_t event = {
-        .type = BT_EVENT_INITIALIZED
-    };
-    dispatch_event(&event);
+    printf("BT Init: Bluetooth stack initialized successfully\n");
 
     return BT_OK;
 }
@@ -842,6 +594,8 @@ void bt_deinit(void)
     if (!bt_ctx.initialized) {
         return;
     }
+
+    printf("BT Deinit: Shutting down Bluetooth stack\n");
 
     /* Stop advertising */
     if (bt_ctx.advertising) {
@@ -853,24 +607,27 @@ void bt_deinit(void)
         bt_disconnect(bt_ctx.connections[i].conn_handle, 0x13);
     }
 
-    /* Deinitialize transport */
-    hci_transport_deinit();
+    /* Deinitialize BTSTACK */
+    wiced_bt_stack_deinit();
 
-#ifdef FREERTOS
     /* Delete FreeRTOS objects */
     if (bt_ctx.init_semaphore != NULL) {
         vSemaphoreDelete(bt_ctx.init_semaphore);
+        bt_ctx.init_semaphore = NULL;
     }
     if (bt_ctx.cmd_semaphore != NULL) {
         vSemaphoreDelete(bt_ctx.cmd_semaphore);
+        bt_ctx.cmd_semaphore = NULL;
     }
     if (bt_ctx.event_queue != NULL) {
         vQueueDelete(bt_ctx.event_queue);
+        bt_ctx.event_queue = NULL;
     }
-#endif
 
     set_state(BT_STATE_OFF);
     bt_ctx.initialized = false;
+
+    printf("BT Deinit: Bluetooth stack shut down\n");
 }
 
 bool bt_is_initialized(void)
@@ -929,6 +686,8 @@ int bt_reset_controller(void)
 
 int bt_set_device_address(const uint8_t addr[BT_ADDR_SIZE], bool random)
 {
+    wiced_result_t result;
+
     if (!bt_ctx.initialized) {
         return BT_ERROR_NOT_INITIALIZED;
     }
@@ -937,26 +696,27 @@ int bt_set_device_address(const uint8_t addr[BT_ADDR_SIZE], bool random)
         return BT_ERROR_INVALID_PARAM;
     }
 
-    /*
-     * TODO: Set device address via HCI
-     *
-     * For random static address:
-     * - HCI LE Set Random Address (opcode 0x2005)
-     *
-     * For public address:
-     * - Usually vendor-specific command
-     */
+    printf("BT Addr: Setting device address %02X:%02X:%02X:%02X:%02X:%02X (random=%d)\n",
+           addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], random);
+
+    /* Set device address using BTSTACK API */
+    wiced_bt_device_address_t bd_addr;
+    memcpy(bd_addr, addr, BT_ADDR_SIZE);
 
     if (random) {
-        /* Set random static address */
-        uint8_t params[6];
-        memcpy(params, addr, 6);
-
         /* Ensure static address format (two MSBs = 11) */
-        params[5] |= 0xC0;
+        bd_addr[0] |= 0xC0;
 
-        hci_send_command(0x2005, params, 6);  /* LE Set Random Address */
-        hci_wait_command_complete(1000);
+        /* Set random address */
+        result = wiced_bt_ble_set_random_address(bd_addr);
+    } else {
+        /* Set local BD address (usually done before stack init) */
+        result = wiced_bt_set_local_bdaddr(bd_addr, BLE_ADDR_PUBLIC);
+    }
+
+    if (result != WICED_BT_SUCCESS) {
+        printf("BT Addr: Failed to set address: %d\n", result);
+        return BT_ERROR_INVALID_PARAM;
     }
 
     /* Update local copy */
@@ -990,51 +750,49 @@ int bt_get_device_address(uint8_t addr[BT_ADDR_SIZE], bool *random)
 
 int bt_start_advertising(bool connectable, uint16_t interval_ms)
 {
+    wiced_result_t result;
+
     if (!bt_ctx.initialized) {
         return BT_ERROR_NOT_INITIALIZED;
     }
 
     if (bt_ctx.advertising) {
-        /* Already advertising, update parameters */
+        /* Already advertising, stop first */
         bt_stop_advertising();
     }
 
-    /*
-     * TODO: Configure and start advertising via HCI
-     *
-     * Steps:
-     * 1. LE Set Advertising Parameters
-     * 2. LE Set Advertising Data
-     * 3. LE Set Scan Response Data (optional)
-     * 4. LE Set Advertising Enable
-     *
-     * Example:
-     * uint8_t adv_params[15];
-     * uint16_t min_interval = (interval_ms * 1000) / 625;  // Convert to 0.625ms units
-     * uint16_t max_interval = min_interval + 16;
-     *
-     * adv_params[0] = min_interval & 0xFF;
-     * adv_params[1] = (min_interval >> 8) & 0xFF;
-     * adv_params[2] = max_interval & 0xFF;
-     * adv_params[3] = (max_interval >> 8) & 0xFF;
-     * adv_params[4] = connectable ? 0x00 : 0x03;  // ADV_IND or ADV_NONCONN_IND
-     * // ... rest of parameters
-     *
-     * hci_send_command(HCI_LE_SET_ADV_PARAMS, adv_params, 15);
-     */
+    printf("BT Adv: Starting advertising (connectable=%d, interval=%dms)\n",
+           connectable, interval_ms);
 
     bt_ctx.connectable_adv = connectable;
     bt_ctx.adv_interval = interval_ms;
 
     /* Set advertising data */
-    hci_send_command(HCI_LE_SET_ADV_DATA, bt_ctx.adv_data, bt_ctx.adv_data_len);
-    hci_wait_command_complete(1000);
+    result = wiced_bt_ble_set_raw_advertisement_data(bt_ctx.adv_data_len, bt_ctx.adv_data);
+    if (result != WICED_BT_SUCCESS) {
+        printf("BT Adv: Failed to set adv data: %d\n", result);
+        return BT_ERROR_INVALID_PARAM;
+    }
 
-    /* Enable advertising */
-    uint8_t enable = 1;
-    hci_send_command(HCI_LE_SET_ADV_ENABLE, &enable, 1);
-    hci_wait_command_complete(1000);
+    /* Set scan response data */
+    if (bt_ctx.scan_rsp_len > 0) {
+        result = wiced_bt_ble_set_raw_scan_response_data(bt_ctx.scan_rsp_len, bt_ctx.scan_rsp_data);
+        if (result != WICED_BT_SUCCESS) {
+            printf("BT Adv: Failed to set scan rsp: %d\n", result);
+        }
+    }
 
+    /* Start advertising */
+    wiced_bt_ble_advert_mode_t mode = connectable ?
+        BTM_BLE_ADVERT_UNDIRECTED_HIGH : BTM_BLE_ADVERT_NONCONN_HIGH;
+
+    result = wiced_bt_start_advertisements(mode, BLE_ADDR_PUBLIC, NULL);
+    if (result != WICED_BT_SUCCESS) {
+        printf("BT Adv: Failed to start advertising: %d\n", result);
+        return BT_ERROR_BUSY;
+    }
+
+    printf("BT Adv: Advertising started\n");
     bt_ctx.advertising = true;
     set_state(BT_STATE_ADVERTISING);
 
@@ -1043,6 +801,8 @@ int bt_start_advertising(bool connectable, uint16_t interval_ms)
 
 int bt_stop_advertising(void)
 {
+    wiced_result_t result;
+
     if (!bt_ctx.initialized) {
         return BT_ERROR_NOT_INITIALIZED;
     }
@@ -1051,16 +811,22 @@ int bt_stop_advertising(void)
         return BT_OK;
     }
 
-    /* Disable advertising */
-    uint8_t enable = 0;
-    hci_send_command(HCI_LE_SET_ADV_ENABLE, &enable, 1);
-    hci_wait_command_complete(1000);
+    printf("BT Adv: Stopping advertising\n");
+
+    /* Stop advertising */
+    result = wiced_bt_start_advertisements(BTM_BLE_ADVERT_OFF, BLE_ADDR_PUBLIC, NULL);
+    if (result != WICED_BT_SUCCESS) {
+        printf("BT Adv: Failed to stop advertising: %d\n", result);
+        return BT_ERROR_BUSY;
+    }
 
     bt_ctx.advertising = false;
 
     if (bt_ctx.num_connections == 0) {
         set_state(BT_STATE_READY);
     }
+
+    printf("BT Adv: Advertising stopped\n");
 
     return BT_OK;
 }
@@ -1141,22 +907,22 @@ int bt_set_device_name(const char *name)
 
 int bt_disconnect(uint16_t conn_handle, uint8_t reason)
 {
+    wiced_result_t result;
+
     if (!bt_ctx.initialized) {
         return BT_ERROR_NOT_INITIALIZED;
     }
 
-    /* HCI Disconnect command */
-    uint8_t params[3];
-    params[0] = conn_handle & 0xFF;
-    params[1] = (conn_handle >> 8) & 0xFF;
-    params[2] = reason;
+    printf("BT Conn: Disconnecting handle %d, reason 0x%02X\n", conn_handle, reason);
 
-    int result = hci_send_command(0x0406, params, 3);  /* HCI Disconnect */
-    if (result != BT_OK) {
-        return result;
+    /* Disconnect using BTSTACK API */
+    result = wiced_bt_gatt_disconnect(conn_handle);
+    if (result != WICED_BT_SUCCESS) {
+        printf("BT Conn: Disconnect failed: %d\n", result);
+        return BT_ERROR_INVALID_PARAM;
     }
 
-    return hci_wait_command_complete(5000);
+    return BT_OK;
 }
 
 int bt_update_connection_params(uint16_t conn_handle,
@@ -1369,43 +1135,25 @@ void bt_task(void *pvParameters)
 {
     (void)pvParameters;
 
+    printf("BT Task: Started\n");
+
     /*
-     * TODO: Implement main BT task loop
-     *
-     * This task:
-     * 1. Processes HCI events from UART
-     * 2. Dispatches events to registered callbacks
-     * 3. Handles timer-based operations
-     * 4. Manages GATT operations
-     *
-     * With Infineon BTSTACK:
-     *
-     * while (1) {
-     *     wiced_bt_stack_process();
-     *     vTaskDelay(pdMS_TO_TICKS(1));
-     * }
-     *
-     * Or event-driven:
-     *
-     * while (1) {
-     *     bt_event_t event;
-     *     if (xQueueReceive(bt_ctx.event_queue, &event, portMAX_DELAY) == pdTRUE) {
-     *         dispatch_event(&event);
-     *     }
-     * }
+     * The btstack-integration layer creates its own HCI TX/RX tasks.
+     * This task handles application-level BT events from the event queue.
      */
 
-#ifdef FREERTOS
     while (1) {
-        /* Process pending HCI data */
-        /* wiced_bt_stack_process(); */
+        bt_event_t event;
 
-        /* Yield to other tasks */
-        vTaskDelay(pdMS_TO_TICKS(10));
+        /* Wait for events from the queue */
+        if (xQueueReceive(bt_ctx.event_queue, &event, pdMS_TO_TICKS(100)) == pdTRUE) {
+            /* Process the event */
+            dispatch_event(&event);
+        }
+
+        /* Periodic processing (keep-alive, stats, etc.) */
+        bt_process();
     }
-#else
-    /* Non-RTOS: just return */
-#endif
 }
 
 uint32_t bt_get_task_stack_size(void)
