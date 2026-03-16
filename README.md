@@ -21,15 +21,15 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
 
 ### Key Features
 
-| Feature | Description | Status |
-|---------|-------------|--------|
-| **LE Audio Unicast** | Full-duplex audio streaming via CIS (Connected Isochronous Stream) | Implemented |
-| **LE Audio Broadcast (Auracast)** | One-to-many audio broadcast via BIS (Broadcast Isochronous Stream) | Implemented |
-| **LC3 Codec** | Host-side LC3 encode/decode using Google liblc3 | Implemented |
-| **BLE MIDI** | MIDI over Bluetooth Low Energy GATT service | Implemented |
-| **USB MIDI** | USB High-Speed MIDI class device (480 Mbps) | Implemented |
-| **I2S Streaming** | DMA-based bidirectional audio with ping-pong buffers | Implemented |
-| **Wi-Fi Bridge** | USB HS to SDIO to CYW55512 WLAN data path | Implemented |
+| Feature | Core | Description | Status |
+|---------|------|-------------|--------|
+| **LE Audio Unicast** | CM33+CM55 | Full-duplex audio streaming via CIS (Connected Isochronous Stream) | Implemented |
+| **LE Audio Broadcast (Auracast)** | CM33+CM55 | One-to-many audio broadcast via BIS (Broadcast Isochronous Stream) | Implemented |
+| **LC3 Codec** | CM55 | Host-side LC3 encode/decode using Google liblc3 (Helium DSP) | Implemented |
+| **BLE MIDI** | CM33 | MIDI over Bluetooth Low Energy GATT service | Implemented |
+| **USB MIDI** | CM33 | USB High-Speed MIDI class device (480 Mbps) | Implemented |
+| **I2S Streaming** | CM55 | DMA-based bidirectional audio with ping-pong buffers | Implemented |
+| **Wi-Fi Bridge** | CM33 | USB HS to SDIO to CYW55512 WLAN data path | Implemented |
 
 ## Hardware
 
@@ -488,14 +488,17 @@ le_audio_start_broadcast(&config);
 
 ## FreeRTOS Task Architecture
 
-| Task | Priority | Stack | Purpose |
-|------|----------|-------|---------|
-| I2S DMA | ISR | - | DMA half/complete callbacks |
-| Audio/LC3 | 6 (Highest) | 4096 | LC3 encode/decode, frame sync |
-| BLE | 5 | 4096 | BTSTACK, LE Audio profiles |
-| USB | 4 | 2048 | USB enumeration, MIDI class |
-| Wi-Fi | 3 | 4096 | WHD packet processing |
-| MIDI | 2 | 1024 | BLE/USB routing |
+### Dual-Core Task Distribution
+
+| Core | Task | Priority | Stack | Purpose |
+|------|------|----------|-------|---------|
+| **CM55** | I2S DMA | ISR | - | DMA half/complete callbacks |
+| **CM55** | Audio/LC3 | Highest | 4096 | LC3 encode/decode, frame sync |
+| **CM55** | IPC | High | 2048 | Inter-processor audio frame exchange |
+| **CM33** | BLE | 5 | 4096 | BTSTACK, LE Audio control plane |
+| **CM33** | USB | 4 | 2048 | USB enumeration, MIDI class |
+| **CM33** | Wi-Fi | 3 | 4096 | WHD packet processing |
+| **CM33** | MIDI | 2 | 1024 | BLE/USB MIDI routing |
 
 ## Memory Requirements
 

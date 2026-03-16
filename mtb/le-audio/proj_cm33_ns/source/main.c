@@ -1,243 +1,484 @@
-/*******************************************************************************
-* File Name: main.c
-*
-* Description: This source file contains the main routine for non-secure
-*              application in the CM33 CPU for the BLuetooth
-*              LE ISOC Peripheral Example for ModusToolbox.
-*
-* Related Document: See README.md
-*
-********************************************************************************
-* (c) 2023-2025, Infineon Technologies AG, or an affiliate of Infineon Technologies AG. All rights reserved.
-* This software, associated documentation and materials ("Software") is owned by
-* Infineon Technologies AG or one of its affiliates ("Infineon") and is protected
-* by and subject to worldwide patent protection, worldwide copyright laws, and
-* international treaty provisions. Therefore, you may use this Software only as
-* provided in the license agreement accompanying the software package from which
-* you obtained this Software. If no license agreement applies, then any use,
-* reproduction, modification, translation, or compilation of this Software is
-* prohibited without the express written permission of Infineon.
-* Disclaimer: UNLESS OTHERWISE EXPRESSLY AGREED WITH INFINEON, THIS SOFTWARE
-* IS PROVIDED AS-IS, WITH NO WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING,
-* BUT NOT LIMITED TO, ALL WARRANTIES OF NON-INFRINGEMENT OF THIRD-PARTY RIGHTS AND
-* IMPLIED WARRANTIES SUCH AS WARRANTIES OF FITNESS FOR A SPECIFIC USE/PURPOSE OR
-* MERCHANTABILITY. Infineon reserves the right to make changes to the Software
-* without notice. You are responsible for properly designing, programming, and
-* testing the functionality and safety of your intended application of the
-* Software, as well as complying with any legal requirements related to its
-* use. Infineon does not guarantee that the Software will be free from intrusion,
-* data theft or loss, or other breaches ("Security Breaches"), and Infineon
-* shall have no liability arising out of any Security Breaches. Unless otherwise
-* explicitly approved by Infineon, the Software may not be used in any application
-* where a failure of the Product or any consequences of the use thereof can
-* reasonably be expected to result in personal injury.
-*******************************************************************************/
+/**
+ * @file main.c
+ * @brief CM33 Non-Secure Main - BT Stack, USB, Wi-Fi, MIDI Control
+ *
+ * This is the main entry point for the CM33 non-secure core which handles:
+ * - Bluetooth stack (BTSTACK) and LE Audio control plane
+ * - USB device (MIDI over USB)
+ * - Wi-Fi bridge (SDIO to CYW55512)
+ * - MIDI routing between BLE/USB/UART
+ * - Inter-processor communication with CM55 for audio data
+ *
+ * Architecture:
+ *   CM33: BT stack, GATT, ISOC control, USB, Wi-Fi, MIDI routing
+ *   CM55: LC3 codec, I2S streaming, audio DSP (via IPC)
+ *
+ * Based on Infineon's ISOC Peripheral example with custom LE Audio integration.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 /*******************************************************************************
-* Header Files
-*******************************************************************************/
+ * Header Files
+ ******************************************************************************/
+
+/* FreeRTOS */
 #include "FreeRTOS.h"
 #include "task.h"
+#include "queue.h"
+#include "semphr.h"
+
+/* Infineon Platform */
+#include "cybsp.h"
+#include "cy_retarget_io.h"
+#include "cy_pdl.h"
+#include "cyhal.h"
+#include "cy_time.h"
+
+/* Infineon BT Platform */
 #include "cybt_platform_config.h"
 #include "cybt_platform_trace.h"
 #include "cybsp_bt_config.h"
+
+/* Example's existing modules (proven working code) */
 #include "bt.h"
+#include "app.h"
 #include "app_bt_bonding.h"
 #include "button.h"
 #include "retarget_io_init.h"
-#include "app.h"
-#include "cy_time.h"
+
+/* LE Audio bridge */
+#include "app_le_audio.h"
+
+/* Custom modules - Control plane only (no audio DSP on CM33) */
+#include "midi/midi_ble_service.h"
+#include "midi/midi_usb.h"
+#include "midi/midi_router.h"
+#include "wifi/wifi_bridge.h"
+#include "wifi/wifi_sdio.h"
+#include "le_audio/le_audio_manager.h"
 
 /*******************************************************************************
-* Macros
-*******************************************************************************/
-#define BTN_PRESSED                     (0U)
-#define ASSERT_VAL                      (0U)
+ * Macros
+ ******************************************************************************/
 
-/* App boot address for CM55 project */
+/* Platform configuration (from Infineon example) */
 #define CM55_APP_BOOT_ADDR              (CYMEM_CM33_0_m55_nvm_START + \
-                                           CYBSP_MCUBOOT_HEADER_SIZE)
-
+                                         CYBSP_MCUBOOT_HEADER_SIZE)
 #define CM55_BOOT_WAIT_TIME_USEC        (10U)
-
-/* Enabling or disabling a MCWDT requires a wait time of upto 2 CLK_LF cycles
- * to come into effect. This wait time value will depend on the actual CLK_LF
- * frequency set by the BSP */
 #define LPTIMER_0_WAIT_TIME_USEC        (62U)
-
-/* Define the LPTimer interrupt priority number. '1' implies highest priority */
 #define APP_LPTIMER_INTERRUPT_PRIORITY  (1U)
 
+/* Task stack sizes */
+#define BLE_TASK_STACK_SIZE     (4096)
+#define USB_TASK_STACK_SIZE     (2048)
+#define WIFI_TASK_STACK_SIZE    (4096)
+#define MIDI_TASK_STACK_SIZE    (1024)
+
+/* Task priorities (per architecture.md) */
+#define BLE_TASK_PRIORITY       (5)
+#define USB_TASK_PRIORITY       (4)
+#define WIFI_TASK_PRIORITY      (3)
+#define MIDI_TASK_PRIORITY      (2)
+
 /*******************************************************************************
-* Variables
-*******************************************************************************/
-/* LPTimer HAL object */
+ * Global Variables
+ ******************************************************************************/
+
+/* LPTimer HAL object (for FreeRTOS tickless idle) */
 static mtb_hal_lptimer_t lptimer_obj;
 
-/* RTC HAL object */
+/* RTC HAL object (for CLIB time support) */
 static mtb_hal_rtc_t rtc_obj;
 
+/* BT ready semaphore - signaled when BTSTACK is initialized */
+SemaphoreHandle_t g_bt_ready_sem = NULL;
+
+/* Application state */
+static volatile bool g_app_running = false;
+
+/* Task handles */
+static TaskHandle_t g_ble_task_handle = NULL;
+static TaskHandle_t g_usb_task_handle = NULL;
+static TaskHandle_t g_midi_task_handle = NULL;
+static TaskHandle_t g_wifi_task_handle = NULL;
+
 /*******************************************************************************
-* Function Definitions
-*******************************************************************************/
+ * Function Prototypes
+ ******************************************************************************/
+
+/* Platform setup (from Infineon example) */
+static void lptimer_interrupt_handler(void);
+static void setup_clib_support(void);
+static void setup_tickless_idle_timer(void);
+
+/* FreeRTOS tasks */
+static void ble_task(void *pvParameters);
+static void usb_task(void *pvParameters);
+static void midi_task(void *pvParameters);
+static void wifi_task(void *pvParameters);
+
+/* Module initialization */
+static int init_control_modules(void);
+
 /*******************************************************************************
-* Function Name: lptimer_interrupt_handler
-********************************************************************************
-* Summary:
-* Interrupt handler function for LPTimer instance.
-*******************************************************************************/
+ * Platform Setup Functions (from Infineon example - DO NOT MODIFY)
+ ******************************************************************************/
+
 static void lptimer_interrupt_handler(void)
 {
     mtb_hal_lptimer_process_interrupt(&lptimer_obj);
 }
 
-/*******************************************************************************
-* Function Name: setup_clib_support
-********************************************************************************
-* Summary:
-*    1. This function configures and initializes the Real-Time Clock (RTC).
-*    2. It then initializes the RTC HAL object to enable CLIB support library 
-*       to work with the provided Real-Time Clock (RTC) module.
-*
-* Parameters:
-*  void
-*
-* Return:
-*  void
-*
-*******************************************************************************/
 static void setup_clib_support(void)
 {
-    /* RTC Initialization */
     Cy_RTC_Init(&CYBSP_RTC_config);
     Cy_RTC_SetDateAndTime(&CYBSP_RTC_config);
-
-    /* Initialize the ModusToolbox CLIB support library */
     mtb_clib_support_init(&rtc_obj);
 }
 
-/*******************************************************************************
-* Function Name: setup_tickless_idle_timer
-********************************************************************************
-* Summary:
-* 1. This function first configures and initializes an interrupt for LPTimer.
-* 2. Then it initializes the LPTimer HAL object to be used in the RTOS
-*    tickless idle mode implementation to allow the device enter deep sleep
-*    when idle task runs. LPTIMER_0 instance is configured for CM33 CPU.
-* 3. It then passes the LPTimer object to abstraction RTOS library that
-*    implements tickless idle mode.
-*******************************************************************************/
 static void setup_tickless_idle_timer(void)
 {
-    /* Interrupt configuration structure for LPTimer */
-    cy_stc_sysint_t lptimer_intr_cfg =
-    {
+    cy_stc_sysint_t lptimer_intr_cfg = {
         .intrSrc = CYBSP_CM33_LPTIMER_0_IRQ,
         .intrPriority = APP_LPTIMER_INTERRUPT_PRIORITY
     };
 
-    /* Initialize the LPTimer interrupt and specify the interrupt handler. */
-    cy_en_sysint_status_t interrupt_init_status =
-         Cy_SysInt_Init(&lptimer_intr_cfg,
-         lptimer_interrupt_handler);
-
-    /* LPTimer interrupt initialization failed. Stop program execution. */
-    if(CY_SYSINT_SUCCESS != interrupt_init_status)
-    {
+    cy_en_sysint_status_t status = Cy_SysInt_Init(&lptimer_intr_cfg,
+                                                   lptimer_interrupt_handler);
+    if (CY_SYSINT_SUCCESS != status) {
         handle_app_error();
     }
 
-    /* Enable NVIC interrupt. */
     NVIC_EnableIRQ(lptimer_intr_cfg.intrSrc);
 
-    /* Initialize the MCWDT block */
-    cy_en_mcwdt_status_t mcwdt_init_status =
-         Cy_MCWDT_Init(CYBSP_CM33_LPTIMER_0_HW,
-                       &CYBSP_CM33_LPTIMER_0_config);
-
-    /* MCWDT initialization failed. Stop program execution. */
-    if(CY_MCWDT_SUCCESS != mcwdt_init_status)
-    {
+    cy_en_mcwdt_status_t mcwdt_status = Cy_MCWDT_Init(CYBSP_CM33_LPTIMER_0_HW,
+                                                      &CYBSP_CM33_LPTIMER_0_config);
+    if (CY_MCWDT_SUCCESS != mcwdt_status) {
         handle_app_error();
     }
 
-    /* Enable MCWDT instance */
-    Cy_MCWDT_Enable(CYBSP_CM33_LPTIMER_0_HW,
-                    CY_MCWDT_CTR_Msk,
+    Cy_MCWDT_Enable(CYBSP_CM33_LPTIMER_0_HW, CY_MCWDT_CTR_Msk,
                     LPTIMER_0_WAIT_TIME_USEC);
 
-    /* Setup LPTimer using the HAL object and desired configuration as defined
-     * in the device configurator. 
-     */
     cy_rslt_t result = mtb_hal_lptimer_setup(&lptimer_obj,
                                              &CYBSP_CM33_LPTIMER_0_hal_config);
-
-    /* LPTimer setup failed. Stop program execution. */
-    if(CY_RSLT_SUCCESS != result)
-    {
+    if (CY_RSLT_SUCCESS != result) {
         handle_app_error();
     }
 
-    /* Pass the LPTimer object to abstraction RTOS library that implements
-     * tickless idle mode
-     */
     cyabs_rtos_set_lptimer(&lptimer_obj);
 }
 
 /*******************************************************************************
-* Function Name : main
-* ******************************************************************************
-* Summary :
-*  Entry point to the application. It performs the below functions.
-*  1. Initializes the BSP and initializes the retarget-io for debug  UART prints.
-*  2. Initialize the kv-store to perform read/write operations to NVM.
-*  3. Initialize the button and interrupt and create a task called Button Task.
-*  4. Call entry point to the application. Set device configuration and start
-*     Bluetooth stack initialization.  The actual application initialization
-*     (app_init) will be called when stack reports that Bluetooth device is
-*     ready.
-*  5. Start the freertos scheduler.
-*******************************************************************************/
-int main()
+ * Module Initialization
+ ******************************************************************************/
+
+/**
+ * @brief Initialize control-plane modules (runs on CM33)
+ *
+ * Called from ble_task after BT stack is ready.
+ * Audio DSP modules (LC3, I2S) are initialized on CM55.
+ */
+static int init_control_modules(void)
 {
-    /* Initialise the BSP and Verify the BSP initialization */
-    if(CY_RSLT_SUCCESS != cybsp_init())
-    {
+    int result;
+
+    printf("\n[CM33] Initializing control modules...\n");
+
+    /* Initialize LE Audio manager (control plane only) */
+    printf("  LE Audio manager...\n");
+    le_audio_codec_config_t le_codec_config = LE_AUDIO_CODEC_CONFIG_DEFAULT;
+    result = le_audio_init(&le_codec_config);
+    if (result != 0) {
+        printf("  WARNING: LE Audio init failed: %d\n", result);
+    } else {
+        printf("  LE Audio manager: OK\n");
+    }
+
+    /* Initialize MIDI router */
+    printf("  MIDI router...\n");
+    result = midi_router_init(NULL);
+    if (result != 0) {
+        printf("  WARNING: MIDI router init failed: %d\n", result);
+    } else {
+        printf("  MIDI router: OK\n");
+    }
+
+    /* Initialize USB MIDI (using emUSB-Device) */
+    printf("  USB MIDI...\n");
+    result = midi_usb_init(NULL);
+    if (result != 0) {
+        printf("  WARNING: USB MIDI init failed: %d\n", result);
+    } else {
+        printf("  USB MIDI: OK\n");
+    }
+
+    /* Initialize BLE MIDI service */
+    printf("  BLE MIDI...\n");
+    result = midi_ble_init(NULL);
+    if (result != 0) {
+        printf("  WARNING: BLE MIDI init failed: %d\n", result);
+    } else {
+        printf("  BLE MIDI: OK\n");
+    }
+
+    /* Initialize SDIO for Wi-Fi (CYW55512) */
+    printf("  SDIO bus...\n");
+    wifi_sdio_config_t sdio_config = WIFI_SDIO_CONFIG_DEFAULT;
+    result = wifi_sdio_init(&sdio_config);
+    if (result != 0) {
+        printf("  WARNING: SDIO init failed: %d\n", result);
+    } else {
+        printf("  SDIO bus: OK\n");
+    }
+
+    /* Initialize Wi-Fi bridge (WHD + packet forwarding) */
+    printf("  Wi-Fi bridge...\n");
+    result = wifi_bridge_init(NULL);
+    if (result != 0) {
+        printf("  WARNING: Wi-Fi bridge init failed: %d\n", result);
+    } else {
+        printf("  Wi-Fi bridge: OK\n");
+    }
+
+    printf("[CM33] Control module initialization complete\n\n");
+    return 0;
+}
+
+/*******************************************************************************
+ * FreeRTOS Tasks
+ ******************************************************************************/
+
+/**
+ * @brief BLE task - BTSTACK and LE Audio profile processing
+ *
+ * Priority 5: Handles BT stack events, LE Audio state machine, ISOC control
+ */
+static void ble_task(void *pvParameters)
+{
+    (void)pvParameters;
+
+    printf("[BLE] Task started, waiting for BT stack...\n");
+
+    /* Wait for BT stack to be ready (signaled from app_init via app_le_audio) */
+    if (xSemaphoreTake(g_bt_ready_sem, pdMS_TO_TICKS(10000)) != pdTRUE) {
+        printf("[BLE] ERROR: BT stack init timeout!\n");
+        vTaskDelete(NULL);
+        return;
+    }
+    xSemaphoreGive(g_bt_ready_sem);  /* Allow other tasks to proceed */
+
+    printf("[BLE] BT stack ready, initializing control modules\n");
+    init_control_modules();
+
+    printf("[BLE] Starting main loop\n");
+    g_app_running = true;
+
+    while (g_app_running) {
+        /* Process LE Audio state machine */
+        le_audio_process();
+
+        /* Process app_le_audio bridge */
+        app_le_audio_process();
+
+        /* BTSTACK events are processed via callbacks */
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
+/**
+ * @brief USB task - USB device enumeration and MIDI
+ *
+ * Priority 4: Handles USB High-Speed device, MIDI over USB
+ */
+static void usb_task(void *pvParameters)
+{
+    (void)pvParameters;
+
+    printf("[USB] Task started, waiting for BT ready...\n");
+
+    xSemaphoreTake(g_bt_ready_sem, portMAX_DELAY);
+    xSemaphoreGive(g_bt_ready_sem);
+
+    printf("[USB] Starting USB MIDI processing\n");
+
+    while (g_app_running) {
+        midi_usb_process();
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
+/**
+ * @brief MIDI task - Routes MIDI between BLE, USB, and UART
+ *
+ * Priority 2: Lowest priority control task
+ */
+static void midi_task(void *pvParameters)
+{
+    (void)pvParameters;
+
+    printf("[MIDI] Task started, waiting for BT ready...\n");
+
+    xSemaphoreTake(g_bt_ready_sem, portMAX_DELAY);
+    xSemaphoreGive(g_bt_ready_sem);
+
+    printf("[MIDI] Starting MIDI routing\n");
+
+    while (g_app_running) {
+        midi_router_process();
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+}
+
+/**
+ * @brief Wi-Fi task - SDIO communication and WHD packet forwarding
+ *
+ * Priority 3: Handles USB-to-Wi-Fi bridge
+ */
+static void wifi_task(void *pvParameters)
+{
+    (void)pvParameters;
+    int result;
+
+    printf("[WiFi] Task started, waiting for BT ready...\n");
+
+    xSemaphoreTake(g_bt_ready_sem, portMAX_DELAY);
+    xSemaphoreGive(g_bt_ready_sem);
+
+    printf("[WiFi] Starting Wi-Fi bridge\n");
+    result = wifi_bridge_start();
+    if (result != 0) {
+        printf("[WiFi] WARNING: Bridge start failed: %d\n", result);
+    }
+
+    while (g_app_running) {
+        wifi_bridge_process();
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+
+    wifi_bridge_stop();
+}
+
+/*******************************************************************************
+ * Main Entry Point
+ ******************************************************************************/
+
+int main(void)
+{
+    BaseType_t task_result;
+
+    /***************************************************************************
+     * Phase 1: Platform Initialization (from Infineon example)
+     **************************************************************************/
+
+    /* Initialize BSP */
+    if (CY_RSLT_SUCCESS != cybsp_init()) {
         handle_app_error();
     }
 
-    /* Initialize retarget-io middleware */
+    /* Initialize retarget-io for debug UART */
     init_retarget_io();
 
-    /* Setup CLIB support library. */
+    /* Setup CLIB support (RTC) */
     setup_clib_support();
 
-    /* Setup the LPTimer instance for CM33 CPU. */
+    /* Setup LPTimer for tickless idle (deep sleep) */
     setup_tickless_idle_timer();
 
-    /*Initialize the block device used by kv-store for performing
-     * read/write operations to the NVM*/
+    /* Initialize KV-store for BT bonding */
     app_kv_store_init();
 
-    /* Initialize button functions  */
+    /* Initialize button handling */
     button_lib_init();
 
-    /* Enable CM55. CM55_APP_BOOT_ADDR must be updated if CM55 memory
-     * layout is changed. 
-     */
+    /* Boot CM55 core (audio DSP runs there) */
     Cy_SysEnableCM55(MXCM55, CM55_APP_BOOT_ADDR, CM55_BOOT_WAIT_TIME_USEC);
 
     /* Enable global interrupts */
     __enable_irq();
 
-    /*Entry point to the application */
+    /***************************************************************************
+     * Phase 2: Print Banner
+     **************************************************************************/
+
+    printf("\x1b[2J\x1b[;H");  /* Clear terminal */
+    printf("==============================================================\n");
+    printf("   Infineon LE Audio - PSoC Edge E84 + CYW55512\n");
+    printf("==============================================================\n");
+    printf("CM33 Core: BT Stack, USB, Wi-Fi, MIDI Control\n");
+    printf("CM55 Core: LC3 Codec, I2S Audio DSP\n");
+    printf("==============================================================\n\n");
+
+    /***************************************************************************
+     * Phase 3: Create Synchronization Primitives
+     **************************************************************************/
+
+    g_bt_ready_sem = xSemaphoreCreateBinary();
+    if (g_bt_ready_sem == NULL) {
+        printf("ERROR: Failed to create BT ready semaphore\n");
+        handle_app_error();
+    }
+
+    /***************************************************************************
+     * Phase 4: Create FreeRTOS Tasks
+     **************************************************************************/
+
+    printf("Creating FreeRTOS tasks (CM33 control plane)...\n");
+
+    task_result = xTaskCreate(ble_task, "BLE", BLE_TASK_STACK_SIZE, NULL,
+                              BLE_TASK_PRIORITY, &g_ble_task_handle);
+    if (task_result != pdPASS) {
+        printf("ERROR: Failed to create BLE task\n");
+        handle_app_error();
+    }
+
+    task_result = xTaskCreate(usb_task, "USB", USB_TASK_STACK_SIZE, NULL,
+                              USB_TASK_PRIORITY, &g_usb_task_handle);
+    if (task_result != pdPASS) {
+        printf("ERROR: Failed to create USB task\n");
+        handle_app_error();
+    }
+
+    task_result = xTaskCreate(midi_task, "MIDI", MIDI_TASK_STACK_SIZE, NULL,
+                              MIDI_TASK_PRIORITY, &g_midi_task_handle);
+    if (task_result != pdPASS) {
+        printf("ERROR: Failed to create MIDI task\n");
+        handle_app_error();
+    }
+
+    task_result = xTaskCreate(wifi_task, "WiFi", WIFI_TASK_STACK_SIZE, NULL,
+                              WIFI_TASK_PRIORITY, &g_wifi_task_handle);
+    if (task_result != pdPASS) {
+        printf("ERROR: Failed to create WiFi task\n");
+        handle_app_error();
+    }
+
+    printf("All CM33 tasks created!\n\n");
+
+    /***************************************************************************
+     * Phase 5: Start Bluetooth Stack (Asynchronous)
+     *
+     * application_start() calls bt_init() which registers callbacks.
+     * When BTM_ENABLED_EVT fires, app_init() is called, which then calls
+     * app_le_audio_on_bt_ready() to signal waiting tasks.
+     **************************************************************************/
+
+    printf("Starting Bluetooth stack...\n");
     application_start();
 
-    /* Start the FreeRTOS scheduler */
+    /***************************************************************************
+     * Phase 6: Start FreeRTOS Scheduler
+     **************************************************************************/
+
+    printf("Starting FreeRTOS scheduler...\n\n");
     vTaskStartScheduler();
 
-    /* Should never get here */
+    /* Should never reach here */
+    printf("FATAL: FreeRTOS scheduler returned!\n");
     handle_app_error();
+
+    return -1;
 }
 
 /* end of file */

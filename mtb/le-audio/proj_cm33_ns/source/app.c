@@ -40,6 +40,7 @@
 #include "wiced_bt_types.h"
 #include "cybsp.h"
 #include "retarget_io_init.h"
+#include "app_le_audio.h"
 
 /*******************************************************************************
 * Defines
@@ -338,6 +339,15 @@ wiced_result_t app_init(void)
 
     /* Allow peer to pair */
     wiced_bt_set_pairable_mode(WICED_TRUE, WICED_TRUE);
+
+    /* Initialize LE Audio subsystem */
+    if (app_le_audio_init() != 0) {
+        printf("Warning: LE Audio init failed, continuing without LE Audio\r\n");
+    }
+
+    /* Signal that BT stack is ready - releases waiting FreeRTOS tasks */
+    app_le_audio_on_bt_ready();
+
     return WICED_BT_SUCCESS;
 }
 

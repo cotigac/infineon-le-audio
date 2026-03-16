@@ -67,11 +67,57 @@ CORE_NAME=CM33_0
 # tree for source code and builds it. The SOURCES variable can be used to
 # manually add source code to the build process from a location not searched
 # by default, or otherwise not found by the build system.
-SOURCES+=
+#
+# Architecture:
+#   CM33: BT stack, USB, Wi-Fi, MIDI control (this project)
+#   CM55: LC3 codec, I2S audio DSP (proj_cm55)
+#
+# Exclude the original example main.c (renamed to main_example.c)
+CY_IGNORE+=source/main_example.c
+
+# CM33 Control-Plane Sources
+#
+# NOTE: Audio DSP sources (LC3, I2S) are built in proj_cm55, not here.
+#
+# EXCLUDED FILES (conflict with example's app_bt/ files):
+#   - source/bluetooth/bt_init.c     (conflicts with app_bt/bt.c)
+#   - source/bluetooth/gatt_db.c     (conflicts with app_bt/gatt.c)
+#   - source/bluetooth/gap_config.c  (conflicts with example GATT)
+#
+# EXCLUDED FILES (audio DSP - built on CM55):
+#   - source/audio/audio_buffers.c
+#   - source/audio/audio_task.c
+#   - source/audio/i2s_stream.c
+#   - source/audio/lc3_wrapper.c
+#
+SOURCES+= \
+    source/app_le_audio.c \
+    ../../../source/bluetooth/bt_platform_config.c \
+    ../../../source/bluetooth/hci_isoc.c \
+    ../../../source/le_audio/bap_broadcast.c \
+    ../../../source/le_audio/bap_unicast.c \
+    ../../../source/le_audio/isoc_handler.c \
+    ../../../source/le_audio/le_audio_manager.c \
+    ../../../source/le_audio/pacs.c \
+    ../../../source/midi/midi_ble_service.c \
+    ../../../source/midi/midi_router.c \
+    ../../../source/midi/midi_usb.c \
+    ../../../source/wifi/wifi_bridge.c \
+    ../../../source/wifi/wifi_sdio.c
 
 # Like SOURCES, but for include directories. Value should be paths to
 # directories (without a leading -I).
-INCLUDES+=
+#
+# Custom LE Audio include directories
+INCLUDES+= \
+    ../../../source \
+    ../../../source/audio \
+    ../../../source/bluetooth \
+    ../../../source/le_audio \
+    ../../../source/midi \
+    ../../../source/wifi \
+    ../../../config \
+    ../../../libs/liblc3/include
 
 # Add additional defines to the build process (without a leading -D).
 DEFINES+=CY_RETARGET_IO_CONVERT_LF_TO_CRLF

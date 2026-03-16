@@ -66,11 +66,31 @@ CORE_NAME=CM55_0
 # tree for source code and builds it. The SOURCES variable can be used to
 # manually add source code to the build process from a location not searched
 # by default, or otherwise not found by the build system.
-SOURCES+=
+#
+# Architecture:
+#   CM33: BT stack, USB, Wi-Fi, MIDI control (proj_cm33_ns)
+#   CM55: LC3 codec, I2S audio DSP (this project)
+#
+# Exclude the original example main.c (renamed to main_example.c)
+CY_IGNORE+=main_example.c
+
+# CM55 Audio DSP Sources
+# These leverage the Cortex-M55 Helium (MVE) for efficient DSP operations
+SOURCES+= \
+    ../../../source/audio/audio_buffers.c \
+    ../../../source/audio/audio_task.c \
+    ../../../source/audio/i2s_stream.c \
+    ../../../source/audio/lc3_wrapper.c
 
 # Like SOURCES, but for include directories. Value should be paths to
 # directories (without a leading -I).
-INCLUDES+=
+#
+# Audio and LC3 include paths
+INCLUDES+= \
+    ../../../source \
+    ../../../source/audio \
+    ../../../config \
+    ../../../libs/liblc3/include
 
 # Add additional defines to the build process (without a leading -D).
 DEFINES+=CY_RETARGET_IO_CONVERT_LF_TO_CRLF

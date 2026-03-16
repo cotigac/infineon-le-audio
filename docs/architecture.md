@@ -4,6 +4,10 @@
 
 This document describes the architecture of the Infineon LE Audio demo for musical instruments, implementing full-duplex LE Audio, Auracast broadcast, MIDI over BLE/USB, and Wi-Fi data bridging.
 
+The firmware uses a **dual-core architecture** to maximize performance:
+- **Cortex-M33 (CM33)**: Control plane - Bluetooth stack, USB, Wi-Fi, MIDI routing
+- **Cortex-M55 (CM55)**: Audio DSP - LC3 codec, I2S streaming, audio buffer management
+
 ## Target Hardware
 
 | Component | Part Number | Description |
@@ -12,42 +16,106 @@ This document describes the architecture of the Infineon LE Audio demo for music
 | **Wireless** | CYW55512IUBGT | AIROC Wi-Fi 6 + Bluetooth 6.0 combo IC |
 | **Eval Kit** | KIT_PSE84_EVAL | PSoC Edge E84 Evaluation Kit (USB HS, SDIO) |
 
+## Dual-Core Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            PSoC Edge E82/E84                                 │
+├─────────────────────────────────┬───────────────────────────────────────────┤
+│         Cortex-M33              │              Cortex-M55                    │
+│        (Control Plane)          │            (Audio DSP)                     │
+│                                 │                                            │
+│  ┌─────────────────────────┐   │   ┌─────────────────────────────────────┐ │
+│  │ BTSTACK + LE Audio Ctrl │   │   │ LC3 Codec (liblc3)                  │ │
+│  │ - BAP state machine     │   │   │ - Encode: PCM → LC3 (Helium DSP)    │ │
+│  │ - ISOC control          │   │   │ - Decode: LC3 → PCM                 │ │
+│  │ - GATT services         │◄──┼──►│ - PLC (Packet Loss Concealment)     │ │
+│  └─────────────────────────┘   │   └─────────────────────────────────────┘ │
+│                                 │                                            │
+│  ┌─────────────────────────┐   │   ┌─────────────────────────────────────┐ │
+│  │ USB High-Speed          │   │   │ I2S DMA Streaming                   │ │
+│  │ - MIDI class            │   │   │ - Ping-pong buffers                 │ │
+│  │ - Wi-Fi data bridge     │   │   │ - 48kHz/16-bit stereo               │ │
+│  └─────────────────────────┘   │   │ - DMA half/complete callbacks       │ │
+│                                 │   └─────────────────────────────────────┘ │
+│  ┌─────────────────────────┐   │                                            │
+│  │ Wi-Fi (WHD + SDIO)      │   │   ┌─────────────────────────────────────┐ │
+│  │ - SDIO CMD52/CMD53      │   │   │ Audio Buffers                       │ │
+│  │ - Packet forwarding     │   │   │ - Ring buffers with metadata        │ │
+│  └─────────────────────────┘   │   │ - Frame synchronization             │ │
+│                                 │   └─────────────────────────────────────┘ │
+│  ┌─────────────────────────┐   │                                            │
+│  │ MIDI Router             │   │                                            │
+│  │ - BLE ↔ USB ↔ UART      │   │                                            │
+│  └─────────────────────────┘   │                                            │
+│                                 │                                            │
+├─────────────────────────────────┼───────────────────────────────────────────┤
+│                        IPC (Inter-Processor Communication)                   │
+│  ┌───────────────────────────────────────────────────────────────────────┐ │
+│  │ Shared Memory + FreeRTOS Queues                                       │ │
+│  │ - LC3 TX Queue: CM55 encoded frames → CM33 ISOC TX                    │ │
+│  │ - LC3 RX Queue: CM33 ISOC RX → CM55 decode                            │ │
+│  └───────────────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Why Dual-Core?
+
+| Core | Responsibilities | Rationale |
+|------|-----------------|-----------|
+| **CM33** | BT stack, USB, Wi-Fi, MIDI | BTSTACK and WHD are optimized for Cortex-M33 |
+| **CM55** | LC3 codec, I2S, audio DSP | Helium (MVE) SIMD for efficient DSP operations |
+
+**Performance Benefits:**
+- LC3 codec benefits from CM55's Helium DSP (up to 8x faster than CM33)
+- Control plane runs concurrently with audio processing
+- No contention between BT stack callbacks and codec execution
+- I2S DMA callbacks have deterministic timing on dedicated core
+
 ## Hardware Block Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                        Main Application Processor                            │
 │                    (External Instrument / Host Device)                       │
-└───────────────────────────────────┬─────────────────────────────────────────┘
-                                    │ USB High-Speed (480 Mbps)
-                                    │ ├── USB MIDI Class
-                                    │ └── Wi-Fi Data (bridged)
-                                    ▼
+└────────────────────────────┬────────────────────┬───────────────────────────┘
+                             │ USB High-Speed     │ I2S Audio
+                             │ (480 Mbps)         │ (48kHz/16-bit)
+                             │ MIDI + Data        │
+                             ▼                    ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                      PSoC Edge E82 (PSE823GOS4DBZQ3)                        │
-│                     Cortex-M55 @ 400MHz + Cortex-M33                        │
 │                                                                              │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐ │
-│  │   USB HS     │  │    I2S       │  │   UART       │  │     SDIO 3.0     │ │
-│  │  (480Mbps)   │  │   Master     │  │   (HCI)      │  │   (SDR50/DDR50)  │ │
-│  │  MIDI + Data │  │   Audio      │  │   BT Host    │  │   WLAN Host      │ │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └────────┬─────────┘ │
-│         │                 │                 │                    │           │
-│  ┌──────▼───────┐  ┌──────▼───────┐  ┌──────▼───────┐  ┌────────▼─────────┐ │
-│  │ emUSB-Device │  │  Audio DMA   │  │  BTSTACK +   │  │  wifi-host-drv   │ │
-│  │  Middleware  │  │   Buffer     │  │  LE Audio    │  │  Wi-Fi Bridge    │ │
-│  │ (HS capable) │  │  (Ping-pong) │  │  Profiles    │  │                  │ │
-│  └──────────────┘  └──────┬───────┘  └──────▲───────┘  └──────────────────┘ │
-│                           │                 │                                │
-│                    ┌──────▼─────────────────┴──────┐                        │
-│                    │         liblc3 (Host-Side)    │                        │
-│                    │    LC3 Encode/Decode on PSoC  │                        │
-│                    │  Unified for Unicast+Broadcast│                        │
-│                    └───────────────────────────────┘                        │
+│  ┌────────────────────────────────┐   ┌────────────────────────────────────┐│
+│  │         CM33 Core              │   │           CM55 Core                ││
+│  │        (Control Plane)         │   │         (Audio DSP)                ││
+│  │                                │   │                                    ││
+│  │  ┌──────────┐ ┌──────────────┐│   │  ┌──────────────┐ ┌──────────────┐ ││
+│  │  │ USB HS   │ │   BTSTACK    ││   │  │  I2S DMA     │ │   liblc3     │ ││
+│  │  │ emUSB    │ │  LE Audio    ││   │  │ Ping-pong    │ │ LC3 Codec    │ ││
+│  │  │ MIDI+Data│ │  Profiles    ││   │  │ Buffers      │ │ Helium DSP   │ ││
+│  │  └────┬─────┘ └──────┬───────┘│   │  └──────┬───────┘ └──────┬───────┘ ││
+│  │       │              │        │   │         │                │         ││
+│  │  ┌────▼────┐  ┌──────▼──────┐ │   │  ┌──────▼────────────────▼───────┐ ││
+│  │  │ Wi-Fi   │  │  HCI ISOC   │ │◄──┼──│    Audio Task + IPC Task      │ ││
+│  │  │ WHD     │  │  Handler    │ │   │  │  LC3 Encode/Decode + Buffers  │ ││
+│  │  │ SDIO    │  │             │ │   │  │                               │ ││
+│  │  └────┬────┘  └─────────────┘ │   │  └───────────────────────────────┘ ││
+│  │       │                       │   │                                    ││
+│  │  ┌────▼────────────────────┐  │   │                                    ││
+│  │  │  MIDI Router            │  │   │                                    ││
+│  │  │  BLE ↔ USB ↔ UART       │  │   │                                    ││
+│  │  └─────────────────────────┘  │   │                                    ││
+│  └────────────────────────────────┘   └────────────────────────────────────┘│
 │                                                                              │
-│  FreeRTOS (Tasks: Audio/LC3, BLE, USB, Wi-Fi, MIDI)                         │
+│  ┌──────────────────────────────────────────────────────────────────────────┐│
+│  │                    IPC (Shared Memory + Queues)                          ││
+│  │   TX: CM55 (I2S RX → LC3 Encode) → CM33 (ISOC TX)                       ││
+│  │   RX: CM33 (ISOC RX) → CM55 (LC3 Decode → I2S TX)                       ││
+│  └──────────────────────────────────────────────────────────────────────────┘│
+│                                                                              │
+│  FreeRTOS: CM33 (BLE, USB, WiFi, MIDI) | CM55 (Audio, IPC)                  │
 └──────────────────────────────┬──────────────────────┬───────────────────────┘
-                               │                      │
                                │ UART (HCI+ISOC)      │ SDIO (Wi-Fi Data)
                                │ 3 Mbps               │ Up to 208 MHz
                                ▼                      ▼
@@ -67,49 +135,54 @@ This document describes the architecture of the Infineon LE Audio demo for music
 
 ## Data Paths
 
-### Path 1: LE Audio TX (I2S → LC3 → ISOC)
+### Path 1: LE Audio TX (I2S → LC3 → ISOC) - Dual-Core
 
-PCM audio from main controller is encoded to LC3 and transmitted over Bluetooth.
+PCM audio from main controller is encoded to LC3 on CM55 and transmitted via CM33.
 
 ```
-┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-│ Main Ctrl    │───►│ PSoC Edge    │───►│ Audio Task   │───►│ ISOC Handler │───►│ CYW55512     │
-│ I2S PCM      │    │ I2S RX DMA   │    │ liblc3       │    │ HCI ISOC     │    │ BLE Radio    │
-│ 48kHz/16bit  │    │ Ping-pong    │    │ LC3 Encode   │    │ CIS/BIS TX   │    │              │
-└──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘
-       │                   │                   │                   │                   │
-       │    cyhal_i2s      │  audio_buffers    │   lc3_wrapper     │    hci_isoc       │
-       │    i2s_stream.c   │  audio_task.c     │   audio_task.c    │    isoc_handler.c │
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│ Main Ctrl    │───►│ CM55         │───►│ CM55         │───►│ IPC Queue    │───►│ CM33         │───►│ CYW55512     │
+│ I2S PCM      │    │ I2S RX DMA   │    │ Audio Task   │    │ TX (LC3)     │    │ ISOC Handler │    │ BLE Radio    │
+│ 48kHz/16bit  │    │ Ping-pong    │    │ LC3 Encode   │    │ Shared Mem   │    │ HCI ISOC TX  │    │ CIS/BIS      │
+└──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘
+       │                   │                   │                   │                   │                   │
+       │              ═══════════ CM55 Core ══════════             ╠═══════ CM33 Core ═══════╣           │
+       │            i2s_stream.c  lc3_wrapper.c                   │      isoc_handler.c                  │
 ```
 
 **Implementation Status:**
-- [x] I2S DMA buffer structure (ping-pong)
-- [x] Audio ring buffers with metadata
-- [x] LC3 wrapper calling liblc3
-- [x] ISOC handler state machine
-- [x] `cyhal_i2s_init()` - HAL integration complete
-- [x] `isoc_handler_tx_frame()` - Wired to audio task with stream ID lookup
+- [x] I2S DMA buffer structure (ping-pong) - CM55
+- [x] Audio ring buffers with metadata - CM55
+- [x] LC3 wrapper calling liblc3 (Helium DSP) - CM55
+- [x] IPC queue for LC3 frames (CM55 → CM33)
+- [x] ISOC handler state machine - CM33
+- [x] `cyhal_i2s_init()` - HAL integration on CM55
+- [x] `isoc_handler_tx_frame()` - Wired to IPC queue on CM33
 - [x] `hci_isoc_send_data()` - Wired to BTSTACK via `wiced_bt_isoc_write()`
 
-### Path 2: LE Audio RX (ISOC → LC3 → I2S)
+### Path 2: LE Audio RX (ISOC → LC3 → I2S) - Dual-Core
 
-LC3 audio from Bluetooth is decoded and sent to main controller.
+LC3 audio from Bluetooth is received on CM33 and decoded on CM55.
 
 ```
-┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-│ CYW55512     │───►│ ISOC Handler │───►│ Audio Task   │───►│ PSoC Edge    │───►│ Main Ctrl    │
-│ BLE Radio    │    │ HCI ISOC     │    │ liblc3       │    │ I2S TX DMA   │    │ I2S PCM      │
-│              │    │ CIS/BIS RX   │    │ LC3 Decode   │    │ Ping-pong    │    │ 48kHz/16bit  │
-└──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│ CYW55512     │───►│ CM33         │───►│ IPC Queue    │───►│ CM55         │───►│ CM55         │───►│ Main Ctrl    │
+│ BLE Radio    │    │ ISOC Handler │    │ RX (LC3)     │    │ Audio Task   │    │ I2S TX DMA   │    │ I2S PCM      │
+│ CIS/BIS      │    │ HCI ISOC RX  │    │ Shared Mem   │    │ LC3 Decode   │    │ Ping-pong    │    │ 48kHz/16bit  │
+└──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘
+       │                   │                   │                   │                   │                   │
+       │              ═══ CM33 Core ═══        ╠═══════════════ CM55 Core ════════════════╣               │
+       │           isoc_handler.c              │      lc3_wrapper.c    i2s_stream.c                       │
 ```
 
 **Implementation Status:**
-- [x] ISOC RX buffer structure
-- [x] LC3 decode with PLC (packet loss concealment)
-- [x] I2S TX buffer management
-- [x] BTSTACK ISOC data callback registration
-- [x] `isoc_handler_rx_frame()` - Wired to audio task (reads from ISOC handler's buffer)
-- [x] `cyhal_i2s_write_async()` - HAL integration via `i2s_stream_write()`
+- [x] ISOC RX buffer structure - CM33
+- [x] IPC queue for LC3 frames (CM33 → CM55)
+- [x] LC3 decode with PLC (packet loss concealment) - CM55
+- [x] I2S TX buffer management - CM55
+- [x] BTSTACK ISOC data callback registration - CM33
+- [x] `isoc_handler_rx_frame()` - Posts to IPC queue on CM33
+- [x] `cyhal_i2s_write_async()` - HAL integration via `i2s_stream_write()` on CM55
 
 ### Path 3: MIDI (USB ↔ BLE ↔ Controller)
 
@@ -188,45 +261,93 @@ Network data bridged from USB to Wi-Fi for the main controller.
 
 ## Software Architecture
 
-### FreeRTOS Task Structure
+### FreeRTOS Dual-Core Task Structure
+
+The firmware runs FreeRTOS on both cores with separate schedulers:
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                           FreeRTOS Scheduler                                  │
-├─────────────┬─────────────┬─────────────┬─────────────┬──────────┬──────────┤
-│ I2S DMA     │ Audio/LC3   │ BLE Task    │ USB Task    │ Wi-Fi    │ MIDI     │
-│ (ISR)       │ Priority: 6 │ Priority: 5 │ Priority: 4 │ Task     │ Task     │
-│ Highest     │             │             │             │ Prio: 3  │ Prio: 2  │
-├─────────────┼─────────────┼─────────────┼─────────────┼──────────┼──────────┤
-│ DMA half/   │ LC3 encode  │ BTSTACK     │ USB HS enum │ SDIO TX  │ BLE/USB  │
-│ complete    │ LC3 decode  │ bt_process()│ MIDI class  │ SDIO RX  │ routing  │
-│ callbacks   │ Frame sync  │ le_audio_   │ Data bridge │ WHD pkts │ midi_    │
-│             │ ISOC send   │ process()   │ midi_usb_   │ wifi_    │ router_  │
-│             │             │             │ process()   │ bridge_  │ process()│
-│             │             │             │             │ process()│          │
-└─────────────┴─────────────┴─────────────┴─────────────┴──────────┴──────────┘
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                                  PSoC Edge E82/E84                                       │
+├─────────────────────────────────────────┬───────────────────────────────────────────────┤
+│           CM33 Core Scheduler           │             CM55 Core Scheduler               │
+│           (Control Plane)               │              (Audio DSP)                      │
+├─────────────┬───────────┬───────────────┼───────────────────┬───────────────────────────┤
+│ BLE Task    │ USB Task  │ Wi-Fi Task    │ Audio/LC3 Task    │ IPC Task                  │
+│ Priority: 5 │ Priority: │ Priority: 3   │ Priority: Highest │ Priority: High            │
+│             │ 4         │               │                   │                           │
+├─────────────┼───────────┼───────────────┼───────────────────┼───────────────────────────┤
+│ BTSTACK     │ USB HS    │ SDIO TX/RX    │ LC3 encode        │ TX Queue poll             │
+│ le_audio_   │ MIDI class│ WHD packets   │ LC3 decode        │ (CM55 → CM33)             │
+│ process()   │ Data      │ wifi_bridge_  │ I2S DMA ISR       │ RX Queue receive          │
+│ ISOC ctrl   │ bridge    │ process()     │ Frame sync        │ (CM33 → CM55)             │
+├─────────────┼───────────┼───────────────┼───────────────────┼───────────────────────────┤
+│ MIDI Task   │           │               │ I2S DMA (ISR)     │                           │
+│ Priority: 2 │           │               │ Highest priority  │                           │
+│ BLE/USB     │           │               │ DMA callbacks     │                           │
+│ routing     │           │               │                   │                           │
+└─────────────┴───────────┴───────────────┴───────────────────┴───────────────────────────┘
+                          │                                   │
+                          └─────────── IPC (Shared Memory) ───┘
 ```
+
+### Task Distribution by Core
+
+| Core | Task | Priority | Stack | Purpose |
+|------|------|----------|-------|---------|
+| **CM55** | I2S DMA | ISR | - | DMA half/complete callbacks |
+| **CM55** | Audio/LC3 | Highest | 4096 | LC3 encode/decode, frame sync |
+| **CM55** | IPC | High | 2048 | Inter-processor queue management |
+| **CM33** | BLE | 5 | 4096 | BTSTACK, LE Audio control plane |
+| **CM33** | USB | 4 | 2048 | USB enumeration, MIDI class |
+| **CM33** | Wi-Fi | 3 | 4096 | WHD packet processing |
+| **CM33** | MIDI | 2 | 1024 | BLE/USB routing |
 
 ### Task Stack Sizes
 
-| Task | Stack Size | Purpose |
-|------|------------|---------|
-| Audio | 4096 bytes | LC3 codec requires significant stack |
-| BLE | 4096 bytes | BTSTACK callback processing |
-| USB | 2048 bytes | USB enumeration and data |
-| Wi-Fi | 4096 bytes | WHD packet processing |
-| MIDI | 1024 bytes | Lightweight routing |
+| Task | Core | Stack Size | Purpose |
+|------|------|------------|---------|
+| Audio | CM55 | 4096 bytes | LC3 codec requires significant stack (Helium DSP) |
+| IPC | CM55 | 2048 bytes | Queue management, shared memory access |
+| BLE | CM33 | 4096 bytes | BTSTACK callback processing |
+| USB | CM33 | 2048 bytes | USB enumeration and data |
+| Wi-Fi | CM33 | 4096 bytes | WHD packet processing |
+| MIDI | CM33 | 1024 bytes | Lightweight routing |
 
 ### Inter-Task Communication
 
+#### Inter-Processor Communication (IPC) - CM33 ↔ CM55
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    IPC Architecture (Shared Memory)                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  LC3 TX Path (Audio Encode - CM55 → CM33):                                  │
+│    CM55 Audio Task → [g_lc3_tx_queue] → CM33 ISOC Handler                   │
+│    - Queue holds encoded LC3 frames (max 155 bytes each)                    │
+│    - CM55 posts after encode, CM33 polls for ISOC TX                        │
+│                                                                              │
+│  LC3 RX Path (Audio Decode - CM33 → CM55):                                  │
+│    CM33 ISOC Handler → [g_lc3_rx_queue] → CM55 Audio Task                   │
+│    - Queue holds received LC3 frames from BTSTACK                           │
+│    - CM33 posts on ISOC RX callback, CM55 polls for decode                  │
+│                                                                              │
+│  Shared Memory Region:                                                       │
+│    - Located in SOCMEM (accessible by both cores)                           │
+│    - Queue structures use atomic operations                                  │
+│    - No mutex needed (single producer, single consumer)                     │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Intra-Core Synchronization
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                   FreeRTOS Synchronization                       │
+│              CM33 FreeRTOS Synchronization                       │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  Audio Module (le_audio_manager.c):                             │
-│    ├── tx_queue_handle    : PCM → LC3 encoder                   │
-│    ├── rx_queue_handle    : LC3 decoder → PCM                   │
+│  LE Audio Manager (le_audio_manager.c):                         │
 │    └── state_mutex        : State machine protection            │
 │                                                                  │
 │  MIDI Router (midi_router.c):                                   │
@@ -247,6 +368,23 @@ Network data bridged from USB to Wi-Fi for the main controller.
 │                                                                  │
 │  Wi-Fi SDIO (wifi_sdio.c):                                      │
 │    └── bus_mutex          : Thread-safe SDIO bus access         │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│              CM55 FreeRTOS Synchronization                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Audio Task (audio_task.c):                                     │
+│    ├── pcm_rx_queue       : I2S RX DMA → LC3 encoder            │
+│    ├── pcm_tx_queue       : LC3 decoder → I2S TX DMA            │
+│    └── i2s_mutex          : I2S hardware access                 │
+│                                                                  │
+│  Audio Buffers (audio_buffers.c):                               │
+│    └── ring_mutex         : Thread-safe ring buffer access      │
+│                                                                  │
+│  LC3 Wrapper (lc3_wrapper.c):                                   │
+│    └── codec_mutex        : Thread-safe encoder/decoder state   │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -439,62 +577,109 @@ Network data bridged from USB to Wi-Fi for the main controller.
 
 ## File Organization
 
+### Dual-Core Project Structure
+
 ```
 infineon-le-audio/
-├── CMakeLists.txt              # Build system
+├── CMakeLists.txt                  # Standalone CMake build (alternative)
 ├── cmake/
-│   ├── arm-cortex-m55.cmake    # Toolchain file
-│   └── psoc_edge_e82.ld        # Linker script
+│   ├── arm-cortex-m55.cmake        # Toolchain file
+│   └── psoc_edge_e82.ld            # Linker script
 │
 ├── config/
-│   ├── FreeRTOSConfig.h        # FreeRTOS settings
-│   ├── cy_bt_config.h          # Bluetooth configuration
-│   └── lc3_config.h            # LC3 codec parameters
+│   ├── FreeRTOSConfig.h            # FreeRTOS settings
+│   ├── cy_bt_config.h              # Bluetooth configuration
+│   └── lc3_config.h                # LC3 codec parameters
 │
-├── source/
-│   ├── main.c                  # Application entry, task creation
+├── source/                          # Shared source code (both cores)
+│   ├── main.c                       # Original standalone main (reference)
 │   │
-│   ├── audio/
-│   │   ├── audio_task.c/h      # Main audio processing task
-│   │   ├── audio_buffers.c/h   # Ring buffer management
-│   │   ├── i2s_stream.c/h      # I2S DMA driver
-│   │   └── lc3_wrapper.c/h     # liblc3 encode/decode API
+│   ├── audio/                       # ══════ Built on CM55 ══════
+│   │   ├── audio_task.c/h           # Main audio processing task
+│   │   ├── audio_buffers.c/h        # Ring buffer management
+│   │   ├── i2s_stream.c/h           # I2S DMA driver (Helium DSP)
+│   │   └── lc3_wrapper.c/h          # liblc3 encode/decode API
 │   │
-│   ├── le_audio/
-│   │   ├── le_audio_manager.c/h# Top-level LE Audio control
-│   │   ├── bap_unicast.c/h     # BAP unicast client/server
-│   │   ├── bap_broadcast.c/h   # BAP broadcast source (Auracast)
-│   │   ├── pacs.c/h            # Published Audio Capabilities
-│   │   └── isoc_handler.c/h    # HCI ISOC data path
+│   ├── le_audio/                    # ══════ Built on CM33 ══════
+│   │   ├── le_audio_manager.c/h     # Top-level LE Audio control
+│   │   ├── bap_unicast.c/h          # BAP unicast client/server
+│   │   ├── bap_broadcast.c/h        # BAP broadcast source (Auracast)
+│   │   ├── pacs.c/h                 # Published Audio Capabilities
+│   │   └── isoc_handler.c/h         # HCI ISOC data path
 │   │
-│   ├── midi/
-│   │   ├── midi_ble_service.c/h# BLE MIDI GATT service
-│   │   ├── midi_usb.c/h        # USB MIDI class
-│   │   └── midi_router.c/h     # MIDI routing logic
+│   ├── midi/                        # ══════ Built on CM33 ══════
+│   │   ├── midi_ble_service.c/h     # BLE MIDI GATT service
+│   │   ├── midi_usb.c/h             # USB MIDI class
+│   │   └── midi_router.c/h          # MIDI routing logic
 │   │
-│   ├── wifi/
-│   │   ├── wifi_sdio.c/h       # SDIO driver for CYW55512
-│   │   └── wifi_bridge.c/h     # USB-Wi-Fi data bridge
+│   ├── wifi/                        # ══════ Built on CM33 ══════
+│   │   ├── wifi_sdio.c/h            # SDIO driver for CYW55512
+│   │   └── wifi_bridge.c/h          # USB-Wi-Fi data bridge
 │   │
-│   └── bluetooth/
-│       ├── bt_init.c/h         # BTSTACK initialization
-│       ├── bt_platform_config.c/h # HCI UART configuration
-│       ├── hci_isoc.c/h        # HCI isochronous commands
-│       ├── gap_config.c/h      # GAP advertising/scanning
-│       └── gatt_db.c/h         # GATT database
+│   └── bluetooth/                   # ══════ Built on CM33 ══════
+│       ├── bt_init.c/h              # BTSTACK initialization
+│       ├── bt_platform_config.c/h   # HCI UART configuration
+│       ├── hci_isoc.c/h             # HCI isochronous commands
+│       ├── gap_config.c/h           # GAP advertising/scanning
+│       └── gatt_db.c/h              # GATT database
 │
-├── libs/                        # External libraries (submodules)
-│   ├── btstack/                 # Infineon BTSTACK
-│   ├── btstack-integration/     # HCI-UART porting layer
-│   ├── liblc3/                  # Google LC3 codec
-│   ├── emusb-device/            # Segger USB middleware
-│   ├── wifi-host-driver/        # Infineon WHD
-│   └── freertos/                # FreeRTOS kernel
+├── mtb/                             # ModusToolbox Project (Recommended)
+│   ├── le-audio/
+│   │   ├── proj_cm33_s/             # CM33 Secure core (TrustZone bootstrap)
+│   │   │   └── main.c               # Minimal secure bootstrap
+│   │   │
+│   │   ├── proj_cm33_ns/            # CM33 Non-Secure (Control Plane)
+│   │   │   ├── source/
+│   │   │   │   ├── main.c           # CM33 entry: BT, USB, WiFi, MIDI
+│   │   │   │   ├── app_le_audio.c   # Bridge to LE Audio manager
+│   │   │   │   └── main_example.c   # Original Infineon example (reference)
+│   │   │   └── Makefile             # CM33 build: BTSTACK, emUSB, WHD
+│   │   │
+│   │   ├── proj_cm55/               # CM55 Core (Audio DSP)
+│   │   │   ├── main.c               # CM55 entry: LC3, I2S, IPC
+│   │   │   ├── main_example.c       # Original Infineon example (reference)
+│   │   │   └── Makefile             # CM55 build: liblc3, audio
+│   │   │
+│   │   ├── bsps/                    # Board Support Package
+│   │   ├── configs/                 # Device configuration
+│   │   ├── common.mk                # Shared build settings
+│   │   └── Makefile                 # Top-level: builds all three cores
+│   │
+│   └── mtb_shared/                  # Shared library dependencies
+│
+├── libs/                            # External libraries (submodules)
+│   ├── btstack/                     # Infineon BTSTACK
+│   ├── btstack-integration/         # HCI-UART porting layer
+│   ├── liblc3/                      # Google LC3 codec
+│   ├── emusb-device/                # Segger USB middleware
+│   ├── wifi-host-driver/            # Infineon WHD
+│   └── freertos/                    # FreeRTOS kernel
 │
 └── docs/
-    ├── README.md               # Project plan & analysis
-    └── architecture.md         # This file
+    ├── README.md                    # Project plan & analysis
+    └── architecture.md              # This file
 ```
+
+### Source File Distribution by Core
+
+| Core | Source Files | Purpose |
+|------|--------------|---------|
+| **CM55** | `audio/audio_task.c` | Main audio processing loop |
+| **CM55** | `audio/audio_buffers.c` | Ring buffer management |
+| **CM55** | `audio/i2s_stream.c` | I2S DMA with Helium DSP |
+| **CM55** | `audio/lc3_wrapper.c` | liblc3 encode/decode |
+| **CM33** | `le_audio/le_audio_manager.c` | LE Audio state machine |
+| **CM33** | `le_audio/bap_unicast.c` | BAP Unicast Client/Server |
+| **CM33** | `le_audio/bap_broadcast.c` | BAP Broadcast (Auracast) |
+| **CM33** | `le_audio/pacs.c` | Published Audio Capabilities |
+| **CM33** | `le_audio/isoc_handler.c` | HCI ISOC data path |
+| **CM33** | `bluetooth/bt_platform_config.c` | HCI UART configuration |
+| **CM33** | `bluetooth/hci_isoc.c` | HCI isochronous commands |
+| **CM33** | `midi/midi_ble_service.c` | BLE MIDI GATT service |
+| **CM33** | `midi/midi_usb.c` | USB MIDI class |
+| **CM33** | `midi/midi_router.c` | MIDI routing logic |
+| **CM33** | `wifi/wifi_sdio.c` | SDIO driver for CYW55512 |
+| **CM33** | `wifi/wifi_bridge.c` | USB-Wi-Fi data bridge |
 
 ---
 
