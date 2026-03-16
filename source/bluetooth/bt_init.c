@@ -27,13 +27,17 @@
 #include "wiced_bt_stack.h"
 #include "wiced_bt_dev.h"
 #include "wiced_bt_ble.h"
+#include "wiced_bt_ble_conn.h"
 #include "wiced_bt_gatt.h"
 #include "wiced_bt_cfg.h"
 #include "wiced_bt_isoc.h"
 #include "wiced_bt_l2c.h"
 #include "wiced_memory.h"
-#include "cybt_platform_config.h"
 #include "cybt_platform_trace.h"
+
+/* Note: cybt_platform_config.h is NOT included here because it requires
+ * CY_USING_HAL which is not available on PSoC Edge with MTB HAL.
+ * The btstack-integration library handles platform config automatically. */
 
 /* BT Configurator generated settings (optional - use fallback if not available) */
 #ifdef USE_BT_CONFIGURATOR
@@ -78,14 +82,28 @@
 /** Maximum key size for pairing */
 #define MAX_KEY_SIZE            (16U)
 
-/** HCI opcodes */
+/** HCI opcodes (guarded to avoid redefinition with BTSTACK headers) */
+#ifndef HCI_RESET
 #define HCI_RESET               0x0C03
+#endif
+#ifndef HCI_READ_LOCAL_VERSION
 #define HCI_READ_LOCAL_VERSION  0x1001
+#endif
+#ifndef HCI_READ_BD_ADDR
 #define HCI_READ_BD_ADDR        0x1009
+#endif
+#ifndef HCI_LE_SET_ADV_PARAMS
 #define HCI_LE_SET_ADV_PARAMS   0x2006
+#endif
+#ifndef HCI_LE_SET_ADV_DATA
 #define HCI_LE_SET_ADV_DATA     0x2008
+#endif
+#ifndef HCI_LE_SET_ADV_ENABLE
 #define HCI_LE_SET_ADV_ENABLE   0x200A
+#endif
+#ifndef HCI_LE_READ_LOCAL_FEAT
 #define HCI_LE_READ_LOCAL_FEAT  0x2003
+#endif
 
 /** Advertising data types */
 #define AD_TYPE_FLAGS           0x01
@@ -99,88 +117,102 @@
 #define ADV_FLAGS_BR_EDR_NOT    0x04
 
 /*******************************************************************************
- * BTSTACK Configuration
+ * BTSTACK Configuration (BTSTACK 4.x API)
  ******************************************************************************/
 
 /* Forward declaration of management callback */
 static wiced_result_t bt_management_callback(wiced_bt_management_evt_t event,
                                               wiced_bt_management_evt_data_t *p_event_data);
 
-/* Bluetooth stack configuration */
+/* BLE Scan Settings */
+static const wiced_bt_cfg_ble_scan_settings_t ble_scan_cfg = {
+    .scan_mode = BTM_BLE_SCAN_MODE_PASSIVE,
+    .high_duty_scan_interval = 96,   /* 60ms */
+    .high_duty_scan_window = 48,     /* 30ms */
+    .high_duty_scan_duration = 30,   /* 30 seconds */
+    .low_duty_scan_interval = 2048,  /* 1.28s */
+    .low_duty_scan_window = 48,      /* 30ms */
+    .low_duty_scan_duration = 30,
+    .high_duty_conn_scan_interval = 96,
+    .high_duty_conn_scan_window = 48,
+    .high_duty_conn_duration = 30,
+    .low_duty_conn_scan_interval = 2048,
+    .low_duty_conn_scan_window = 48,
+    .low_duty_conn_duration = 30,
+    .conn_min_interval = 12,         /* 15ms */
+    .conn_max_interval = 12,
+    .conn_latency = 0,
+    .conn_supervision_timeout = 100  /* 1s */
+};
+
+/* BLE Advertising Settings */
+static const wiced_bt_cfg_ble_advert_settings_t ble_advert_cfg = {
+    .channel_map = BTM_BLE_ADVERT_CHNL_37 | BTM_BLE_ADVERT_CHNL_38 | BTM_BLE_ADVERT_CHNL_39,
+    .high_duty_min_interval = 48,    /* 30ms */
+    .high_duty_max_interval = 48,
+    .high_duty_duration = 0,         /* Continuous */
+    .low_duty_min_interval = 160,    /* 100ms */
+    .low_duty_max_interval = 160,
+    .low_duty_duration = 0,
+    .high_duty_directed_min_interval = 400,
+    .high_duty_directed_max_interval = 800,
+    .low_duty_directed_min_interval = 48,
+    .low_duty_directed_max_interval = 48,
+    .low_duty_directed_duration = 30,
+    .high_duty_nonconn_min_interval = 160,
+    .high_duty_nonconn_max_interval = 160,
+    .high_duty_nonconn_duration = 0,
+    .low_duty_nonconn_min_interval = 160,
+    .low_duty_nonconn_max_interval = 160,
+    .low_duty_nonconn_duration = 0
+};
+
+/* BLE Configuration */
+static const wiced_bt_cfg_ble_t ble_cfg = {
+    .ble_max_simultaneous_links = 2,
+    .ble_max_rx_pdu_size = 517,
+    .appearance = 0x0000,            /* Unknown */
+    .rpa_refresh_timeout = WICED_BT_CFG_DEFAULT_RANDOM_ADDRESS_CHANGE_TIMEOUT,
+    .host_addr_resolution_db_size = 5,
+    .p_ble_scan_cfg = &ble_scan_cfg,
+    .p_ble_advert_cfg = &ble_advert_cfg,
+    .default_ble_power_level = 0
+};
+
+/* GATT Configuration */
+static const wiced_bt_cfg_gatt_t gatt_cfg = {
+    .max_db_service_modules = 0,
+    .max_eatt_bearers = 0
+};
+
+/* L2CAP Application Configuration */
+static const wiced_bt_cfg_l2cap_application_t l2cap_cfg = {
+    .max_app_l2cap_psms = 0,
+    .max_app_l2cap_channels = 0,
+    .max_app_l2cap_le_fixed_channels = 0,
+    .max_app_l2cap_br_edr_ertm_chnls = 0,
+    .max_app_l2cap_br_edr_ertm_tx_win = 0
+};
+
+/* ISOC Configuration (deprecated in BTSTACK 4.0, but still needed for LE Audio) */
+static const wiced_bt_cfg_isoc_t isoc_cfg = {
+    .max_sdu_size = 240,             /* Max SDU for LC3 */
+    .channel_count = 2,              /* Stereo */
+    .max_cis_conn = 2,               /* Max CIS connections */
+    .max_cig_count = 1,              /* Max CIG groups */
+    .max_buffers_per_cis = 4,
+    .max_big_count = 1               /* Max BIG for broadcast */
+};
+
+/* Main Bluetooth Stack Configuration */
 static wiced_bt_cfg_settings_t bt_cfg_settings = {
     .device_name = (uint8_t *)"Infineon LE Audio",
-    .device_class = {0x00, 0x00, 0x00},  /* Not used for BLE-only */
-    .security_required_mask = BTM_SEC_NONE,
-    .max_simultaneous_links = 2,
-    .br_edr_scan_cfg = { 0 },  /* BR/EDR disabled */
-
-    /* BLE scan settings */
-    .ble_scan_cfg = {
-        .scan_mode = BTM_BLE_SCAN_MODE_PASSIVE,
-        .high_duty_scan_interval = 96,   /* 60ms */
-        .high_duty_scan_window = 48,     /* 30ms */
-        .high_duty_scan_duration = 30,   /* 30 seconds */
-        .low_duty_scan_interval = 2048,  /* 1.28s */
-        .low_duty_scan_window = 48,      /* 30ms */
-        .low_duty_scan_duration = 30,
-        .high_duty_conn_scan_interval = 96,
-        .high_duty_conn_scan_window = 48,
-        .high_duty_conn_duration = 30,
-        .low_duty_conn_scan_interval = 2048,
-        .low_duty_conn_scan_window = 48,
-        .low_duty_conn_duration = 30,
-        .conn_min_interval = 12,         /* 15ms */
-        .conn_max_interval = 12,
-        .conn_latency = 0,
-        .conn_supervision_timeout = 100  /* 1s */
-    },
-
-    /* BLE advertising settings */
-    .ble_advert_cfg = {
-        .channel_map = BTM_BLE_ADVERT_CHNL_37 | BTM_BLE_ADVERT_CHNL_38 | BTM_BLE_ADVERT_CHNL_39,
-        .high_duty_min_interval = 48,    /* 30ms */
-        .high_duty_max_interval = 48,
-        .high_duty_duration = 0,         /* Continuous */
-        .low_duty_min_interval = 160,    /* 100ms */
-        .low_duty_max_interval = 160,
-        .low_duty_duration = 0,
-        .high_duty_directed_min_interval = 400,
-        .high_duty_directed_max_interval = 800,
-        .low_duty_directed_min_interval = 48,
-        .low_duty_directed_max_interval = 48,
-        .low_duty_directed_duration = 30,
-        .high_duty_nonconn_min_interval = 160,
-        .high_duty_nonconn_max_interval = 160,
-        .high_duty_nonconn_duration = 0,
-        .low_duty_nonconn_min_interval = 160,
-        .low_duty_nonconn_max_interval = 160,
-        .low_duty_nonconn_duration = 0
-    },
-
-    /* GATT configuration */
-    .gatt_cfg = {
-        .appearance = 0x0000,            /* Unknown */
-        .client_max_links = 2,
-        .server_max_links = 2,
-        .max_attr_len = 512,
-        .max_mtu_size = 517
-    },
-
-    /* L2CAP configuration */
-    .l2cap_application = {
-        .max_app_l2cap_psms = 0,
-        .max_app_l2cap_channels = 0,
-        .max_app_l2cap_le_fixed_channels = 0
-    },
-
-    /* LE Audio / ISOC configuration */
-    .isoc_cfg = {
-        .max_cis_conn = 2,               /* Max CIS connections */
-        .max_cig_count = 1,              /* Max CIG groups */
-        .max_sdu_size = 240,             /* Max SDU for LC3 */
-        .channel_count = 2,              /* Stereo */
-        .max_buffers_per_cis = 4
-    }
+    .security_required = BTM_SEC_BEST_EFFORT,
+    .p_br_cfg = NULL,                /* BR/EDR disabled for LE-only */
+    .p_ble_cfg = &ble_cfg,
+    .p_gatt_cfg = &gatt_cfg,
+    .p_isoc_cfg = &isoc_cfg,
+    .p_l2cap_app_cfg = &l2cap_cfg
 };
 
 /*******************************************************************************
@@ -291,6 +323,44 @@ static bt_context_t bt_ctx;
 static void dispatch_event(const bt_event_t *event);
 static void set_state(bt_state_t new_state);
 static int build_default_adv_data(void);
+static uint8_t parse_raw_adv_data(const uint8_t *raw_data, uint8_t raw_len,
+                                  wiced_bt_ble_advert_elem_t *elements, uint8_t max_elements);
+
+/*******************************************************************************
+ * Helper Functions
+ ******************************************************************************/
+
+/**
+ * @brief Parse raw advertisement data (LTV format) into wiced_bt_ble_advert_elem_t array
+ *
+ * @param raw_data      Pointer to raw advertisement data in LTV format
+ * @param raw_len       Length of raw data
+ * @param elements      Array to store parsed elements
+ * @param max_elements  Maximum number of elements to parse
+ * @return Number of elements parsed
+ */
+static uint8_t parse_raw_adv_data(const uint8_t *raw_data, uint8_t raw_len,
+                                  wiced_bt_ble_advert_elem_t *elements, uint8_t max_elements)
+{
+    uint8_t num_elements = 0;
+    uint8_t offset = 0;
+
+    while (offset < raw_len && num_elements < max_elements) {
+        uint8_t elem_len = raw_data[offset];  /* Length byte (excludes itself) */
+        if (elem_len == 0 || offset + 1 + elem_len > raw_len) {
+            break;  /* Invalid or incomplete element */
+        }
+
+        elements[num_elements].len = elem_len - 1;  /* Data length (excludes type) */
+        elements[num_elements].advert_type = (wiced_bt_ble_advert_type_t)raw_data[offset + 1];
+        elements[num_elements].p_data = (uint8_t *)&raw_data[offset + 2];
+
+        num_elements++;
+        offset += 1 + elem_len;  /* Move to next element */
+    }
+
+    return num_elements;
+}
 
 /*******************************************************************************
  * NOTE: HCI Transport and Controller Management
@@ -594,9 +664,12 @@ static wiced_result_t bt_management_callback(wiced_bt_management_evt_t event,
                    p_event_data->ble_phy_update_event.tx_phy,
                    p_event_data->ble_phy_update_event.rx_phy);
             {
+                /* Note: BTSTACK 4.x removed conn_handle from phy_update_event
+                 * We use link_get_conn_handle_by_bdaddr() to lookup the handle */
                 bt_event_t bt_event = {
                     .type = BT_EVENT_PHY_UPDATED,
-                    .data.conn_handle = p_event_data->ble_phy_update_event.conn_handle
+                    .data.conn_handle = link_get_conn_handle_by_bdaddr(
+                        p_event_data->ble_phy_update_event.bd_address)
                 };
                 dispatch_event(&bt_event);
             }
@@ -893,8 +966,8 @@ int bt_set_device_address(const uint8_t addr[BT_ADDR_SIZE], bool random)
         /* Ensure static address format (two MSBs = 11) */
         bd_addr[0] |= 0xC0;
 
-        /* Set random address */
-        result = wiced_bt_ble_set_random_address(bd_addr);
+        /* Set random address using wiced_bt_set_local_bdaddr */
+        result = wiced_bt_set_local_bdaddr(bd_addr, BLE_ADDR_RANDOM);
     } else {
         /* Set local BD address (usually done before stack init) */
         result = wiced_bt_set_local_bdaddr(bd_addr, BLE_ADDR_PUBLIC);
@@ -953,18 +1026,28 @@ int bt_start_advertising(bool connectable, uint16_t interval_ms)
     bt_ctx.connectable_adv = connectable;
     bt_ctx.adv_interval = interval_ms;
 
-    /* Set advertising data */
-    result = wiced_bt_ble_set_raw_advertisement_data(bt_ctx.adv_data_len, bt_ctx.adv_data);
-    if (result != WICED_BT_SUCCESS) {
-        printf("BT Adv: Failed to set adv data: %d\n", result);
-        return BT_ERROR_INVALID_PARAM;
+    /* Parse and set advertising data */
+    wiced_bt_ble_advert_elem_t adv_elements[10];
+    uint8_t num_adv_elements = parse_raw_adv_data(bt_ctx.adv_data, bt_ctx.adv_data_len,
+                                                   adv_elements, 10);
+    if (num_adv_elements > 0) {
+        result = wiced_bt_ble_set_raw_advertisement_data(num_adv_elements, adv_elements);
+        if (result != WICED_BT_SUCCESS) {
+            printf("BT Adv: Failed to set adv data: %d\n", result);
+            return BT_ERROR_INVALID_PARAM;
+        }
     }
 
-    /* Set scan response data */
+    /* Parse and set scan response data */
     if (bt_ctx.scan_rsp_len > 0) {
-        result = wiced_bt_ble_set_raw_scan_response_data(bt_ctx.scan_rsp_len, bt_ctx.scan_rsp_data);
-        if (result != WICED_BT_SUCCESS) {
-            printf("BT Adv: Failed to set scan rsp: %d\n", result);
+        wiced_bt_ble_advert_elem_t scan_rsp_elements[10];
+        uint8_t num_scan_elements = parse_raw_adv_data(bt_ctx.scan_rsp_data, bt_ctx.scan_rsp_len,
+                                                        scan_rsp_elements, 10);
+        if (num_scan_elements > 0) {
+            result = wiced_bt_ble_set_raw_scan_response_data(num_scan_elements, scan_rsp_elements);
+            if (result != WICED_BT_SUCCESS) {
+                printf("BT Adv: Failed to set scan rsp: %d\n", result);
+            }
         }
     }
 
@@ -1034,8 +1117,14 @@ int bt_set_advertising_data(const uint8_t *data, uint8_t len)
     memcpy(bt_ctx.adv_data, data, len);
     bt_ctx.adv_data_len = len;
 
-    /* Update advertising data via BTSTACK API */
-    result = wiced_bt_ble_set_raw_advertisement_data(len, (uint8_t *)data);
+    /* Parse and update advertising data via BTSTACK API */
+    wiced_bt_ble_advert_elem_t adv_elements[10];
+    uint8_t num_elements = parse_raw_adv_data(data, len, adv_elements, 10);
+    if (num_elements > 0) {
+        result = wiced_bt_ble_set_raw_advertisement_data(num_elements, adv_elements);
+    } else {
+        result = WICED_BT_ERROR;
+    }
     if (result != WICED_BT_SUCCESS) {
         printf("BT Adv: Failed to set adv data: %d\n", result);
         return BT_ERROR_INVALID_PARAM;
@@ -1059,8 +1148,14 @@ int bt_set_scan_response_data(const uint8_t *data, uint8_t len)
     memcpy(bt_ctx.scan_rsp_data, data, len);
     bt_ctx.scan_rsp_len = len;
 
-    /* Update scan response data via BTSTACK API */
-    result = wiced_bt_ble_set_raw_scan_response_data(len, (uint8_t *)data);
+    /* Parse and update scan response data via BTSTACK API */
+    wiced_bt_ble_advert_elem_t scan_elements[10];
+    uint8_t num_elements = parse_raw_adv_data(data, len, scan_elements, 10);
+    if (num_elements > 0) {
+        result = wiced_bt_ble_set_raw_scan_response_data(num_elements, scan_elements);
+    } else {
+        result = WICED_BT_ERROR;
+    }
     if (result != WICED_BT_SUCCESS) {
         printf("BT Adv: Failed to set scan rsp data: %d\n", result);
         return BT_ERROR_INVALID_PARAM;
@@ -1087,8 +1182,15 @@ int bt_set_device_name(const char *name)
     /* Rebuild advertising data with new name */
     build_default_adv_data();
 
-    /* Update advertising data via BTSTACK API */
-    result = wiced_bt_ble_set_raw_advertisement_data(bt_ctx.adv_data_len, bt_ctx.adv_data);
+    /* Parse and update advertising data via BTSTACK API */
+    wiced_bt_ble_advert_elem_t adv_elements[10];
+    uint8_t num_elements = parse_raw_adv_data(bt_ctx.adv_data, bt_ctx.adv_data_len,
+                                               adv_elements, 10);
+    if (num_elements > 0) {
+        result = wiced_bt_ble_set_raw_advertisement_data(num_elements, adv_elements);
+    } else {
+        result = WICED_BT_ERROR;
+    }
     if (result != WICED_BT_SUCCESS) {
         printf("BT Adv: Failed to update adv data with new name: %d\n", result);
         return BT_ERROR_INVALID_PARAM;
@@ -1210,7 +1312,7 @@ int bt_set_phy(uint16_t conn_handle, uint8_t tx_phy, uint8_t rx_phy)
     memcpy(phy_pref.remote_bd_addr, link->bd_addr, BT_ADDR_SIZE);
     phy_pref.tx_phys = tx_phy;
     phy_pref.rx_phys = rx_phy;
-    phy_pref.phy_opts = BTM_BLE_PHY_OPT_NO_PREF;
+    phy_pref.phy_opts = BTM_BLE_PREFER_NO_LELR;
 
     /* Request PHY update via BTSTACK API */
     result = wiced_bt_ble_set_phy(&phy_pref);
@@ -1248,31 +1350,26 @@ int bt_set_power_mode(bt_power_mode_t mode)
      * - Deep sleep: Requires external wake signal
      */
 
+    /*
+     * Note: wiced_bt_dev_allow_host_sleep() is not available in BTSTACK 4.x.
+     * Power management for PSoC Edge with CYW55512 is handled through:
+     * - Platform-specific sleep callbacks configured in btstack-integration
+     * - Device power manager (Cy_SysPm) integration
+     *
+     * For now, we just track the power mode locally.
+     */
     switch (mode) {
         case BT_POWER_ACTIVE:
-            /* Disable all sleep modes for lowest latency */
-            result = wiced_bt_dev_allow_host_sleep(WICED_FALSE);
-            break;
-
         case BT_POWER_LOW_LATENCY:
-            /* Allow host sleep with fast wake */
-            result = wiced_bt_dev_allow_host_sleep(WICED_TRUE);
-            break;
-
         case BT_POWER_LOW_POWER:
         case BT_POWER_DEEP_SLEEP:
-            /* Allow deep sleep - requires proper wake pin configuration */
-            result = wiced_bt_dev_allow_host_sleep(WICED_TRUE);
+            /* Mode accepted - actual power management is platform-specific */
             break;
 
         default:
             return BT_ERROR_INVALID_PARAM;
     }
-
-    if (result != WICED_BT_SUCCESS) {
-        printf("BT Power: Failed to set power mode: %d\n", result);
-        return BT_ERROR_INVALID_PARAM;
-    }
+    (void)result;  /* Suppress unused variable warning */
 
     bt_ctx.power_mode = mode;
 
@@ -1307,9 +1404,9 @@ int bt_set_tx_power(int8_t power_dbm)
         power_dbm = 12;
     }
 
-    /* Set advertising TX power */
-    result = wiced_bt_ble_set_adv_tx_power(power_dbm);
-    if (result != WICED_BT_SUCCESS) {
+    /* Set advertising TX power (callback parameter required in BTSTACK 4.x) */
+    result = wiced_bt_ble_set_adv_tx_power(power_dbm, NULL);
+    if (result != WICED_BT_SUCCESS && result != WICED_BT_PENDING) {
         printf("BT Power: Failed to set TX power: %d\n", result);
         return BT_ERROR_INVALID_PARAM;
     }

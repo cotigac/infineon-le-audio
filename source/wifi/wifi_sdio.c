@@ -2,6 +2,9 @@
  * @file wifi_sdio.c
  * @brief SDIO Driver Implementation for CYW55512 Wi-Fi
  *
+ * Uses PSoC Edge PDL (cy_sd_host.h) with Device Configurator settings.
+ * The BSP provides CYBSP_WIFI_SDIO_* configuration structures.
+ *
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -13,10 +16,11 @@
 #include "semphr.h"
 #include "task.h"
 
-/* PSoC Edge SDIO HAL headers */
-#include "cyhal.h"
-#include "cyhal_sdio.h"
+/* PSoC Edge PDL headers */
+#include "cy_pdl.h"
+#include "cy_sd_host.h"
 #include "cybsp.h"
+#include "cycfg_peripherals.h"
 
 /*******************************************************************************
  * Private Definitions
@@ -40,6 +44,10 @@
 /** Maximum block count per transfer */
 #define SDIO_MAX_BLOCK_COUNT    511
 
+/** SDIO command codes */
+#define SDIO_CMD52              52  /* IO_RW_DIRECT */
+#define SDIO_CMD53              53  /* IO_RW_EXTENDED */
+
 /*******************************************************************************
  * Private Types
  ******************************************************************************/
@@ -50,19 +58,15 @@ typedef struct {
     wifi_sdio_config_t config;
     wifi_sdio_stats_t stats;
 
-    /* PSoC Edge SDIO HAL handle */
-    cyhal_sdio_t sdio_obj;
-
     /* Current configured frequency */
     uint32_t current_freq_hz;
 
     /* FreeRTOS synchronization for thread-safe bus access */
     SemaphoreHandle_t bus_mutex;
 
-    /* Async transfer state */
-    volatile bool async_pending;
-    wifi_sdio_callback_t async_callback;
-    void *async_user_data;
+    /* SD Host context (PDL) */
+    cy_stc_sd_host_context_t sd_host_context;
+
 } wifi_sdio_state_t;
 
 /*******************************************************************************
@@ -76,86 +80,37 @@ static wifi_sdio_state_t sdio_state = {0};
  ******************************************************************************/
 
 /**
- * @brief SDIO interrupt callback handler
- */
-static void sdio_irq_handler(void *callback_arg, cyhal_sdio_event_t event)
-{
-    BaseType_t higher_priority_task_woken = pdFALSE;
-    (void)callback_arg;
-
-    if (event & CYHAL_SDIO_CARD_INTERRUPT) {
-        /* Card interrupt - signal Wi-Fi driver */
-        /* This is handled by WHD via its registered callback */
-    }
-
-    if (event & CYHAL_SDIO_XFER_COMPLETE) {
-        /* Async transfer complete - release mutex from ISR context */
-        if (sdio_state.async_pending) {
-            wifi_sdio_callback_t callback = sdio_state.async_callback;
-            void *user_data = sdio_state.async_user_data;
-
-            sdio_state.async_pending = false;
-            sdio_state.async_callback = NULL;
-            sdio_state.async_user_data = NULL;
-
-            /* Release bus mutex from ISR */
-            xSemaphoreGiveFromISR(sdio_state.bus_mutex, &higher_priority_task_woken);
-
-            /* Call user callback */
-            if (callback != NULL) {
-                callback(true, user_data);
-            }
-        }
-    }
-
-    if (event & CYHAL_SDIO_ERR_INTERRUPT) {
-        /* Error during async transfer */
-        sdio_state.stats.errors++;
-        if (sdio_state.async_pending) {
-            wifi_sdio_callback_t callback = sdio_state.async_callback;
-            void *user_data = sdio_state.async_user_data;
-
-            sdio_state.async_pending = false;
-            sdio_state.async_callback = NULL;
-            sdio_state.async_user_data = NULL;
-
-            /* Release bus mutex from ISR */
-            xSemaphoreGiveFromISR(sdio_state.bus_mutex, &higher_priority_task_woken);
-
-            /* Call user callback with error */
-            if (callback != NULL) {
-                callback(false, user_data);
-            }
-        }
-    }
-
-    /* Yield if a higher priority task was woken */
-    portYIELD_FROM_ISR(higher_priority_task_woken);
-}
-
-/**
  * @brief Wait for SDIO ready by polling I/O Ready register
  */
 static int sdio_wait_ready(uint32_t timeout_ms)
 {
-    uint8_t io_ready = 0;
     uint32_t start_tick = xTaskGetTickCount();
     uint32_t timeout_ticks = pdMS_TO_TICKS(timeout_ms);
-    cy_rslt_t result;
-    uint32_t response;
+    cy_en_sd_host_status_t result;
+    uint32_t response = 0;
 
     while ((xTaskGetTickCount() - start_tick) < timeout_ticks) {
-        /* Read I/O Ready register (CCCR offset 0x03) */
-        result = cyhal_sdio_send_cmd(&sdio_state.sdio_obj,
-                                     CYHAL_SDIO_CMD_IO_RW_DIRECT,
-                                     (0 << 28) |                    /* Function 0 */
-                                     (SDIO_CCCR_IO_READY << 9),     /* Address */
-                                     &response);
-        if (result == CY_RSLT_SUCCESS) {
-            io_ready = (uint8_t)(response & 0xFF);
-            /* Check if Function 1 (WLAN) is ready */
-            if (io_ready & 0x02) {
-                return 0;
+        /* Read I/O Ready register (CCCR offset 0x03) using CMD52 */
+        cy_stc_sd_host_cmd_config_t cmd = {
+            .commandIndex = SDIO_CMD52,
+            .commandArgument = (0 << 28) |                    /* Function 0 */
+                              (SDIO_CCCR_IO_READY << 9),     /* Address */
+            .enableCrcCheck = true,
+            .enableIdxCheck = true,
+            .respType = CY_SD_HOST_RESPONSE_LEN_48,
+            .enableAutoResponseErrorCheck = false,
+            .cmdType = CY_SD_HOST_CMD_NORMAL,
+            .dataPresent = false,
+        };
+
+        result = Cy_SD_Host_SendCommand(CYBSP_WIFI_SDIO_HW, &cmd);
+        if (result == CY_SD_HOST_SUCCESS) {
+            result = Cy_SD_Host_GetResponse(CYBSP_WIFI_SDIO_HW, &response, false);
+            if (result == CY_SD_HOST_SUCCESS) {
+                /* Check if Function 1 (WLAN) is ready */
+                if ((response & 0xFF) & 0x02) {
+                    return 0;
+                }
             }
         }
         vTaskDelay(pdMS_TO_TICKS(1));
@@ -186,8 +141,7 @@ static uint32_t get_freq_for_speed(wifi_sdio_speed_t speed)
 
 int wifi_sdio_init(const wifi_sdio_config_t *config)
 {
-    cy_rslt_t result;
-    cyhal_sdio_cfg_t sdio_cfg;
+    cy_en_sd_host_status_t result;
 
     if (sdio_state.initialized) {
         return -1; /* Already initialized */
@@ -201,11 +155,8 @@ int wifi_sdio_init(const wifi_sdio_config_t *config)
         memcpy(&sdio_state.config, &default_config, sizeof(wifi_sdio_config_t));
     }
 
-    /* Reset statistics and async state */
+    /* Reset statistics */
     memset(&sdio_state.stats, 0, sizeof(wifi_sdio_stats_t));
-    sdio_state.async_pending = false;
-    sdio_state.async_callback = NULL;
-    sdio_state.async_user_data = NULL;
 
     /* Create FreeRTOS mutex for thread-safe bus access */
     sdio_state.bus_mutex = xSemaphoreCreateMutex();
@@ -213,52 +164,35 @@ int wifi_sdio_init(const wifi_sdio_config_t *config)
         return -2;  /* FreeRTOS resource allocation failed */
     }
 
-    /* Initialize SDIO HAL with Wi-Fi chip pins */
-    result = cyhal_sdio_init(&sdio_state.sdio_obj,
-                             CYBSP_WIFI_SDIO_CMD,
-                             CYBSP_WIFI_SDIO_CLK,
-                             CYBSP_WIFI_SDIO_DATA0,
-                             CYBSP_WIFI_SDIO_DATA1,
-                             CYBSP_WIFI_SDIO_DATA2,
-                             CYBSP_WIFI_SDIO_DATA3);
-    if (result != CY_RSLT_SUCCESS) {
+    /* Initialize SD Host controller using BSP configuration */
+    result = Cy_SD_Host_Init(CYBSP_WIFI_SDIO_HW,
+                             &CYBSP_WIFI_SDIO_config,
+                             &sdio_state.sd_host_context);
+    if (result != CY_SD_HOST_SUCCESS) {
         vSemaphoreDelete(sdio_state.bus_mutex);
         sdio_state.bus_mutex = NULL;
         return -3;
     }
 
-    /* Configure SDIO bus parameters */
-    sdio_state.current_freq_hz = get_freq_for_speed(sdio_state.config.speed);
-    sdio_cfg.frequencyhal_hz = sdio_state.current_freq_hz;
-    sdio_cfg.block_size = sdio_state.config.block_size;
+    /* Enable SD Host */
+    Cy_SD_Host_Enable(CYBSP_WIFI_SDIO_HW);
 
-    result = cyhal_sdio_configure(&sdio_state.sdio_obj, &sdio_cfg);
-    if (result != CY_RSLT_SUCCESS) {
-        cyhal_sdio_free(&sdio_state.sdio_obj);
-        vSemaphoreDelete(sdio_state.bus_mutex);
-        sdio_state.bus_mutex = NULL;
-        return -4;
+    /* Set initial clock frequency */
+    sdio_state.current_freq_hz = get_freq_for_speed(sdio_state.config.speed);
+    Cy_SD_Host_SetSdClkFrequency(CYBSP_WIFI_SDIO_HW, sdio_state.current_freq_hz, &sdio_state.sd_host_context);
+
+    /* Set 4-bit bus width if configured */
+    if (sdio_state.config.bus_width == WIFI_SDIO_BUS_WIDTH_4BIT) {
+        Cy_SD_Host_SetBusWidth(CYBSP_WIFI_SDIO_HW, CY_SD_HOST_BUS_WIDTH_4_BIT, &sdio_state.sd_host_context);
+    } else {
+        Cy_SD_Host_SetBusWidth(CYBSP_WIFI_SDIO_HW, CY_SD_HOST_BUS_WIDTH_1_BIT, &sdio_state.sd_host_context);
     }
 
-    /* Register interrupt callback for async transfers and card interrupts */
-    cyhal_sdio_register_callback(&sdio_state.sdio_obj, sdio_irq_handler, NULL);
-    cyhal_sdio_enable_event(&sdio_state.sdio_obj,
-                            CYHAL_SDIO_CARD_INTERRUPT |
-                            CYHAL_SDIO_XFER_COMPLETE |
-                            CYHAL_SDIO_ERR_INTERRUPT,
-                            CYHAL_ISR_PRIORITY_DEFAULT, true);
-
-    /* Enable I/O Function 1 (WLAN) */
-    uint32_t response;
-    result = cyhal_sdio_send_cmd(&sdio_state.sdio_obj,
-                                 CYHAL_SDIO_CMD_IO_RW_DIRECT,
-                                 (1 << 31) |                    /* Write */
-                                 (0 << 28) |                    /* Function 0 */
-                                 (SDIO_CCCR_IO_ENABLE << 9) |   /* Address */
-                                 0x02,                          /* Enable Function 1 */
-                                 &response);
-    if (result != CY_RSLT_SUCCESS) {
-        cyhal_sdio_free(&sdio_state.sdio_obj);
+    /* Enable I/O Function 1 (WLAN) using CMD52 */
+    uint8_t response;
+    int cmd_result = wifi_sdio_cmd52(true, 0, SDIO_CCCR_IO_ENABLE, 0x02, &response);
+    if (cmd_result != 0) {
+        Cy_SD_Host_DeInit(CYBSP_WIFI_SDIO_HW);
         vSemaphoreDelete(sdio_state.bus_mutex);
         sdio_state.bus_mutex = NULL;
         return -5;
@@ -266,38 +200,16 @@ int wifi_sdio_init(const wifi_sdio_config_t *config)
 
     /* Wait for Function 1 to become ready */
     if (sdio_wait_ready(SDIO_CMD_TIMEOUT_MS) != 0) {
-        cyhal_sdio_free(&sdio_state.sdio_obj);
+        Cy_SD_Host_DeInit(CYBSP_WIFI_SDIO_HW);
         vSemaphoreDelete(sdio_state.bus_mutex);
         sdio_state.bus_mutex = NULL;
         return -6;
     }
 
-    /* Set 4-bit bus width if configured */
-    if (sdio_state.config.bus_width == WIFI_SDIO_BUS_WIDTH_4BIT) {
-        result = cyhal_sdio_send_cmd(&sdio_state.sdio_obj,
-                                     CYHAL_SDIO_CMD_IO_RW_DIRECT,
-                                     (1 << 31) |                    /* Write */
-                                     (0 << 28) |                    /* Function 0 */
-                                     (SDIO_CCCR_BUS_CONTROL << 9) | /* Address */
-                                     0x02,                          /* 4-bit mode */
-                                     &response);
-        if (result != CY_RSLT_SUCCESS) {
-            /* Non-fatal: continue with 1-bit mode */
-            sdio_state.config.bus_width = WIFI_SDIO_BUS_WIDTH_1BIT;
-        }
-    }
-
     /* Set block size for Function 1 */
-    /* FBR1 block size low byte at 0x110, high byte at 0x111 */
     uint32_t block_size = sdio_state.config.block_size;
-    cyhal_sdio_send_cmd(&sdio_state.sdio_obj,
-                        CYHAL_SDIO_CMD_IO_RW_DIRECT,
-                        (1 << 31) | (0 << 28) | (0x110 << 9) | (block_size & 0xFF),
-                        &response);
-    cyhal_sdio_send_cmd(&sdio_state.sdio_obj,
-                        CYHAL_SDIO_CMD_IO_RW_DIRECT,
-                        (1 << 31) | (0 << 28) | (0x111 << 9) | ((block_size >> 8) & 0xFF),
-                        &response);
+    wifi_sdio_cmd52(true, 0, 0x110, block_size & 0xFF, &response);
+    wifi_sdio_cmd52(true, 0, 0x111, (block_size >> 8) & 0xFF, &response);
 
     sdio_state.initialized = true;
     return 0;
@@ -309,32 +221,13 @@ void wifi_sdio_deinit(void)
         return;
     }
 
-    /* Wait for any pending async transfer */
-    uint32_t timeout = 100;
-    while (sdio_state.async_pending && timeout > 0) {
-        vTaskDelay(pdMS_TO_TICKS(1));
-        timeout--;
-    }
-
-    /* Disable interrupts */
-    cyhal_sdio_enable_event(&sdio_state.sdio_obj,
-                            CYHAL_SDIO_CARD_INTERRUPT |
-                            CYHAL_SDIO_XFER_COMPLETE |
-                            CYHAL_SDIO_ERR_INTERRUPT,
-                            CYHAL_ISR_PRIORITY_DEFAULT, false);
-
     /* Disable I/O Function 1 */
-    uint32_t response;
-    cyhal_sdio_send_cmd(&sdio_state.sdio_obj,
-                        CYHAL_SDIO_CMD_IO_RW_DIRECT,
-                        (1 << 31) |                    /* Write */
-                        (0 << 28) |                    /* Function 0 */
-                        (SDIO_CCCR_IO_ENABLE << 9) |   /* Address */
-                        0x00,                          /* Disable all functions */
-                        &response);
+    uint8_t response;
+    wifi_sdio_cmd52(true, 0, SDIO_CCCR_IO_ENABLE, 0x00, &response);
 
-    /* Free SDIO HAL resources */
-    cyhal_sdio_free(&sdio_state.sdio_obj);
+    /* Disable and deinitialize SD Host */
+    Cy_SD_Host_Disable(CYBSP_WIFI_SDIO_HW);
+    Cy_SD_Host_DeInit(CYBSP_WIFI_SDIO_HW);
 
     /* Delete FreeRTOS mutex */
     if (sdio_state.bus_mutex != NULL) {
@@ -342,20 +235,14 @@ void wifi_sdio_deinit(void)
         sdio_state.bus_mutex = NULL;
     }
 
-    /* Reset async state */
-    sdio_state.async_pending = false;
-    sdio_state.async_callback = NULL;
-    sdio_state.async_user_data = NULL;
-
     sdio_state.initialized = false;
 }
 
 int wifi_sdio_cmd52(bool write, uint8_t function, uint32_t address,
                     uint8_t data, uint8_t *response)
 {
-    cy_rslt_t result;
+    cy_en_sd_host_status_t result;
     uint32_t cmd_response = 0;
-    uint32_t argument;
 
     if (!sdio_state.initialized) {
         return -1;
@@ -374,22 +261,47 @@ int wifi_sdio_cmd52(bool write, uint8_t function, uint32_t address,
      * [25:9]  Register address
      * [7:0]   Write data
      */
-    argument = (write ? (1UL << 31) : 0) |
-               ((uint32_t)(function & 0x7) << 28) |
-               ((address & 0x1FFFF) << 9) |
-               (data & 0xFF);
+    uint32_t argument = (write ? (1UL << 31) : 0) |
+                        ((uint32_t)(function & 0x7) << 28) |
+                        ((address & 0x1FFFF) << 9) |
+                        (data & 0xFF);
 
-    /* Send CMD52 (IO_RW_DIRECT) */
-    result = cyhal_sdio_send_cmd(&sdio_state.sdio_obj,
-                                 CYHAL_SDIO_CMD_IO_RW_DIRECT,
-                                 argument,
-                                 &cmd_response);
+    /* Configure CMD52 */
+    cy_stc_sd_host_cmd_config_t cmd = {
+        .commandIndex = SDIO_CMD52,
+        .commandArgument = argument,
+        .enableCrcCheck = true,
+        .enableIdxCheck = true,
+        .respType = CY_SD_HOST_RESPONSE_LEN_48,
+        .enableAutoResponseErrorCheck = false,
+        .cmdType = CY_SD_HOST_CMD_NORMAL,
+        .dataPresent = false,
+    };
+
+    /* Send command */
+    result = Cy_SD_Host_SendCommand(CYBSP_WIFI_SDIO_HW, &cmd);
+    if (result != CY_SD_HOST_SUCCESS) {
+        xSemaphoreGive(sdio_state.bus_mutex);
+        sdio_state.stats.errors++;
+        return -3;
+    }
+
+    /* Wait for command complete */
+    result = Cy_SD_Host_PollCmdComplete(CYBSP_WIFI_SDIO_HW);
+    if (result != CY_SD_HOST_SUCCESS) {
+        xSemaphoreGive(sdio_state.bus_mutex);
+        sdio_state.stats.errors++;
+        return -4;
+    }
+
+    /* Get response */
+    result = Cy_SD_Host_GetResponse(CYBSP_WIFI_SDIO_HW, &cmd_response, false);
 
     xSemaphoreGive(sdio_state.bus_mutex);
 
-    if (result != CY_RSLT_SUCCESS) {
+    if (result != CY_SD_HOST_SUCCESS) {
         sdio_state.stats.errors++;
-        return -3;
+        return -5;
     }
 
     sdio_state.stats.commands_sent++;
@@ -409,7 +321,7 @@ int wifi_sdio_cmd52(bool write, uint8_t function, uint32_t address,
     uint8_t flags = (uint8_t)((cmd_response >> 8) & 0xFF);
     if (flags & 0xCB) {  /* COM_CRC_ERROR, ILLEGAL_COMMAND, ERROR, FUNCTION_NUMBER */
         sdio_state.stats.errors++;
-        return -4;
+        return -6;
     }
 
     return 0;
@@ -418,8 +330,7 @@ int wifi_sdio_cmd52(bool write, uint8_t function, uint32_t address,
 int wifi_sdio_cmd53(bool write, uint8_t function, uint32_t address,
                     bool increment, uint8_t *buffer, uint32_t length)
 {
-    cy_rslt_t result;
-    cyhal_sdio_transfer_type_t xfer_type;
+    cy_en_sd_host_status_t result;
 
     if (!sdio_state.initialized || buffer == NULL || length == 0) {
         return -1;
@@ -431,29 +342,82 @@ int wifi_sdio_cmd53(bool write, uint8_t function, uint32_t address,
         return -2;
     }
 
-    /* Determine transfer type */
-    xfer_type = write ? CYHAL_SDIO_XFER_TYPE_WRITE : CYHAL_SDIO_XFER_TYPE_READ;
+    /* Build CMD53 argument:
+     * [31]    R/W flag (1=write, 0=read)
+     * [30:28] Function number
+     * [27]    Block mode (0=byte, 1=block)
+     * [26]    OP Code (0=fixed addr, 1=incrementing)
+     * [25:9]  Register address
+     * [8:0]   Byte/Block count
+     */
+    uint32_t block_count = (length + sdio_state.config.block_size - 1) / sdio_state.config.block_size;
+    bool use_block_mode = (length > 512);
+    uint32_t count = use_block_mode ? block_count : length;
 
-    /* Perform bulk transfer using CMD53 (IO_RW_EXTENDED) */
-    result = cyhal_sdio_bulk_transfer(&sdio_state.sdio_obj,
-                                      xfer_type,
-                                      function,
-                                      address,
-                                      buffer,
-                                      length,
-                                      NULL);  /* No response needed for CMD53 */
+    uint32_t argument = (write ? (1UL << 31) : 0) |
+                        ((uint32_t)(function & 0x7) << 28) |
+                        (use_block_mode ? (1UL << 27) : 0) |
+                        (increment ? (1UL << 26) : 0) |
+                        ((address & 0x1FFFF) << 9) |
+                        (count & 0x1FF);
+
+    /* Configure data transfer */
+    cy_stc_sd_host_data_config_t data_config = {
+        .blockSize = use_block_mode ? sdio_state.config.block_size : (uint16_t)length,
+        .numberOfBlock = use_block_mode ? block_count : 1,
+        .enableDma = true,
+        .autoCommand = CY_SD_HOST_AUTO_CMD_NONE,
+        .read = !write,
+        .data = (uint32_t *)buffer,
+        .dataTimeout = 0xC,  /* ~1 second timeout */
+        .enableIntAtBlockGap = false,
+        .enReliableWrite = false,
+    };
+
+    /* Configure CMD53 */
+    cy_stc_sd_host_cmd_config_t cmd = {
+        .commandIndex = SDIO_CMD53,
+        .commandArgument = argument,
+        .enableCrcCheck = true,
+        .enableIdxCheck = true,
+        .respType = CY_SD_HOST_RESPONSE_LEN_48,
+        .enableAutoResponseErrorCheck = false,
+        .cmdType = CY_SD_HOST_CMD_NORMAL,
+        .dataPresent = true,
+    };
+
+    /* Initiate data transfer */
+    result = Cy_SD_Host_InitDataTransfer(CYBSP_WIFI_SDIO_HW, &data_config);
+    if (result != CY_SD_HOST_SUCCESS) {
+        xSemaphoreGive(sdio_state.bus_mutex);
+        sdio_state.stats.errors++;
+        return -3;
+    }
+
+    /* Send command */
+    result = Cy_SD_Host_SendCommand(CYBSP_WIFI_SDIO_HW, &cmd);
+    if (result != CY_SD_HOST_SUCCESS) {
+        xSemaphoreGive(sdio_state.bus_mutex);
+        sdio_state.stats.errors++;
+        return -4;
+    }
+
+    /* Wait for command complete */
+    result = Cy_SD_Host_PollCmdComplete(CYBSP_WIFI_SDIO_HW);
+    if (result != CY_SD_HOST_SUCCESS) {
+        xSemaphoreGive(sdio_state.bus_mutex);
+        sdio_state.stats.errors++;
+        return -5;
+    }
+
+    /* Wait for transfer complete */
+    result = Cy_SD_Host_PollTransferComplete(CYBSP_WIFI_SDIO_HW);
 
     xSemaphoreGive(sdio_state.bus_mutex);
 
-    if (result != CY_RSLT_SUCCESS) {
+    if (result != CY_SD_HOST_SUCCESS) {
         sdio_state.stats.errors++;
-
-        /* Check for specific error types */
-        if (CY_RSLT_GET_CODE(result) == CYHAL_SDIO_RSLT_ERR_CRC) {
-            sdio_state.stats.crc_errors++;
-        }
-
-        return -3;
+        return -6;
     }
 
     sdio_state.stats.commands_sent++;
@@ -482,67 +446,15 @@ int wifi_sdio_cmd53_async(bool write, uint8_t function, uint32_t address,
                           uint8_t *buffer, uint32_t length,
                           wifi_sdio_callback_t callback, void *user_data)
 {
-    cy_rslt_t result;
-    cyhal_sdio_transfer_type_t xfer_type;
+    /* For now, fall back to synchronous transfer */
+    /* TODO: Implement async using DMA interrupts */
+    int result = wifi_sdio_cmd53(write, function, address, true, buffer, length);
 
-    if (!sdio_state.initialized || buffer == NULL || length == 0) {
-        return -1;
+    if (callback != NULL) {
+        callback(result == 0, user_data);
     }
 
-    /* Check if another async transfer is in progress */
-    if (sdio_state.async_pending) {
-        return -2;
-    }
-
-    /* Acquire bus mutex for thread safety */
-    if (xSemaphoreTake(sdio_state.bus_mutex, pdMS_TO_TICKS(SDIO_CMD_TIMEOUT_MS)) != pdTRUE) {
-        sdio_state.stats.timeout_errors++;
-        return -3;
-    }
-
-    /* Store callback info for IRQ handler */
-    sdio_state.async_callback = callback;
-    sdio_state.async_user_data = user_data;
-    sdio_state.async_pending = true;
-
-    /* Determine transfer type */
-    xfer_type = write ? CYHAL_SDIO_XFER_TYPE_WRITE : CYHAL_SDIO_XFER_TYPE_READ;
-
-    /* Start async bulk transfer using CMD53 with DMA */
-    result = cyhal_sdio_bulk_transfer_async(&sdio_state.sdio_obj,
-                                            xfer_type,
-                                            function,
-                                            address,
-                                            buffer,
-                                            length);
-
-    if (result != CY_RSLT_SUCCESS) {
-        /* Async start failed, clean up and fall back to sync */
-        sdio_state.async_pending = false;
-        sdio_state.async_callback = NULL;
-        sdio_state.async_user_data = NULL;
-        xSemaphoreGive(sdio_state.bus_mutex);
-
-        /* Fall back to synchronous transfer */
-        int sync_result = wifi_sdio_cmd53(write, function, address, true, buffer, length);
-        if (callback != NULL) {
-            callback(sync_result == 0, user_data);
-        }
-        return sync_result;
-    }
-
-    /* Note: bus_mutex will be released when async callback fires */
-    /* The callback handles releasing the mutex in the IRQ handler */
-
-    sdio_state.stats.commands_sent++;
-
-    if (write) {
-        sdio_state.stats.bytes_sent += length;
-    } else {
-        sdio_state.stats.bytes_received += length;
-    }
-
-    return 0;
+    return result;
 }
 
 int wifi_sdio_enable_interrupt(uint8_t function, bool enable)
@@ -582,10 +494,10 @@ bool wifi_sdio_interrupt_pending(uint8_t function)
 
 int wifi_sdio_set_speed(wifi_sdio_speed_t speed)
 {
-    cy_rslt_t result;
     uint32_t freq_hz;
     uint8_t speed_reg = 0;
     uint8_t response;
+    int result;
 
     if (!sdio_state.initialized) {
         return -1;
@@ -600,17 +512,11 @@ int wifi_sdio_set_speed(wifi_sdio_speed_t speed)
     }
 
     /* Read current CCCR Speed register */
-    uint32_t cmd_response;
-    result = cyhal_sdio_send_cmd(&sdio_state.sdio_obj,
-                                 CYHAL_SDIO_CMD_IO_RW_DIRECT,
-                                 (0 << 28) | (SDIO_CCCR_SPEED << 9),
-                                 &cmd_response);
-    if (result != CY_RSLT_SUCCESS) {
+    result = wifi_sdio_cmd52(false, 0, SDIO_CCCR_SPEED, 0, &speed_reg);
+    if (result != 0) {
         xSemaphoreGive(sdio_state.bus_mutex);
         return -3;
     }
-
-    speed_reg = (uint8_t)(cmd_response & 0xFF);
 
     /* Set Bus Speed Select (BSS) bits [3:1] based on speed mode */
     speed_reg &= ~0x0E;  /* Clear BSS bits */
@@ -636,24 +542,14 @@ int wifi_sdio_set_speed(wifi_sdio_speed_t speed)
     }
 
     /* Write speed register */
-    result = cyhal_sdio_send_cmd(&sdio_state.sdio_obj,
-                                 CYHAL_SDIO_CMD_IO_RW_DIRECT,
-                                 (1 << 31) |                   /* Write */
-                                 (0 << 28) |                   /* Function 0 */
-                                 (SDIO_CCCR_SPEED << 9) |      /* Address */
-                                 speed_reg,
-                                 &cmd_response);
-    if (result != CY_RSLT_SUCCESS) {
+    result = wifi_sdio_cmd52(true, 0, SDIO_CCCR_SPEED, speed_reg, &response);
+    if (result != 0) {
         xSemaphoreGive(sdio_state.bus_mutex);
         return -5;
     }
 
-    /* Reconfigure HAL frequency */
-    result = cyhal_sdio_set_frequency(&sdio_state.sdio_obj, freq_hz, false);
-    if (result != CY_RSLT_SUCCESS) {
-        xSemaphoreGive(sdio_state.bus_mutex);
-        return -6;
-    }
+    /* Reconfigure clock frequency */
+    Cy_SD_Host_SetSdClkFrequency(CYBSP_WIFI_SDIO_HW, freq_hz, &sdio_state.sd_host_context);
 
     sdio_state.config.speed = speed;
     sdio_state.current_freq_hz = freq_hz;
@@ -667,7 +563,6 @@ int wifi_sdio_set_bus_width(wifi_sdio_bus_width_t width)
     uint8_t reg_val = 0;
     uint8_t response;
     int result;
-    cy_rslt_t hal_result;
 
     if (!sdio_state.initialized) {
         return -1;
@@ -691,25 +586,21 @@ int wifi_sdio_set_bus_width(wifi_sdio_bus_width_t width)
         return result;
     }
 
-    /* Update HAL bus width setting */
+    /* Update PDL bus width setting */
     if (xSemaphoreTake(sdio_state.bus_mutex, pdMS_TO_TICKS(SDIO_CMD_TIMEOUT_MS)) != pdTRUE) {
         return -2;
     }
 
-    cyhal_sdio_cfg_t sdio_cfg;
-    sdio_cfg.frequencyhal_hz = sdio_state.current_freq_hz;
-    sdio_cfg.block_size = sdio_state.config.block_size;
-
-    hal_result = cyhal_sdio_configure(&sdio_state.sdio_obj, &sdio_cfg);
+    if (width == WIFI_SDIO_BUS_WIDTH_4BIT) {
+        Cy_SD_Host_SetBusWidth(CYBSP_WIFI_SDIO_HW, CY_SD_HOST_BUS_WIDTH_4_BIT, &sdio_state.sd_host_context);
+    } else {
+        Cy_SD_Host_SetBusWidth(CYBSP_WIFI_SDIO_HW, CY_SD_HOST_BUS_WIDTH_1_BIT, &sdio_state.sd_host_context);
+    }
 
     xSemaphoreGive(sdio_state.bus_mutex);
 
-    if (hal_result == CY_RSLT_SUCCESS) {
-        sdio_state.config.bus_width = width;
-        return 0;
-    }
-
-    return -3;
+    sdio_state.config.bus_width = width;
+    return 0;
 }
 
 void wifi_sdio_get_stats(wifi_sdio_stats_t *stats)

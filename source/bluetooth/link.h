@@ -224,6 +224,14 @@ uint8_t link_get_connection_count(void);
  */
 link_state_t *link_get_by_index(uint8_t index);
 
+/**
+ * @brief Get connection handle by BD address
+ *
+ * @param bd_addr BD address to look up
+ * @return Connection handle, or LINK_INVALID_CONN_ID if not found
+ */
+uint16_t link_get_conn_handle_by_bdaddr(const wiced_bt_device_address_t bd_addr);
+
 #ifdef __cplusplus
 }
 #endif

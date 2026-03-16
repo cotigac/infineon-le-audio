@@ -358,3 +358,15 @@ bool link_set_acl_conn_interval(uint16_t interval)
 
     return true;
 }
+
+uint16_t link_get_conn_handle_by_bdaddr(const wiced_bt_device_address_t bd_addr)
+{
+    for (uint8_t i = 0; i < LINK_MAX_CONNECTIONS; i++) {
+        link_state_t *link = &link_ctx.links[i];
+        if (link->connection_status.connected &&
+            memcmp(link->bd_addr, bd_addr, sizeof(wiced_bt_device_address_t)) == 0) {
+            return link->connection_status.conn_id;
+        }
+    }
+    return LINK_INVALID_CONN_ID;
+}

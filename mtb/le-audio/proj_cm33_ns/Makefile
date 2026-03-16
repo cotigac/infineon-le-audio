@@ -122,7 +122,10 @@ CY_IGNORE+= \
 # directories (without a leading -I).
 #
 # Custom LE Audio include directories
+# NOTE: "." must be first to ensure project's FreeRTOSConfig.h is found
+#       before the template in mtb_shared/freertos/COMPONENT_CM33
 INCLUDES+= \
+    . \
     ../../../source \
     ../../../source/audio \
     ../../../source/bluetooth \

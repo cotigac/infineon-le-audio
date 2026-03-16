@@ -20,6 +20,8 @@
 #include "wiced_bt_ble.h"
 #include "wiced_bt_dev.h"
 #include "wiced_bt_isoc.h"
+#include "wiced_bt_adv_scan_extended.h"
+#include "wiced_bt_adv_scan_periodic.h"
 
 /* FreeRTOS */
 #include "FreeRTOS.h"
@@ -488,41 +490,31 @@ static int build_base_structure(void)
  */
 static int start_extended_advertising(void)
 {
-    wiced_bt_ble_ext_adv_set_params_t params;
+    wiced_ble_ext_adv_params_t params;
     memset(&params, 0, sizeof(params));
 
     /* Configure extended advertising parameters for broadcast
-     * Non-connectable, scannable advertising for Auracast */
-    params.event_properties = WICED_BT_BLE_EXT_ADV_EVENT_PROPERTY_NONE;
+     * Non-connectable, non-scannable advertising for Auracast */
+    params.event_properties = 0;  /* No connectable, no scannable for broadcast */
     params.primary_adv_int_min = bcast_ctx.config.adv_interval_min;
     params.primary_adv_int_max = bcast_ctx.config.adv_interval_max;
     params.primary_adv_channel_map = 0x07;  /* All channels */
     params.own_addr_type = BLE_ADDR_RANDOM;
     params.peer_addr_type = BLE_ADDR_PUBLIC;
+    memset(params.peer_addr, 0, sizeof(params.peer_addr));
     params.adv_filter_policy = BTM_BLE_ADV_POLICY_ACCEPT_CONN_AND_SCAN;
     params.adv_tx_power = bcast_ctx.config.tx_power;
-    params.primary_adv_phy = WICED_BT_BLE_EXT_ADV_PHY_1M;
+    params.primary_adv_phy = WICED_BLE_EXT_ADV_PHY_1M;
     params.secondary_adv_max_skip = 0;
-    params.secondary_adv_phy = WICED_BT_BLE_EXT_ADV_PHY_2M;
+    params.secondary_adv_phy = WICED_BLE_EXT_ADV_PHY_2M;
     params.adv_sid = 0;
-    params.scan_request_notification = WICED_BT_BLE_EXT_ADV_SCAN_REQ_NOTIFY_DISABLE;
+    params.scan_request_not = WICED_BLE_EXT_ADV_SCAN_REQ_NOTIFY_DISABLE;
+    params.primary_phy_opts = WICED_BLE_EXT_ADV_PHY_OPTIONS_NO_PREFERENCE;
+    params.secondary_phy_opts = WICED_BLE_EXT_ADV_PHY_OPTIONS_NO_PREFERENCE;
 
-    wiced_result_t result = wiced_bt_ble_set_ext_adv_parameters(
+    wiced_bt_dev_status_t result = wiced_ble_ext_adv_set_params(
         EXT_ADV_HANDLE,
-        WICED_BT_BLE_EXT_ADV_EVENT_PROPERTY_NONE,
-        params.primary_adv_int_min,
-        params.primary_adv_int_max,
-        params.primary_adv_channel_map,
-        params.own_addr_type,
-        params.peer_addr_type,
-        NULL,  /* peer_addr */
-        params.adv_filter_policy,
-        params.adv_tx_power,
-        params.primary_adv_phy,
-        params.secondary_adv_max_skip,
-        params.secondary_adv_phy,
-        params.adv_sid,
-        params.scan_request_notification
+        &params
     );
 
     if (result != WICED_BT_SUCCESS) {
@@ -530,7 +522,7 @@ static int start_extended_advertising(void)
     }
 
     /* Set extended advertising data */
-    result = wiced_bt_ble_set_ext_adv_data(
+    result = wiced_ble_ext_adv_set_adv_data(
         EXT_ADV_HANDLE,
         bcast_ctx.adv_data_len,
         bcast_ctx.adv_data
@@ -541,12 +533,12 @@ static int start_extended_advertising(void)
     }
 
     /* Start extended advertising */
-    wiced_bt_ble_ext_adv_enable_t enable;
+    wiced_ble_ext_adv_duration_config_t enable;
     enable.adv_handle = EXT_ADV_HANDLE;
-    enable.duration = 0;        /* Indefinite */
+    enable.adv_duration = 0;        /* Indefinite */
     enable.max_ext_adv_events = 0;
 
-    result = wiced_bt_ble_start_ext_adv(WICED_TRUE, 1, &enable);
+    result = wiced_ble_ext_adv_enable(WICED_TRUE, 1, &enable);
 
     if (result != WICED_BT_SUCCESS) {
         return BAP_BROADCAST_ERROR_ADV_FAILED;
@@ -563,12 +555,12 @@ static int start_extended_advertising(void)
 static int stop_extended_advertising(void)
 {
     /* Stop extended advertising */
-    wiced_bt_ble_ext_adv_enable_t enable;
+    wiced_ble_ext_adv_duration_config_t enable;
     enable.adv_handle = EXT_ADV_HANDLE;
-    enable.duration = 0;
+    enable.adv_duration = 0;
     enable.max_ext_adv_events = 0;
 
-    wiced_result_t result = wiced_bt_ble_start_ext_adv(WICED_FALSE, 1, &enable);
+    wiced_bt_dev_status_t result = wiced_ble_ext_adv_enable(WICED_FALSE, 1, &enable);
 
     if (result != WICED_BT_SUCCESS) {
         return BAP_BROADCAST_ERROR_ADV_FAILED;
@@ -586,11 +578,15 @@ static int start_periodic_advertising(void)
      * Interval: 100ms - 200ms (80-160 in 1.25ms units)
      * For LE Audio broadcast, periodic advertising carries the BASE structure
      */
-    wiced_result_t result = wiced_bt_ble_set_periodic_adv_params(
+    wiced_ble_padv_params_t padv_params;
+    memset(&padv_params, 0, sizeof(padv_params));
+    padv_params.adv_int_min = 80;     /* Min interval: 100ms */
+    padv_params.adv_int_max = 160;    /* Max interval: 200ms */
+    padv_params.adv_properties = WICED_BLE_PADV_PROPERTY_INCLUDE_TX_POWER;
+
+    wiced_bt_dev_status_t result = wiced_ble_padv_set_adv_params(
         EXT_ADV_HANDLE,
-        80,     /* Min interval: 100ms */
-        160,    /* Max interval: 200ms */
-        WICED_BT_BLE_PERIODIC_ADV_PROPERTY_INCLUDE_TX_POWER
+        &padv_params
     );
 
     if (result != WICED_BT_SUCCESS) {
@@ -598,7 +594,7 @@ static int start_periodic_advertising(void)
     }
 
     /* Set periodic advertising data (contains BASE structure) */
-    result = wiced_bt_ble_set_periodic_adv_data(
+    result = wiced_ble_padv_set_adv_data(
         EXT_ADV_HANDLE,
         bcast_ctx.periodic_adv_len,
         bcast_ctx.periodic_adv_data
@@ -609,7 +605,7 @@ static int start_periodic_advertising(void)
     }
 
     /* Enable periodic advertising */
-    result = wiced_bt_ble_start_periodic_adv(EXT_ADV_HANDLE, WICED_TRUE);
+    result = wiced_ble_padv_enable_adv(EXT_ADV_HANDLE, WICED_TRUE);
 
     if (result != WICED_BT_SUCCESS) {
         return BAP_BROADCAST_ERROR_ADV_FAILED;
@@ -624,7 +620,7 @@ static int start_periodic_advertising(void)
 static int stop_periodic_advertising(void)
 {
     /* Disable periodic advertising */
-    wiced_result_t result = wiced_bt_ble_start_periodic_adv(EXT_ADV_HANDLE, WICED_FALSE);
+    wiced_bt_dev_status_t result = wiced_ble_padv_enable_adv(EXT_ADV_HANDLE, WICED_FALSE);
 
     if (result != WICED_BT_SUCCESS) {
         return BAP_BROADCAST_ERROR_ADV_FAILED;
@@ -1030,7 +1026,7 @@ int bap_broadcast_update_name(const char *name)
     /* Update advertising if active */
     if (bcast_ctx.state == BAP_BROADCAST_STATE_ADVERTISING ||
         bcast_ctx.state == BAP_BROADCAST_STATE_STREAMING) {
-        wiced_bt_ble_set_ext_adv_data(
+        wiced_ble_ext_adv_set_adv_data(
             EXT_ADV_HANDLE,
             bcast_ctx.adv_data_len,
             bcast_ctx.adv_data
@@ -1061,7 +1057,7 @@ int bap_broadcast_update_context(uint8_t subgroup, uint16_t context)
     /* Update periodic advertising if active */
     if (bcast_ctx.state == BAP_BROADCAST_STATE_ADVERTISING ||
         bcast_ctx.state == BAP_BROADCAST_STATE_STREAMING) {
-        wiced_bt_ble_set_periodic_adv_data(
+        wiced_ble_padv_set_adv_data(
             EXT_ADV_HANDLE,
             bcast_ctx.periodic_adv_len,
             bcast_ctx.periodic_adv_data

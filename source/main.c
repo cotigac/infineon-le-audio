@@ -18,9 +18,8 @@
 #include "queue.h"
 #include "semphr.h"
 
-/* Infineon PDL/HAL headers */
+/* Infineon PDL headers */
 #include "cy_pdl.h"
-#include "cyhal.h"
 #include "cybsp.h"
 #include "cy_retarget_io.h"
 
