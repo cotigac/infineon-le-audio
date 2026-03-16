@@ -1,14 +1,14 @@
 # Infineon LE Audio Demo
 
-PSoC Edge + CYW55511 demo: Full-duplex LE Audio (LC3), Auracast broadcast, BLE/USB MIDI, and I2S streaming for musical instruments.
+PSoC Edge E82 + CYW55512 demo: Full-duplex LE Audio (LC3), Auracast broadcast, BLE/USB MIDI, Wi-Fi bridge, and I2S streaming for musical instruments.
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-PSoC%20Edge%20E81-green.svg)](https://www.infineon.com/cms/en/product/microcontroller/32-bit-psoc-arm-cortex-microcontroller/32-bit-psoc-arm-cortex-for-industrial/psoc-edge/)
+[![Platform](https://img.shields.io/badge/Platform-PSoC%20Edge%20E82-green.svg)](https://www.infineon.com/cms/en/product/microcontroller/32-bit-psoc-arm-cortex-microcontroller/psoc-edge-microcontrollers/)
 [![Bluetooth](https://img.shields.io/badge/Bluetooth-6.0%20LE%20Audio-blue.svg)](https://www.bluetooth.com/learn-about-bluetooth/recent-enhancements/le-audio/)
 
 ## Overview
 
-This project implements a comprehensive Bluetooth LE Audio solution for musical instruments on Infineon hardware. It demonstrates how to build a full-featured audio streaming device with support for the latest Bluetooth LE Audio standards including Auracast broadcast.
+This project implements a comprehensive Bluetooth LE Audio solution for musical instruments on Infineon hardware. It provides a complete firmware implementation with full-duplex audio streaming, Auracast broadcast, MIDI over BLE/USB, and Wi-Fi data bridging.
 
 ### Target Application
 
@@ -17,95 +17,97 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
 - Broadcast audio to multiple receivers simultaneously (Auracast)
 - Send/receive MIDI over Bluetooth LE and USB
 - Interface with a main application controller via I2S
+- Bridge network data over Wi-Fi
 
 ### Key Features
 
 | Feature | Description | Status |
 |---------|-------------|--------|
-| **LE Audio Unicast** | Full-duplex audio streaming via CIS (Connected Isochronous Stream) | In Development |
-| **LE Audio Broadcast (Auracast)** | One-to-many audio broadcast via BIS (Broadcast Isochronous Stream) | Planned |
-| **LC3 Codec** | Low Complexity Communication Codec - host-side implementation using Google liblc3 | In Development |
-| **BLE MIDI** | MIDI over Bluetooth Low Energy GATT service | Planned |
-| **USB MIDI** | USB High-Speed MIDI class device (480 Mbps) | Planned |
-| **I2S Streaming** | DMA-based bidirectional audio with main application controller | Planned |
-| **Wi-Fi Bridge** | USB HS → SDIO → CYW55512 WLAN data path | In Development |
+| **LE Audio Unicast** | Full-duplex audio streaming via CIS (Connected Isochronous Stream) | Implemented |
+| **LE Audio Broadcast (Auracast)** | One-to-many audio broadcast via BIS (Broadcast Isochronous Stream) | Implemented |
+| **LC3 Codec** | Host-side LC3 encode/decode using Google liblc3 | Implemented |
+| **BLE MIDI** | MIDI over Bluetooth Low Energy GATT service | Implemented |
+| **USB MIDI** | USB High-Speed MIDI class device (480 Mbps) | Implemented |
+| **I2S Streaming** | DMA-based bidirectional audio with ping-pong buffers | Implemented |
+| **Wi-Fi Bridge** | USB HS to SDIO to CYW55512 WLAN data path | Implemented |
 
 ## Hardware
 
-### Bill of Materials
+### Target Hardware
 
 | Component | Part Number | Description |
 |-----------|-------------|-------------|
-| **MCU** | PSoC Edge E81 (PSE81x) | ARM Cortex-M55 @ 400MHz with Helium DSP |
-| **Bluetooth** | CYW55511 | Bluetooth 6.0 LE combo IC with Wi-Fi 6 |
-| **Eval Kit** | KIT_PSE84_EVAL | PSoC Edge E84 Evaluation Kit (or E81 equivalent) |
-| **BT Module** | CYW955513EVK-01 | CYW55511/12/13 evaluation kit with audio codec |
+| **MCU** | PSE823GOS4DBZQ3 | PSoC Edge E82, Cortex-M55 @ 400MHz + Cortex-M33 |
+| **Wireless** | CYW55512IUBGT | AIROC Wi-Fi 6 + Bluetooth 6.0 combo IC |
+| **Eval Kit** | KIT_PSE84_EVAL | PSoC Edge E84 Evaluation Kit (USB HS, SDIO) |
 
 ### Hardware Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Main Application Controller                   │
-│                     (External Instrument MCU)                    │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ I2S (PCM Audio)
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      PSoC Edge E81 (PSE81x)                     │
-│                     Cortex-M55 @ 400MHz                         │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐  │
-│  │   USB HS    │  │    I2S      │  │      UART (HCI)         │  │
-│  │ (MIDI+Data) │  │   Master    │  │   (BT Host Interface)   │  │
-│  └──────┬──────┘  └──────┬──────┘  └───────────┬─────────────┘  │
-│         │                │                     │                 │
-│  ┌──────▼──────┐  ┌──────▼──────┐  ┌──────────▼──────────────┐  │
-│  │ USB Device  │  │ Audio DMA   │  │   BTSTACK + LE Audio    │  │
-│  │ Middleware  │  │   Buffer    │  │   Profile Libraries     │  │
-│  └─────────────┘  └──────┬──────┘  └──────────▲──────────────┘  │
-│                          │                     │                 │
-│                   ┌──────▼─────────────────────┴──────┐         │
-│                   │         liblc3 (Host-Side)        │         │
-│                   │    LC3 Encode/Decode on PSoC      │         │
-│                   │  Unified for Unicast + Broadcast  │         │
-│                   └───────────────────────────────────┘         │
-│                                                                  │
-│  FreeRTOS (Tasks: Audio/LC3, BLE, MIDI, I2S)                    │
-└─────────────────────────────────────────────────────────────────┘
-                             │ UART (HCI with ISOC)
-                             │ LC3 frames over HCI
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                        CYW55511                                  │
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │              Bluetooth 6.0 LE Controller                    ││
-│  │         ISOC Transport (BIS/CIS) - Radio Only               ││
-│  │            (LC3 codec NOT used - HCI mode)                  ││
-│  └─────────────────────────────────────────────────────────────┘│
-│                                                                  │
-│  Handles: BLE advertising, scanning, connections, ISOC streams  │
-└─────────────────────────────────────────────────────────────────┘
++-----------------------------------------------------------------------------+
+|                        Main Application Processor                            |
+|                    (External Instrument / Host Device)                       |
++-------------------------------------+---------------------------------------+
+                                      | USB High-Speed (480 Mbps)
+                                      |   - USB MIDI Class
+                                      |   - Wi-Fi Data (bridged)
+                                      v
++-----------------------------------------------------------------------------+
+|                      PSoC Edge E82 (PSE823GOS4DBZQ3)                        |
+|                     Cortex-M55 @ 400MHz + Cortex-M33                        |
+|                                                                              |
+|  +--------------+  +--------------+  +--------------+  +------------------+ |
+|  |   USB HS     |  |    I2S       |  |   UART       |  |     SDIO 3.0     | |
+|  |  (480Mbps)   |  |   Master     |  |   (HCI)      |  |   (SDR50/DDR50)  | |
+|  |  MIDI + Data |  |   Audio      |  |   BT Host    |  |   WLAN Host      | |
+|  +------+-------+  +------+-------+  +------+-------+  +--------+---------+ |
+|         |                 |                 |                    |           |
+|  +------v-------+  +------v-------+  +------v-------+  +--------v---------+ |
+|  | emUSB-Device |  |  Audio DMA   |  |  BTSTACK +   |  |  wifi-host-drv   | |
+|  |  Middleware  |  |   Buffer     |  |  LE Audio    |  |  Wi-Fi Bridge    | |
+|  | (HS capable) |  |  (Ping-pong) |  |  Profiles    |  |                  | |
+|  +--------------+  +------+-------+  +------^-------+  +------------------+ |
+|                           |                 |                                |
+|                    +------v-----------------+------+                        |
+|                    |         liblc3 (Host-Side)    |                        |
+|                    |    LC3 Encode/Decode on PSoC  |                        |
+|                    |  Unified for Unicast+Broadcast|                        |
+|                    +-------------------------------+                        |
+|                                                                              |
+|  FreeRTOS (Tasks: Audio/LC3, BLE, USB, Wi-Fi, MIDI)                         |
++------------------------------+----------------------+-----------------------+
+                               |                      |
+                               | UART (HCI+ISOC)      | SDIO (Wi-Fi Data)
+                               | 3 Mbps               | Up to 208 MHz
+                               v                      v
++-----------------------------------------------------------------------------+
+|                          CYW55512IUBGT                                       |
+|  +----------------------------------+  +----------------------------------+ |
+|  |    Bluetooth 6.0 LE Controller   |  |       Wi-Fi 6 (802.11ax)         | |
+|  |   ISOC Transport (BIS/CIS)       |  |    2.4 GHz + 5 GHz Dual-Band     | |
+|  |   LC3 codec NOT used (HCI mode)  |  |    Up to 1.2 Gbps PHY Rate       | |
+|  +----------------------------------+  +----------------------------------+ |
+|                                                                              |
+|  Handles: BLE advertising, scanning, connections, ISOC, Wi-Fi association   |
++-----------------------------------------------------------------------------+
 ```
 
 ### Audio Data Flow
 
-#### Unified Host-Side LC3 Architecture
-
-All LC3 encoding and decoding runs on the PSoC Edge host using Google's open-source liblc3 library. This provides a consistent architecture for both unicast and broadcast modes.
-
 ```
-TRANSMIT PATH:
-┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-│ Main Ctrl    │───►│ PSoC Edge    │───►│ liblc3       │───►│ CYW55511     │
-│ I2S PCM      │    │ I2S RX DMA   │    │ LC3 Encode   │    │ HCI ISOC TX  │
-│ 48kHz/16bit  │    │ Audio Buffer │    │ (host CPU)   │    │ BLE Radio    │
-└──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘
+TRANSMIT PATH (I2S RX -> LC3 Encode -> ISOC TX):
++--------------+    +--------------+    +--------------+    +--------------+
+| Main Ctrl    |--->| PSoC Edge    |--->| liblc3       |--->| CYW55512     |
+| I2S PCM      |    | I2S RX DMA   |    | LC3 Encode   |    | HCI ISOC TX  |
+| 48kHz/16bit  |    | Audio Buffer |    | (host CPU)   |    | BLE Radio    |
++--------------+    +--------------+    +--------------+    +--------------+
 
-RECEIVE PATH:
-┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-│ CYW55511     │───►│ liblc3       │───►│ PSoC Edge    │───►│ Main Ctrl    │
-│ HCI ISOC RX  │    │ LC3 Decode   │    │ I2S TX DMA   │    │ I2S PCM      │
-│ BLE Radio    │    │ (host CPU)   │    │ Audio Buffer │    │ 48kHz/16bit  │
-└──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘
+RECEIVE PATH (ISOC RX -> LC3 Decode -> I2S TX):
++--------------+    +--------------+    +--------------+    +--------------+
+| CYW55512     |--->| liblc3       |--->| PSoC Edge    |--->| Main Ctrl    |
+| HCI ISOC RX  |    | LC3 Decode   |    | I2S TX DMA   |    | I2S PCM      |
+| BLE Radio    |    | (host CPU)   |    | Audio Buffer |    | 48kHz/16bit  |
++--------------+    +--------------+    +--------------+    +--------------+
 ```
 
 ## Software
@@ -115,63 +117,83 @@ RECEIVE PATH:
 | Software | Version | Purpose |
 |----------|---------|---------|
 | ModusToolbox | 3.x | Infineon development environment |
-| PSoC Edge Device Pack | Latest | PSoC Edge E81/E84 support |
-| CYW55511 Firmware | Latest | Bluetooth controller firmware |
-| FreeRTOS | 10.x | Real-time operating system |
+| PSoC Edge Device Pack | Latest | PSoC Edge E82/E84 support |
+| CYW55512 Firmware | Latest | Bluetooth controller firmware |
+| ARM GNU Toolchain | 12.x+ | arm-none-eabi-gcc compiler |
+| CMake | 3.20+ | Build system |
 
-### Dependencies
+### Dependencies (Git Submodules)
 
 | Library | License | Purpose |
 |---------|---------|---------|
 | [liblc3](https://github.com/google/liblc3) | Apache 2.0 | LC3 codec encode/decode |
-| [Zephyr LE Audio](https://github.com/zephyrproject-rtos/zephyr) | Apache 2.0 | BAP broadcast source reference |
-| Infineon BTSTACK | Infineon | Bluetooth host stack |
-| Infineon PDL | Infineon | PSoC peripheral drivers |
+| [btstack](https://github.com/Infineon/btstack) | Infineon | Bluetooth host stack |
+| [btstack-integration](https://github.com/Infineon/btstack-integration) | Infineon | HCI UART porting layer |
+| [freertos](https://github.com/Infineon/freertos) | MIT | Real-time operating system |
+| [emusb-device](https://github.com/Infineon/emusb-device) | Segger | USB High-Speed middleware |
+| [wifi-host-driver](https://github.com/Infineon/wifi-host-driver) | Infineon | Wi-Fi Host Driver (WHD) |
 
 ### Project Structure
 
 ```
 infineon-le-audio/
-├── README.md                           # This file
-├── LICENSE                             # Apache 2.0 license
-├── .gitignore                          # Git ignore rules
+├── README.md                       # This file
+├── LICENSE                         # Apache 2.0 license
+├── CMakeLists.txt                  # CMake build system
+├── .gitmodules                     # Git submodule definitions
 │
-├── docs/                               # Documentation
-│   ├── README.md                       # Full project plan and analysis
-│   └── architecture.md                 # Detailed design documentation
+├── cmake/
+│   ├── arm-cortex-m55.cmake        # ARM toolchain file
+│   └── psoc_edge_e82.ld            # Linker script (5 MB SRAM)
 │
-├── config/                             # Configuration files
-│   └── lc3_config.h                    # LC3 codec configuration
+├── config/
+│   ├── FreeRTOSConfig.h            # FreeRTOS configuration
+│   ├── cy_bt_config.h              # Bluetooth configuration
+│   └── lc3_config.h                # LC3 codec parameters
 │
-├── source/                             # Source code
-│   ├── main.c                          # Application entry point
-│   │
-│   ├── audio/                          # Audio subsystem
-│   │   ├── lc3_wrapper.h               # LC3 codec API
-│   │   ├── lc3_wrapper.c               # LC3 codec implementation
-│   │   ├── i2s_stream.h                # I2S streaming API
-│   │   └── i2s_stream.c                # I2S streaming (planned)
-│   │
-│   ├── le_audio/                       # LE Audio profiles
-│   │   ├── le_audio_manager.h          # Top-level LE Audio API
-│   │   └── ...                         # (implementation planned)
-│   │
-│   ├── midi/                           # MIDI subsystem (planned)
-│   │
-│   ├── wifi/                           # Wi-Fi data bridge
-│   │   ├── wifi_sdio.h                 # SDIO driver API for CYW55512
-│   │   ├── wifi_sdio.c                 # SDIO driver implementation
-│   │   ├── wifi_bridge.h               # USB-to-Wi-Fi bridge API
-│   │   └── wifi_bridge.c               # Bridge implementation
-│   │
-│   └── bluetooth/                      # Bluetooth stack integration (planned)
+├── docs/
+│   ├── README.md                   # Full project plan and gap analysis
+│   └── architecture.md             # Detailed design documentation
 │
-└── libs/                               # External libraries
-    ├── liblc3/                         # Google LC3 codec
-    ├── btstack/                        # Infineon BTSTACK
-    ├── freertos/                       # FreeRTOS kernel
-    ├── emusb-device/                   # Segger emUSB-Device (USB High-Speed)
-    └── wifi-host-driver/               # Infineon WHD (Wi-Fi Host Driver)
+├── source/
+│   ├── main.c                      # Application entry, FreeRTOS tasks
+│   │
+│   ├── audio/                      # Audio subsystem
+│   │   ├── audio_task.c/h          # Main audio processing task
+│   │   ├── audio_buffers.c/h       # Ring buffer management
+│   │   ├── i2s_stream.c/h          # I2S DMA driver (ping-pong)
+│   │   └── lc3_wrapper.c/h         # liblc3 encode/decode API
+│   │
+│   ├── le_audio/                   # LE Audio profiles
+│   │   ├── le_audio_manager.c/h    # Top-level LE Audio control
+│   │   ├── bap_unicast.c/h         # BAP Unicast Client/Server (CIS)
+│   │   ├── bap_broadcast.c/h       # BAP Broadcast Source (Auracast/BIS)
+│   │   ├── pacs.c/h                # Published Audio Capabilities Service
+│   │   └── isoc_handler.c/h        # HCI ISOC data path handling
+│   │
+│   ├── midi/                       # MIDI subsystem
+│   │   ├── midi_ble_service.c/h    # BLE MIDI GATT service
+│   │   ├── midi_usb.c/h            # USB MIDI class (emUSB-Device)
+│   │   └── midi_router.c/h         # MIDI routing (BLE <-> USB <-> Controller)
+│   │
+│   ├── wifi/                       # Wi-Fi data bridge
+│   │   ├── wifi_sdio.c/h           # SDIO driver (cyhal_sdio HAL)
+│   │   └── wifi_bridge.c/h         # USB-to-Wi-Fi bridge (WHD)
+│   │
+│   └── bluetooth/                  # Bluetooth stack integration
+│       ├── bt_init.c/h             # BTSTACK initialization
+│       ├── bt_platform_config.c/h  # HCI UART configuration
+│       ├── hci_isoc.c/h            # HCI isochronous commands
+│       ├── gap_config.c/h          # GAP advertising/scanning/connections
+│       └── gatt_db.c/h             # GATT database
+│
+└── libs/                           # External libraries (submodules)
+    ├── btstack/                    # Infineon BTSTACK
+    ├── btstack-integration/        # HCI UART porting layer
+    ├── liblc3/                     # Google LC3 codec
+    ├── freertos/                   # FreeRTOS kernel
+    ├── emusb-device/               # Segger USB middleware
+    └── wifi-host-driver/           # Infineon WHD
 ```
 
 ## Getting Started
@@ -179,38 +201,46 @@ infineon-le-audio/
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/cotigac/infineon-le-audio.git
+git clone --recursive https://github.com/cotigac/infineon-le-audio.git
 cd infineon-le-audio
 ```
 
-### 2. Fetch Dependencies
-
+If you already cloned without `--recursive`:
 ```bash
-# Clone liblc3 into libs/
-git clone https://github.com/google/liblc3.git libs/liblc3
-
-# BTSTACK and FreeRTOS will be provided by ModusToolbox
+git submodule update --init --recursive
 ```
 
-### 3. Import into ModusToolbox
+### 2. Build with CMake
 
-1. Open ModusToolbox IDE
-2. File → Import → Existing Projects into Workspace
-3. Select the `infineon-le-audio` directory
-4. Build and flash to your evaluation kit
+```bash
+mkdir build && cd build
+cmake -G Ninja -DCMAKE_TOOLCHAIN_FILE=../cmake/arm-cortex-m55.cmake ..
+cmake --build .
+```
 
-### 4. Hardware Setup
+### Build Options
 
-1. Connect PSoC Edge E81 eval kit to PC via USB
-2. Connect CYW55511 module via UART (HCI interface)
+| Option | Default | Description |
+|--------|---------|-------------|
+| `ENABLE_LE_AUDIO` | ON | Enable LE Audio (BAP, PACS, ASCS) |
+| `ENABLE_AURACAST` | ON | Enable Auracast Broadcast (BIS) |
+| `ENABLE_MIDI` | ON | Enable MIDI over BLE and USB |
+| `ENABLE_USB` | ON | Enable USB Device support |
+| `ENABLE_WIFI` | ON | Enable Wi-Fi data bridge |
+| `CMAKE_BUILD_TYPE` | Debug | Debug/Release/RelWithDebInfo/MinSizeRel |
+
+### 3. Hardware Setup
+
+1. Connect PSoC Edge E84 eval kit (KIT_PSE84_EVAL) to PC via USB
+2. Connect CYW55512 module via UART (HCI interface)
 3. Connect main application controller via I2S (optional)
-4. Power on and program the firmware
+4. Flash the firmware using ModusToolbox or OpenOCD
 
 ## Configuration
 
 ### LC3 Codec Settings
 
-Edit `config/lc3_config.h` to customize audio settings:
+Edit `config/lc3_config.h`:
 
 ```c
 #define LC3_CFG_SAMPLE_RATE         48000   // Sample rate in Hz
@@ -221,8 +251,6 @@ Edit `config/lc3_config.h` to customize audio settings:
 
 ### Auracast Broadcast Settings
 
-Configure broadcast parameters in your application:
-
 ```c
 le_audio_broadcast_config_t config = {
     .broadcast_name = "My Instrument",
@@ -232,49 +260,114 @@ le_audio_broadcast_config_t config = {
     .num_bis_per_subgroup = 1,
     .presentation_delay_us = 40000
 };
+
+le_audio_start_broadcast(&config);
 ```
 
 ## LE Audio Profile Stack
 
 ```
-┌─────────────────────────────────────────┐
++─────────────────────────────────────────+
 │          CAP (Common Audio Profile)     │
-├─────────────────────────────────────────┤
-│  BAP (Basic Audio Profile)              │
++─────────────────────────────────────────+
+│  BAP (Basic Audio Profile)              │  bap_unicast.c, bap_broadcast.c
 │  ├── Unicast Client/Server (CIS)        │
-│  └── Broadcast Source/Sink (BIS)        │
-├─────────────────────────────────────────┤
-│  PACS (Published Audio Capabilities)    │
-│  ASCS (Audio Stream Control Service)    │
-│  BASS (Broadcast Audio Scan Service)    │
-├─────────────────────────────────────────┤
-│  HCI ISOC (Isochronous Channels)        │
-│  ├── CIS (Connected Isochronous Stream) │
-│  └── BIS (Broadcast Isochronous Stream) │
-├─────────────────────────────────────────┤
-│  liblc3 (Host-Side Codec)               │
+│  └── Broadcast Source/Sink (BIS)        │  Auracast
++─────────────────────────────────────────+
+│  PACS (Published Audio Capabilities)    │  pacs.c
+│  ASCS (Audio Stream Control Service)    │  le_audio_manager.c
++─────────────────────────────────────────+
+│  HCI ISOC (Isochronous Channels)        │  hci_isoc.c, isoc_handler.c
+│  ├── CIS (Connected Isochronous Stream) │  Unicast
+│  └── BIS (Broadcast Isochronous Stream) │  Auracast
++─────────────────────────────────────────+
+│  liblc3 (Host-Side Codec)               │  lc3_wrapper.c
 │  Google LC3 - Apache 2.0 License        │
-└─────────────────────────────────────────┘
++─────────────────────────────────────────+
 ```
+
+## FreeRTOS Task Architecture
+
+| Task | Priority | Stack | Purpose |
+|------|----------|-------|---------|
+| I2S DMA | ISR | - | DMA half/complete callbacks |
+| Audio/LC3 | 6 (Highest) | 4096 | LC3 encode/decode, frame sync |
+| BLE | 5 | 4096 | BTSTACK, LE Audio profiles |
+| USB | 4 | 2048 | USB enumeration, MIDI class |
+| Wi-Fi | 3 | 4096 | WHD packet processing |
+| MIDI | 2 | 1024 | BLE/USB routing |
 
 ## Memory Requirements
 
-| Component | RAM | Flash |
-|-----------|-----|-------|
-| FreeRTOS kernel | ~10 KB | ~20 KB |
-| BTSTACK + LE Audio profiles | ~80 KB | ~200 KB |
-| liblc3 (encoder + decoder) | ~40 KB | ~60 KB |
-| Audio buffers | ~20 KB | - |
-| USB middleware | ~8 KB | ~30 KB |
-| Application code | ~30 KB | ~120 KB |
-| **Total** | **~188 KB** | **~430 KB** |
+### RAM Usage (Estimated)
 
-PSoC Edge E82 has 5 MB SRAM and 512 KB Flash - plenty of headroom.
+| Component | Size | Notes |
+|-----------|------|-------|
+| FreeRTOS kernel | 10 KB | Tasks, queues, semaphores |
+| BTSTACK + profiles | 80 KB | LE Audio profiles |
+| liblc3 state | 40 KB | Encoder + decoder (stereo) |
+| Audio buffers | 20 KB | I2S + LC3 ring buffers |
+| USB middleware | 8 KB | MIDI + bulk classes |
+| Wi-Fi buffers | 16 KB | 16 x 1500 byte packets |
+| Application | 30 KB | Task stacks, variables |
+| **Total** | **~204 KB** | PSoC Edge E82 has 5 MB |
+
+### Flash Usage (Estimated)
+
+| Component | Size |
+|-----------|------|
+| FreeRTOS | 20 KB |
+| BTSTACK + profiles | 200 KB |
+| liblc3 | 60 KB |
+| USB middleware | 30 KB |
+| WHD | 100 KB |
+| Application code | 120 KB |
+| **Total** | **~530 KB** |
 
 ## Documentation
 
-- [Architecture Design](docs/architecture.md) - Detailed system architecture
-- [Full Project Plan](docs/README.md) - Complete implementation plan and analysis
+- [Architecture Design](docs/architecture.md) - Detailed system architecture, data paths, state machines
+- [Project Plan & Analysis](docs/README.md) - Complete implementation status and gap analysis
+
+## API Examples
+
+### Start LE Audio Unicast Streaming
+
+```c
+#include "le_audio/le_audio_manager.h"
+
+le_audio_unicast_config_t config = {
+    .sample_rate = 48000,
+    .frame_duration_us = 10000,
+    .octets_per_frame = 100,
+    .direction = LE_AUDIO_DIR_BIDIRECTIONAL
+};
+
+le_audio_start_unicast(conn_handle, &config);
+```
+
+### Send MIDI over BLE
+
+```c
+#include "midi/midi_ble_service.h"
+
+midi_ble_send_note_on(0, 60, 100);      // Channel 0, Middle C, velocity 100
+midi_ble_send_control_change(0, 1, 64); // Channel 0, Mod wheel, value 64
+```
+
+### Send MIDI over USB
+
+```c
+#include "midi/midi_usb.h"
+
+midi_usb_send_note_on(0, 0, 60, 100);   // Cable 0, Channel 0, Note 60, Vel 100
+
+// Receive MIDI from USB (polling)
+midi_usb_event_t event;
+if (midi_usb_receive(&event) == 0) {
+    // Process received MIDI event
+}
+```
 
 ## Contributing
 
@@ -294,13 +387,14 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 
 - **Google** for the open-source [liblc3](https://github.com/google/liblc3) implementation
 - **Zephyr Project** for the comprehensive LE Audio stack reference
-- **Infineon** for the PSoC Edge and CYW55511 hardware platform
+- **Infineon** for the PSoC Edge and CYW55512 hardware platform
+- **Segger** for the emUSB-Device middleware
 - **Bluetooth SIG** for the LE Audio specifications
 
 ## References
 
 ### Infineon Documentation
-- [CYW55513 Documentation](https://documentation.infineon.com/cyw55513/docs/nhu1755169548502)
+- [CYW55512 Documentation](https://www.infineon.com/cms/en/product/wireless-connectivity/airoc-wi-fi-plus-bluetooth-combos/wi-fi-6-6e-802.11ax/)
 - [PSoC Edge Documentation](https://documentation.infineon.com/psocedge/docs/bwb1750411526047)
 - [BTSTACK API Reference](https://infineon.github.io/btstack/dual_mode/api_reference_manual/html/modules.html)
 
@@ -311,4 +405,4 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 
 ### Open Source References
 - [Zephyr LE Audio Architecture](https://docs.zephyrproject.org/latest/connectivity/bluetooth/api/audio/bluetooth-le-audio-arch.html)
-- [Auracast Technical Overview](https://www.bluetooth.com/wp-content/uploads/2024/05/2403_How_To_Auracast_Transmitter.pdf)
+- [Auracast Technical Overview](https://www.bluetooth.com/auracast/)
