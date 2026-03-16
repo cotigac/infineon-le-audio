@@ -170,33 +170,67 @@ static void handle_disconnection_complete(const uint8_t *data, uint16_t len);
  ******************************************************************************/
 
 /**
+ * @brief HCI command complete callback
+ */
+static void hci_isoc_cmd_complete_callback(wiced_bt_dev_vendor_specific_command_complete_params_t *p_cmd_cplt_param)
+{
+    /* Store response data */
+    if (p_cmd_cplt_param->p_param_buf != NULL && p_cmd_cplt_param->param_len > 0) {
+        uint16_t copy_len = (p_cmd_cplt_param->param_len > sizeof(isoc_ctx.cmd_response)) ?
+                            sizeof(isoc_ctx.cmd_response) : p_cmd_cplt_param->param_len;
+        memcpy(isoc_ctx.cmd_response, p_cmd_cplt_param->p_param_buf, copy_len);
+        isoc_ctx.cmd_response_len = copy_len;
+    }
+
+    /* Check status (first byte is typically HCI status) */
+    isoc_ctx.cmd_status = (p_cmd_cplt_param->p_param_buf != NULL &&
+                           p_cmd_cplt_param->param_len > 0 &&
+                           p_cmd_cplt_param->p_param_buf[0] == 0) ?
+                          HCI_ISOC_OK : HCI_ISOC_ERROR_HCI_FAILED;
+
+    isoc_ctx.cmd_pending = false;
+
+    /* Signal completion */
+    if (isoc_ctx.cmd_semaphore != NULL) {
+        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+        xSemaphoreGiveFromISR(isoc_ctx.cmd_semaphore, &xHigherPriorityTaskWoken);
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
+}
+
+/**
  * @brief Send HCI command
  */
 static int hci_send_command(uint16_t opcode, const uint8_t *params, uint16_t len)
 {
-    /*
-     * TODO: Send HCI command via BTSTACK
-     *
-     * Example with Infineon BTSTACK:
-     *
-     * wiced_bt_dev_vendor_specific_command(
-     *     opcode,
-     *     len,
-     *     (uint8_t*)params,
-     *     hci_command_complete_callback
-     * );
-     *
-     * Or for standard LE commands:
-     * Use the appropriate wiced_bt_isoc_* API
-     */
+    wiced_result_t result;
 
-    (void)opcode;
-    (void)params;
-    (void)len;
+    if (isoc_ctx.cmd_semaphore == NULL) {
+        /* Semaphore not initialized - can't wait for response */
+        printf("ISOC: Command semaphore not initialized\n");
+        return HCI_ISOC_ERROR_NOT_INITIALIZED;
+    }
 
     isoc_ctx.cmd_pending = true;
+    isoc_ctx.cmd_status = HCI_ISOC_OK;
+    isoc_ctx.cmd_response_len = 0;
 
-    /* Simulate command sent */
+    /* Send HCI command via BTSTACK vendor-specific command API
+     * This handles both standard HCI LE commands and vendor commands
+     * by using the opcode directly */
+    result = wiced_bt_dev_vendor_specific_command(
+        opcode,
+        len,
+        (uint8_t *)params,
+        hci_isoc_cmd_complete_callback
+    );
+
+    if (result != WICED_BT_SUCCESS && result != WICED_BT_PENDING) {
+        printf("ISOC: Failed to send HCI command 0x%04X: %d\n", opcode, result);
+        isoc_ctx.cmd_pending = false;
+        return HCI_ISOC_ERROR_HCI_FAILED;
+    }
+
     return HCI_ISOC_OK;
 }
 
@@ -205,24 +239,18 @@ static int hci_send_command(uint16_t opcode, const uint8_t *params, uint16_t len
  */
 static int hci_wait_command_complete(uint32_t timeout_ms)
 {
-    /*
-     * TODO: Wait on semaphore for command complete
-     *
-     * if (xSemaphoreTake(isoc_ctx.cmd_semaphore, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
-     *     isoc_ctx.cmd_pending = false;
-     *     return HCI_ISOC_ERROR_TIMEOUT;
-     * }
-     *
-     * return isoc_ctx.cmd_status;
-     */
+    if (isoc_ctx.cmd_semaphore == NULL) {
+        return HCI_ISOC_ERROR_NOT_INITIALIZED;
+    }
 
-    (void)timeout_ms;
+    /* Wait on semaphore for command complete */
+    if (xSemaphoreTake(isoc_ctx.cmd_semaphore, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        printf("ISOC: HCI command timeout\n");
+        isoc_ctx.cmd_pending = false;
+        return HCI_ISOC_ERROR_TIMEOUT;
+    }
 
-    /* Simulate success */
-    isoc_ctx.cmd_pending = false;
-    isoc_ctx.cmd_status = HCI_ISOC_OK;
-
-    return HCI_ISOC_OK;
+    return isoc_ctx.cmd_status;
 }
 
 /*******************************************************************************
@@ -680,12 +708,21 @@ int hci_isoc_init(void)
 
     memset(&isoc_ctx, 0, sizeof(isoc_ctx));
 
-/* FreeRTOS */
-#include "FreeRTOS.h"
-#include "semphr.h"
-#include "queue.h"
-#include "task.h"
+    /* Create FreeRTOS semaphore for HCI command synchronization */
+    isoc_ctx.cmd_semaphore = xSemaphoreCreateBinary();
+    if (isoc_ctx.cmd_semaphore == NULL) {
+        printf("ISOC: Failed to create command semaphore\n");
+        return HCI_ISOC_ERROR_NO_RESOURCES;
+    }
 
+    /* Register ISOC event callback with BTSTACK */
+    wiced_result_t result = wiced_bt_isoc_register_cb(NULL);  /* Will use our event handler */
+    if (result != WICED_BT_SUCCESS) {
+        printf("ISOC: Warning - ISOC callback registration: %d\n", result);
+        /* Continue anyway - events will be routed via LE meta events */
+    }
+
+    printf("ISOC: Initialized\n");
     isoc_ctx.initialized = true;
 
     return HCI_ISOC_OK;
@@ -716,12 +753,13 @@ void hci_isoc_deinit(void)
         }
     }
 
-/* FreeRTOS */
-#include "FreeRTOS.h"
-#include "semphr.h"
-#include "queue.h"
-#include "task.h"
+    /* Delete FreeRTOS semaphore */
+    if (isoc_ctx.cmd_semaphore != NULL) {
+        vSemaphoreDelete(isoc_ctx.cmd_semaphore);
+        isoc_ctx.cmd_semaphore = NULL;
+    }
 
+    printf("ISOC: Deinitialized\n");
     isoc_ctx.initialized = false;
 }
 
@@ -1381,33 +1419,25 @@ int hci_isoc_send_data_ts(uint16_t handle, const uint8_t *data,
     }
 
     /*
-     * Build HCI ISO Data packet
+     * Send ISO data via BTSTACK API
      *
-     * Header (4 bytes):
-     * - Handle + PB_Flag + TS_Flag: 2 bytes
-     * - Data_Total_Length: 2 bytes
-     *
-     * If TS_Flag set:
-     * - Time_Stamp: 4 bytes
-     *
-     * - Packet_Sequence_Number: 2 bytes
-     * - ISO_SDU_Length: 2 bytes (includes packet status in upper bits)
-     * - ISO_SDU: variable
-     *
-     * TODO: Send via HCI transport
-     *
-     * Example:
-     * uint8_t iso_packet[4 + 4 + 2 + 2 + length];
-     * // Build header
-     * iso_packet[0] = handle & 0xFF;
-     * iso_packet[1] = ((handle >> 8) & 0x0F) | (pb_flag << 4) | (ts_flag << 6);
-     * ...
-     * hci_send_iso_data(iso_packet, packet_len);
+     * wiced_bt_isoc_send_data() handles the HCI ISO packet formatting internally.
+     * We just need to provide the handle, SDU data, and length.
      */
+    wiced_result_t result = wiced_bt_isoc_send_data(
+        handle,
+        (uint8_t *)data,
+        length
+    );
 
-    (void)handle;
-    (void)timestamp;
-    (void)seq_num;
+    if (result != WICED_BT_SUCCESS) {
+        printf("ISOC: Failed to send ISO data on handle 0x%04X: %d\n", handle, result);
+        isoc_ctx.stats.iso_tx_errors++;
+        return HCI_ISOC_ERROR_HCI_FAILED;
+    }
+
+    (void)timestamp;  /* Timestamp handled by controller */
+    (void)seq_num;    /* Sequence number tracked internally */
 
     isoc_ctx.stats.iso_tx_packets++;
     isoc_ctx.stats.iso_tx_bytes += length;

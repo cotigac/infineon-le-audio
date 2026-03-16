@@ -68,13 +68,19 @@ typedef struct {
     uint16_t audio_context;         /**< Audio context bitmask */
     uint8_t num_subgroups;          /**< Number of subgroups */
     uint8_t num_bis_per_subgroup;   /**< BIS per subgroup */
-    uint32_t presentation_delay_us; /**< Presentation delay */
+    uint32_t presentation_delay_us; /**< Presentation delay in microseconds */
+    uint8_t target_latency_ms;      /**< Target latency in milliseconds */
+    uint8_t retransmissions;        /**< Number of retransmissions (RTN) */
 } le_audio_broadcast_config_t;
 
 /** Unicast configuration */
 typedef struct {
+    uint16_t conn_handle;           /**< ACL connection handle */
+    uint8_t ase_id;                 /**< ASE identifier on remote device */
     uint16_t audio_context;         /**< Audio context bitmask */
-    uint8_t target_latency;         /**< Target latency (low/balanced/high) */
+    uint8_t target_latency_ms;      /**< Target latency in milliseconds */
+    uint8_t retransmissions;        /**< Number of retransmissions (RTN) */
+    uint32_t presentation_delay_us; /**< Presentation delay in microseconds */
     bool bidirectional;             /**< Enable full-duplex */
 } le_audio_unicast_config_t;
 

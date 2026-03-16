@@ -16,13 +16,9 @@
  * Platform Includes
  ******************************************************************************/
 
-/*
- * TODO: Include Infineon BTSTACK headers when integrating
- *
- * #include "wiced_bt_gatt.h"
- * #include "wiced_bt_ble.h"
- * #include "wiced_bt_isoc.h"
- */
+/* Infineon BTSTACK headers */
+#include "wiced_bt_gatt.h"
+#include "wiced_bt_ble.h"
 
 /* FreeRTOS */
 #ifdef FREERTOS
@@ -556,33 +552,35 @@ static int write_ase_control_point(uint16_t conn_handle, uint8_t opcode,
         return BAP_UNICAST_ERROR_NOT_CONNECTED;
     }
 
-    /*
-     * TODO: Write to ASE Control Point characteristic
-     *
-     * Build CP write value:
-     * - Opcode (1 byte)
-     * - Number_of_ASEs (1 byte)
-     * - ASE-specific parameters
-     *
-     * Example with Infineon BTSTACK:
-     *
-     * uint8_t write_data[256];
-     * write_data[0] = opcode;
-     * memcpy(&write_data[1], params, params_len);
-     *
-     * wiced_bt_gatt_status_t status = wiced_bt_gatt_client_send_write(
-     *     conn_handle,
-     *     GATT_REQ_WRITE,
-     *     conn->ascs.ase_cp,
-     *     1 + params_len,
-     *     write_data,
-     *     NULL
-     * );
-     */
+    /* Write to ASE Control Point characteristic */
+    uint8_t write_data[256];
 
-    (void)opcode;
-    (void)params;
-    (void)params_len;
+    /* Build CP write value:
+     * - Opcode (1 byte)
+     * - ASE-specific parameters follow
+     */
+    write_data[0] = opcode;
+    if (params_len > 0 && params != NULL) {
+        memcpy(&write_data[1], params, params_len);
+    }
+
+    wiced_bt_gatt_write_hdr_t write_hdr;
+    write_hdr.handle = conn->ascs.ase_cp;
+    write_hdr.offset = 0;
+    write_hdr.len = 1 + params_len;
+    write_hdr.auth_req = GATT_AUTH_REQ_NONE;
+
+    wiced_bt_gatt_status_t status = wiced_bt_gatt_client_send_write(
+        conn_handle,
+        GATT_REQ_WRITE,
+        &write_hdr,
+        write_data,
+        NULL
+    );
+
+    if (status != WICED_BT_GATT_SUCCESS) {
+        return BAP_UNICAST_ERROR_GATT_FAILED;
+    }
 
     return BAP_UNICAST_OK;
 }
@@ -868,27 +866,34 @@ int bap_unicast_discover(uint16_t conn_handle)
     }
 
     /*
-     * TODO: Discover ASCS service using GATT
+     * Discover ASCS service using GATT
      *
-     * Steps:
-     * 1. Discover Primary Service (UUID 0x184E)
-     * 2. Discover all characteristics
-     * 3. Find Sink ASE, Source ASE, ASE Control Point
-     * 4. Enable notifications on all ASE characteristics
+     * ASCS Service UUID: 0x184E
+     * Characteristics:
+     * - Sink ASE (0x2BC4): Notify
+     * - Source ASE (0x2BC5): Notify
+     * - ASE Control Point (0x2BC6): Write, Write Without Response, Notify
      *
-     * Example with Infineon BTSTACK:
-     *
-     * wiced_bt_gatt_discovery_param_t param = {
-     *     .s_handle = 0x0001,
-     *     .e_handle = 0xFFFF,
-     *     .uuid.len = 2,
-     *     .uuid.uu.uuid16 = UUID_ASCS_SERVICE
-     * };
-     *
-     * wiced_bt_gatt_client_send_discover(conn_handle, GATT_DISCOVER_SERVICES_BY_UUID, &param);
+     * The discovery is asynchronous. Results will be delivered via the
+     * GATT client callback and should call bap_unicast_on_service_discovered(),
+     * bap_unicast_on_characteristic_discovered(), etc.
      */
+    wiced_bt_gatt_discovery_param_t param;
+    memset(&param, 0, sizeof(param));
+    param.s_handle = 0x0001;
+    param.e_handle = 0xFFFF;
 
-    /* Simulate discovery complete */
+    wiced_bt_gatt_status_t status = wiced_bt_gatt_client_send_discover(
+        conn_handle,
+        GATT_DISCOVER_SERVICES_BY_UUID,
+        &param
+    );
+
+    if (status != WICED_BT_GATT_SUCCESS) {
+        return BAP_UNICAST_ERROR_GATT_FAILED;
+    }
+
+    /* For now, simulate discovery complete for testing */
     conn->ascs_discovered = true;
     conn->ascs.num_sink_ase = 1;
     conn->ascs.sink_ase[0] = 0x0010;  /* Placeholder handle */

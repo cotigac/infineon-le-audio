@@ -36,6 +36,7 @@
 #include "../bluetooth/hci_isoc.h"
 #include "pacs.h"
 #include "bap_unicast.h"
+#include "bap_broadcast.h"
 
 /*******************************************************************************
  * Private Definitions
@@ -419,11 +420,14 @@ static int decode_audio_frame(const uint8_t *lc3_in, uint16_t lc3_len,
 
 /**
  * @brief Configure unicast audio stream
- *
- * TODO: Implement using Infineon BTSTACK BAP API
  */
 static int unicast_configure(const le_audio_unicast_config_t *config)
 {
+    int result;
+    cig_config_t cig_config;
+    bap_codec_config_request_t codec_req;
+    bap_qos_config_request_t qos_req;
+
     if (config == NULL) {
         return -1;
     }
@@ -431,35 +435,72 @@ static int unicast_configure(const le_audio_unicast_config_t *config)
     /* Store configuration */
     g_le_audio_ctx.mode_state.unicast.config = *config;
 
-    /*
-     * TODO: Implement BAP Unicast Client configuration
-     *
-     * Steps:
-     * 1. Create CIG (Connected Isochronous Group)
-     *    - wiced_bt_isoc_central_create_cig()
-     *
-     * 2. Configure codec via ASCS (Audio Stream Control Service)
-     *    - Send Config Codec operation to ASE
-     *    - Set LC3 configuration (sample rate, frame duration, octets)
-     *
-     * 3. Configure QoS
-     *    - Send Config QoS operation to ASE
-     *    - Set SDU interval, framing, latency, retransmissions
-     *
-     * Example CIG parameters:
-     *
-     * wiced_bt_isoc_cig_param_t cig_param = {
-     *     .cig_id = 0,
-     *     .sdu_interval_c_to_p = 10000,  // 10ms in microseconds
-     *     .sdu_interval_p_to_c = 10000,
-     *     .worst_case_sca = 0,
-     *     .packing = 0,  // Sequential
-     *     .framing = 0,  // Unframed
-     *     .max_transport_latency_c_to_p = 40,  // 40ms
-     *     .max_transport_latency_p_to_c = 40,
-     *     .cis_count = 1,
-     * };
-     */
+    /* Step 1: Create CIG (Connected Isochronous Group) */
+    memset(&cig_config, 0, sizeof(cig_config_t));
+    cig_config.cig_id = 0;
+    cig_config.sdu_interval_c_to_p = g_le_audio_ctx.codec_config.frame_duration_us;
+    cig_config.sdu_interval_p_to_c = g_le_audio_ctx.codec_config.frame_duration_us;
+    cig_config.sca = 0;  /* 251-500 ppm */
+    cig_config.packing = HCI_ISOC_PACKING_SEQUENTIAL;
+    cig_config.framing = HCI_ISOC_FRAMING_UNFRAMED;
+    cig_config.max_transport_latency_c_to_p = config->target_latency_ms;
+    cig_config.max_transport_latency_p_to_c = config->target_latency_ms;
+    cig_config.num_cis = 1;
+
+    /* Configure CIS within the CIG */
+    cig_config.cis[0].cis_id = 0;
+    cig_config.cis[0].max_sdu_c_to_p = g_le_audio_ctx.codec_config.octets_per_frame;
+    cig_config.cis[0].max_sdu_p_to_c = config->bidirectional ?
+        g_le_audio_ctx.codec_config.octets_per_frame : 0;
+    cig_config.cis[0].phy_c_to_p = HCI_ISOC_PHY_2M;
+    cig_config.cis[0].phy_p_to_c = HCI_ISOC_PHY_2M;
+    cig_config.cis[0].rtn_c_to_p = config->retransmissions;
+    cig_config.cis[0].rtn_p_to_c = config->retransmissions;
+
+    result = hci_isoc_set_cig_params(&cig_config);
+    if (result != HCI_ISOC_OK) {
+        notify_error(result);
+        return -2;
+    }
+
+    g_le_audio_ctx.mode_state.unicast.cig_id = cig_config.cig_id;
+
+    /* Step 2: Configure codec via BAP (if connected) */
+    if (config->conn_handle != 0) {
+        memset(&codec_req, 0, sizeof(bap_codec_config_request_t));
+        codec_req.ase_id = config->ase_id;
+        codec_req.target_latency = (config->target_latency_ms <= 20) ?
+            BAP_TARGET_LATENCY_LOW : BAP_TARGET_LATENCY_BALANCED;
+        codec_req.target_phy = BAP_TARGET_PHY_2M;
+        codec_req.codec_config.coding_format = 0x06;  /* LC3 */
+        codec_req.codec_config.company_id = 0x0000;
+        codec_req.codec_config.vendor_codec_id = 0x0000;
+
+        result = bap_unicast_config_codec(config->conn_handle, &codec_req);
+        if (result != BAP_UNICAST_OK) {
+            notify_error(result);
+            return -3;
+        }
+
+        /* Step 3: Configure QoS */
+        memset(&qos_req, 0, sizeof(bap_qos_config_request_t));
+        qos_req.ase_id = config->ase_id;
+        qos_req.qos_config.cig_id = cig_config.cig_id;
+        qos_req.qos_config.cis_id = 0;
+        qos_req.qos_config.sdu_interval = g_le_audio_ctx.codec_config.frame_duration_us;
+        qos_req.qos_config.framing = 0;
+        qos_req.qos_config.phy = 0x02;  /* 2M PHY */
+        qos_req.qos_config.max_sdu = g_le_audio_ctx.codec_config.octets_per_frame;
+        qos_req.qos_config.retransmission_number = config->retransmissions;
+        qos_req.qos_config.max_transport_latency = config->target_latency_ms;
+        qos_req.qos_config.presentation_delay = config->presentation_delay_us;
+
+        result = bap_unicast_config_qos(config->conn_handle, &qos_req);
+        if (result != BAP_UNICAST_OK) {
+            notify_error(result);
+            return -4;
+        }
+    }
 
     set_state(LE_AUDIO_STATE_CONFIGURED);
 
@@ -471,33 +512,87 @@ static int unicast_configure(const le_audio_unicast_config_t *config)
  */
 static int unicast_enable(void)
 {
-    /*
-     * TODO: Implement BAP Enable operation
-     *
-     * Steps:
-     * 1. Send Enable operation to ASE
-     * 2. Establish CIS connection
-     *    - wiced_bt_isoc_central_create_cis()
-     * 3. Set up ISO data path
-     *    - wiced_bt_isoc_setup_data_path()
-     * 4. Start streaming
-     *
-     * Example CIS parameters:
-     *
-     * wiced_bt_isoc_cis_param_t cis_param = {
-     *     .cis_id = 0,
-     *     .max_sdu_c_to_p = 100,  // octets_per_frame
-     *     .max_sdu_p_to_c = 100,
-     *     .phy_c_to_p = 2,  // 2M PHY
-     *     .phy_p_to_c = 2,
-     *     .rtn_c_to_p = 2,  // Retransmissions
-     *     .rtn_p_to_c = 2,
-     * };
-     */
+    int result;
+    le_audio_unicast_config_t *config = &g_le_audio_ctx.mode_state.unicast.config;
+    bap_enable_request_t enable_req;
+    uint16_t cis_handle;
+    uint16_t acl_handle;
 
     set_state(LE_AUDIO_STATE_ENABLING);
 
-    /* Simulate successful enable for now */
+    /* Step 1: Send Enable operation to ASE via BAP */
+    if (config->conn_handle != 0) {
+        memset(&enable_req, 0, sizeof(bap_enable_request_t));
+        enable_req.ase_id = config->ase_id;
+        /* Set streaming audio context in metadata */
+        enable_req.metadata[0] = 0x03;  /* Length */
+        enable_req.metadata[1] = 0x02;  /* Streaming Audio Contexts type */
+        enable_req.metadata[2] = 0x04;  /* Media context */
+        enable_req.metadata[3] = 0x00;
+        enable_req.metadata_len = 4;
+
+        result = bap_unicast_enable(config->conn_handle, &enable_req);
+        if (result != BAP_UNICAST_OK) {
+            set_state(LE_AUDIO_STATE_CONFIGURED);
+            notify_error(result);
+            return -1;
+        }
+    }
+
+    /* Step 2: Establish CIS connection */
+    cis_handle = 0x0000;  /* Will be assigned by controller */
+    acl_handle = config->conn_handle;
+
+    result = hci_isoc_create_cis(g_le_audio_ctx.mode_state.unicast.cig_id,
+                                  1, &cis_handle, &acl_handle);
+    if (result != HCI_ISOC_OK) {
+        set_state(LE_AUDIO_STATE_CONFIGURED);
+        notify_error(result);
+        return -2;
+    }
+
+    /* Store CIS handle in first device slot */
+    g_le_audio_ctx.mode_state.unicast.devices[0].conn_handle = config->conn_handle;
+    g_le_audio_ctx.mode_state.unicast.devices[0].cis_handle = cis_handle;
+    g_le_audio_ctx.mode_state.unicast.devices[0].ase_id = config->ase_id;
+    g_le_audio_ctx.mode_state.unicast.devices[0].active = true;
+    g_le_audio_ctx.mode_state.unicast.num_devices = 1;
+
+    /* Step 3: Set up ISO data path for TX (Host to Controller) */
+    result = hci_isoc_setup_data_path(cis_handle,
+                                       HCI_ISOC_DATA_PATH_INPUT,
+                                       HCI_ISOC_DATA_PATH_HCI,
+                                       NULL, 0, NULL, 0);
+    if (result != HCI_ISOC_OK) {
+        hci_isoc_disconnect_cis(cis_handle, 0x13);  /* Remote user terminated */
+        set_state(LE_AUDIO_STATE_CONFIGURED);
+        notify_error(result);
+        return -3;
+    }
+
+    /* Step 4: Set up ISO data path for RX if bidirectional */
+    if (config->bidirectional) {
+        result = hci_isoc_setup_data_path(cis_handle,
+                                           HCI_ISOC_DATA_PATH_OUTPUT,
+                                           HCI_ISOC_DATA_PATH_HCI,
+                                           NULL, 0, NULL, 0);
+        if (result != HCI_ISOC_OK) {
+            hci_isoc_remove_data_path(cis_handle, HCI_ISOC_DATA_PATH_INPUT);
+            hci_isoc_disconnect_cis(cis_handle, 0x13);
+            set_state(LE_AUDIO_STATE_CONFIGURED);
+            notify_error(result);
+            return -4;
+        }
+    }
+
+    /* Step 5: Signal receiver start ready */
+    if (config->conn_handle != 0) {
+        result = bap_unicast_receiver_start_ready(config->conn_handle, config->ase_id);
+        if (result != BAP_UNICAST_OK) {
+            /* Non-fatal, continue anyway */
+        }
+    }
+
     set_state(LE_AUDIO_STATE_STREAMING);
     notify_event(LE_AUDIO_EVENT_STREAM_STARTED);
 
@@ -509,18 +604,42 @@ static int unicast_enable(void)
  */
 static int unicast_disable(void)
 {
-    /*
-     * TODO: Implement BAP Disable operation
-     *
-     * Steps:
-     * 1. Send Disable operation to ASE
-     * 2. Remove ISO data path
-     *    - wiced_bt_isoc_remove_data_path()
-     * 3. Disconnect CIS
-     *    - wiced_bt_isoc_disconnect_cis()
-     */
+    le_audio_unicast_config_t *config = &g_le_audio_ctx.mode_state.unicast.config;
+    unicast_device_t *device;
+    int i;
 
     set_state(LE_AUDIO_STATE_DISABLING);
+
+    /* Process all connected devices */
+    for (i = 0; i < g_le_audio_ctx.mode_state.unicast.num_devices; i++) {
+        device = &g_le_audio_ctx.mode_state.unicast.devices[i];
+
+        if (!device->active) {
+            continue;
+        }
+
+        /* Step 1: Send Disable operation to ASE */
+        if (device->conn_handle != 0) {
+            bap_unicast_disable(device->conn_handle, device->ase_id);
+        }
+
+        /* Step 2: Remove ISO data paths */
+        hci_isoc_remove_data_path(device->cis_handle, HCI_ISOC_DATA_PATH_INPUT);
+        if (config->bidirectional) {
+            hci_isoc_remove_data_path(device->cis_handle, HCI_ISOC_DATA_PATH_OUTPUT);
+        }
+
+        /* Step 3: Disconnect CIS */
+        hci_isoc_disconnect_cis(device->cis_handle, 0x13);  /* Remote user terminated */
+
+        /* Step 4: Signal receiver stop ready */
+        if (device->conn_handle != 0) {
+            bap_unicast_receiver_stop_ready(device->conn_handle, device->ase_id);
+        }
+
+        device->active = false;
+        device->cis_handle = 0;
+    }
 
     notify_event(LE_AUDIO_EVENT_STREAM_STOPPED);
     set_state(LE_AUDIO_STATE_CONFIGURED);
@@ -533,15 +652,22 @@ static int unicast_disable(void)
  */
 static int unicast_release(void)
 {
-    /*
-     * TODO: Implement BAP Release operation
-     *
-     * Steps:
-     * 1. Send Release operation to ASE
-     * 2. Remove CIG
-     *    - wiced_bt_isoc_central_remove_cig()
-     */
+    unicast_device_t *device;
+    int i;
 
+    /* Step 1: Send Release operation to all ASEs */
+    for (i = 0; i < g_le_audio_ctx.mode_state.unicast.num_devices; i++) {
+        device = &g_le_audio_ctx.mode_state.unicast.devices[i];
+
+        if (device->conn_handle != 0) {
+            bap_unicast_release(device->conn_handle, device->ase_id);
+        }
+    }
+
+    /* Step 2: Remove CIG */
+    hci_isoc_remove_cig(g_le_audio_ctx.mode_state.unicast.cig_id);
+
+    /* Clear state */
     memset(&g_le_audio_ctx.mode_state.unicast, 0, sizeof(unicast_state_t));
     set_state(LE_AUDIO_STATE_IDLE);
 
@@ -554,11 +680,13 @@ static int unicast_release(void)
 
 /**
  * @brief Configure broadcast audio (Auracast)
- *
- * TODO: Port from Zephyr BAP broadcast source implementation
  */
 static int broadcast_configure(const le_audio_broadcast_config_t *config)
 {
+    int result;
+    bap_broadcast_config_t bap_config;
+    int sg, b;
+
     if (config == NULL) {
         return -1;
     }
@@ -571,59 +699,83 @@ static int broadcast_configure(const le_audio_broadcast_config_t *config)
     /* Store configuration */
     g_le_audio_ctx.mode_state.broadcast.config = *config;
 
-    /*
-     * TODO: Implement BAP Broadcast Source configuration
-     *
-     * This requires porting from Zephyr's bap_broadcast_source.c
-     *
-     * Steps:
-     * 1. Create BASE (Broadcast Audio Source Endpoint) structure
-     *    - Presentation delay
-     *    - Codec configuration (LC3)
-     *    - Subgroup metadata
-     *    - BIS configuration
-     *
-     * 2. Set up periodic advertising
-     *    - Extended advertising with broadcast audio announcement
-     *    - Periodic advertising with BASE
-     *
-     * 3. Create BIG (Broadcast Isochronous Group)
-     *    - wiced_bt_isoc_create_big() or HCI_LE_Create_BIG
-     *
-     * BASE structure example:
-     *
-     * struct bt_bap_base {
-     *     uint32_t presentation_delay;
-     *     uint8_t num_subgroups;
-     *     struct bt_bap_base_subgroup {
-     *         uint8_t codec_id[5];      // LC3 codec ID
-     *         uint8_t codec_config[];   // Sample rate, frame duration, etc.
-     *         uint8_t metadata[];       // Audio context, language, etc.
-     *         uint8_t num_bis;
-     *         struct bt_bap_base_bis {
-     *             uint8_t index;
-     *             uint8_t codec_config[];  // Per-BIS configuration
-     *         } bis[];
-     *     } subgroups[];
-     * };
-     *
-     * HCI_LE_Create_BIG parameters:
-     *
-     * typedef struct {
-     *     uint8_t big_handle;
-     *     uint8_t advertising_handle;
-     *     uint8_t num_bis;
-     *     uint32_t sdu_interval;        // 10000 (10ms)
-     *     uint16_t max_sdu;             // 100 (octets_per_frame)
-     *     uint16_t max_transport_latency;
-     *     uint8_t rtn;                  // Retransmissions
-     *     uint8_t phy;                  // 2M PHY
-     *     uint8_t packing;              // Sequential
-     *     uint8_t framing;              // Unframed
-     *     uint8_t encryption;
-     *     uint8_t broadcast_code[16];   // Optional encryption key
-     * } hci_le_create_big_params_t;
-     */
+    /* Build BAP broadcast configuration */
+    memset(&bap_config, 0, sizeof(bap_broadcast_config_t));
+
+    /* Generate Broadcast_ID if not provided */
+    if (config->broadcast_id[0] == 0 && config->broadcast_id[1] == 0 &&
+        config->broadcast_id[2] == 0) {
+        bap_broadcast_generate_id(bap_config.broadcast_id);
+    } else {
+        memcpy(bap_config.broadcast_id, config->broadcast_id, 3);
+    }
+
+    /* Set broadcast name */
+    strncpy(bap_config.broadcast_name, config->broadcast_name,
+            BAP_BROADCAST_MAX_NAME_LEN - 1);
+
+    /* Encryption settings */
+    bap_config.encrypted = config->encrypted;
+    if (config->encrypted) {
+        memcpy(bap_config.broadcast_code, config->broadcast_code,
+               BAP_BROADCAST_CODE_SIZE);
+    }
+
+    /* Timing parameters */
+    bap_config.presentation_delay_us = config->presentation_delay_us;
+    bap_config.max_transport_latency_ms = config->target_latency_ms;
+    bap_config.rtn = config->retransmissions;
+    bap_config.phy = 0x02;  /* 2M PHY */
+
+    /* Advertising parameters */
+    bap_config.adv_interval_min = 160;  /* 100ms in 0.625ms units */
+    bap_config.adv_interval_max = 160;
+    bap_config.tx_power = 0;
+
+    /* Configure subgroups */
+    bap_config.num_subgroups = config->num_subgroups;
+    for (sg = 0; sg < config->num_subgroups && sg < BAP_BROADCAST_MAX_SUBGROUPS; sg++) {
+        bap_subgroup_config_t *subgroup = &bap_config.subgroups[sg];
+
+        /* LC3 codec configuration */
+        subgroup->codec_config.sampling_freq =
+            bap_broadcast_sample_rate_to_lc3(g_le_audio_ctx.codec_config.sample_rate);
+        subgroup->codec_config.frame_duration =
+            (g_le_audio_ctx.codec_config.frame_duration_us == 7500) ?
+            BAP_LC3_DURATION_7_5MS : BAP_LC3_DURATION_10MS;
+        subgroup->codec_config.octets_per_frame =
+            g_le_audio_ctx.codec_config.octets_per_frame;
+        subgroup->codec_config.frames_per_sdu = 1;
+
+        /* Audio context and language */
+        subgroup->audio_context = config->audio_context;
+        strncpy(subgroup->language, "eng", sizeof(subgroup->language) - 1);
+
+        /* Configure BIS within subgroup */
+        subgroup->num_bis = config->num_bis_per_subgroup;
+        for (b = 0; b < config->num_bis_per_subgroup && b < BAP_BROADCAST_MAX_BIS; b++) {
+            subgroup->bis[b].bis_index = (uint8_t)(b + 1);
+            /* Stereo: Left for first BIS, Right for second */
+            if (config->num_bis_per_subgroup >= 2) {
+                subgroup->bis[b].audio_location = (b == 0) ?
+                    BAP_AUDIO_LOCATION_FRONT_LEFT : BAP_AUDIO_LOCATION_FRONT_RIGHT;
+            } else {
+                subgroup->bis[b].audio_location = BAP_AUDIO_LOCATION_MONO;
+            }
+        }
+    }
+
+    /* Configure BAP broadcast source */
+    result = bap_broadcast_configure(&bap_config);
+    if (result != BAP_BROADCAST_OK) {
+        notify_error(result);
+        return -3;
+    }
+
+    /* Store BIG handle (will be assigned when started) */
+    g_le_audio_ctx.mode_state.broadcast.big_handle = 0;
+    g_le_audio_ctx.mode_state.broadcast.num_bis =
+        config->num_subgroups * config->num_bis_per_subgroup;
 
     set_state(LE_AUDIO_STATE_CONFIGURED);
 
@@ -635,28 +787,52 @@ static int broadcast_configure(const le_audio_broadcast_config_t *config)
  */
 static int broadcast_enable(void)
 {
-    /*
-     * TODO: Implement broadcast enable
-     *
-     * Steps:
-     * 1. Start extended advertising (broadcast audio announcement)
-     * 2. Start periodic advertising (BASE data)
-     * 3. Create BIG
-     * 4. Set up ISO data path for each BIS
-     */
+    int result;
+    bap_broadcast_info_t info;
+    int i;
 
     set_state(LE_AUDIO_STATE_ENABLING);
 
     /*
-     * TODO: Wait for BIG creation complete callback
-     *
-     * On HCI_LE_BIG_Complete event:
-     * - Store BIG handle and BIS handles
-     * - Set up ISO data paths
-     * - Transition to STREAMING state
+     * Step 1-3: Start extended advertising, periodic advertising, and create BIG
+     * bap_broadcast_start() handles all of this internally
      */
+    result = bap_broadcast_start();
+    if (result != BAP_BROADCAST_OK) {
+        set_state(LE_AUDIO_STATE_CONFIGURED);
+        notify_error(result);
+        return -1;
+    }
 
-    /* Simulate successful enable for now */
+    /* Get broadcast info with BIG handle and BIS handles */
+    result = bap_broadcast_get_info(&info);
+    if (result != BAP_BROADCAST_OK) {
+        bap_broadcast_stop();
+        set_state(LE_AUDIO_STATE_CONFIGURED);
+        notify_error(result);
+        return -2;
+    }
+
+    /* Store BIG and BIS handles */
+    g_le_audio_ctx.mode_state.broadcast.big_handle = info.big_handle;
+    g_le_audio_ctx.mode_state.broadcast.num_bis = info.num_bis;
+
+    for (i = 0; i < info.num_bis && i < LE_AUDIO_MAX_BIS; i++) {
+        g_le_audio_ctx.mode_state.broadcast.bis[i].bis_index = (uint8_t)(i + 1);
+        g_le_audio_ctx.mode_state.broadcast.bis[i].bis_handle = info.bis_handles[i];
+        g_le_audio_ctx.mode_state.broadcast.bis[i].active = true;
+
+        /* Step 4: Set up ISO data path for each BIS (TX direction) */
+        result = hci_isoc_setup_data_path(info.bis_handles[i],
+                                           HCI_ISOC_DATA_PATH_INPUT,
+                                           HCI_ISOC_DATA_PATH_HCI,
+                                           NULL, 0, NULL, 0);
+        if (result != HCI_ISOC_OK) {
+            /* Non-fatal, log but continue */
+            g_le_audio_ctx.mode_state.broadcast.bis[i].active = false;
+        }
+    }
+
     g_le_audio_ctx.mode_state.broadcast.advertising = true;
     set_state(LE_AUDIO_STATE_STREAMING);
     notify_event(LE_AUDIO_EVENT_STREAM_STARTED);
@@ -669,19 +845,27 @@ static int broadcast_enable(void)
  */
 static int broadcast_disable(void)
 {
-    /*
-     * TODO: Implement broadcast disable
-     *
-     * Steps:
-     * 1. Terminate BIG
-     *    - wiced_bt_isoc_terminate_big() or HCI_LE_Terminate_BIG
-     * 2. Stop periodic advertising
-     * 3. Stop extended advertising
-     */
+    int i;
 
     set_state(LE_AUDIO_STATE_DISABLING);
 
+    /* Step 1: Remove ISO data paths for all BIS */
+    for (i = 0; i < g_le_audio_ctx.mode_state.broadcast.num_bis; i++) {
+        bis_stream_t *bis = &g_le_audio_ctx.mode_state.broadcast.bis[i];
+        if (bis->active && bis->bis_handle != 0) {
+            hci_isoc_remove_data_path(bis->bis_handle, HCI_ISOC_DATA_PATH_INPUT);
+            bis->active = false;
+        }
+    }
+
+    /*
+     * Step 2-3: Terminate BIG, stop periodic advertising, stop extended advertising
+     * bap_broadcast_stop() handles all of this internally
+     */
+    bap_broadcast_stop();
+
     g_le_audio_ctx.mode_state.broadcast.advertising = false;
+    g_le_audio_ctx.mode_state.broadcast.big_handle = 0;
 
     notify_event(LE_AUDIO_EVENT_STREAM_STOPPED);
     set_state(LE_AUDIO_STATE_CONFIGURED);
@@ -695,23 +879,28 @@ static int broadcast_disable(void)
 static int broadcast_update_base(const char *name, uint16_t context)
 {
     le_audio_broadcast_config_t *config = &g_le_audio_ctx.mode_state.broadcast.config;
+    int result = 0;
 
     if (name != NULL) {
         strncpy(config->broadcast_name, name, sizeof(config->broadcast_name) - 1);
         config->broadcast_name[sizeof(config->broadcast_name) - 1] = '\0';
+
+        /* Update broadcast name in extended advertising data */
+        result = bap_broadcast_update_name(name);
+        if (result != BAP_BROADCAST_OK) {
+            return result;
+        }
     }
 
     if (context != 0) {
         config->audio_context = context;
-    }
 
-    /*
-     * TODO: Update periodic advertising data with new BASE
-     *
-     * This requires updating the periodic advertising data while
-     * broadcast is active. The BASE structure contains the metadata
-     * that receivers use to understand the broadcast content.
-     */
+        /* Update streaming context in periodic advertising BASE */
+        result = bap_broadcast_update_context(0, context);  /* Subgroup 0 */
+        if (result != BAP_BROADCAST_OK) {
+            return result;
+        }
+    }
 
     return 0;
 }
@@ -722,38 +911,26 @@ static int broadcast_update_base(const char *name, uint16_t context)
 
 /**
  * @brief Send SDU over isochronous channel
- *
- * TODO: Implement using Infineon BTSTACK ISOC API
  */
 static int isoc_send_sdu(uint16_t handle, const uint8_t *data, uint16_t length,
                          uint32_t timestamp, uint8_t seq_num)
 {
-    (void)handle;
-    (void)data;
-    (void)length;
-    (void)timestamp;
-    (void)seq_num;
+    int result;
 
-    /*
-     * TODO: Implement HCI ISOC data transmission
-     *
-     * For CIS (unicast):
-     *   wiced_bt_isoc_write_sdu(handle, data, length, timestamp);
-     *
-     * For BIS (broadcast):
-     *   wiced_bt_isoc_write_big_sdu(big_handle, bis_index, data, length, timestamp);
-     *
-     * The timestamp should be synchronized with the ISO interval.
-     * The sequence number is used for packet ordering.
-     *
-     * HCI ISO data packet format:
-     * - Connection handle (12 bits) + PB flag (2 bits) + TS flag (1 bit)
-     * - Data length (14 bits) + RFU (2 bits)
-     * - Timestamp (optional, 4 bytes)
-     * - Packet sequence number (2 bytes)
-     * - ISO SDU length (2 bytes) + RFU
-     * - ISO SDU data
-     */
+    if (data == NULL || length == 0) {
+        return -1;
+    }
+
+    if (handle == HCI_ISOC_INVALID_HANDLE) {
+        return -2;
+    }
+
+    /* Send ISO data with timestamp and sequence number */
+    result = hci_isoc_send_data_ts(handle, data, length, timestamp, seq_num);
+    if (result != HCI_ISOC_OK) {
+        g_le_audio_ctx.encode_errors++;
+        return result;
+    }
 
     return 0;
 }
@@ -761,12 +938,13 @@ static int isoc_send_sdu(uint16_t handle, const uint8_t *data, uint16_t length,
 /**
  * @brief Callback for received ISOC data
  *
- * TODO: Register with Infineon BTSTACK ISOC layer
+ * Called from HCI ISOC layer when audio data is received.
  */
 static void isoc_rx_callback(uint16_t handle, const uint8_t *data,
                              uint16_t length, uint32_t timestamp)
 {
     lc3_frame_t frame;
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
     (void)handle;
 
@@ -794,13 +972,76 @@ static void isoc_rx_callback(uint16_t handle, const uint8_t *data,
         g_le_audio_ctx.frames_received++;
     }
 
-    /*
-     * TODO: Signal FreeRTOS task that new frame is available
-     *
-     * BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-     * xQueueSendFromISR(g_le_audio_ctx.rx_queue_handle, &frame, &xHigherPriorityTaskWoken);
-     * portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-     */
+    /* Signal FreeRTOS task that new frame is available via queue */
+    if (g_le_audio_ctx.rx_queue_handle != NULL) {
+        xQueueSendFromISR(g_le_audio_ctx.rx_queue_handle, &frame, &xHigherPriorityTaskWoken);
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
+}
+
+/*******************************************************************************
+ * HCI ISOC Event Handler
+ ******************************************************************************/
+
+/**
+ * @brief Handle HCI ISOC events
+ */
+static void le_audio_isoc_event_handler(const hci_isoc_event_t *event, void *user_data)
+{
+    (void)user_data;
+
+    if (event == NULL) {
+        return;
+    }
+
+    switch (event->type) {
+        case HCI_ISOC_EVENT_CIS_ESTABLISHED:
+            /* CIS connection established - update device info */
+            if (g_le_audio_ctx.mode == LE_AUDIO_MODE_UNICAST_SOURCE ||
+                g_le_audio_ctx.mode == LE_AUDIO_MODE_UNICAST_DUPLEX) {
+                notify_event(LE_AUDIO_EVENT_STATE_CHANGED);
+            }
+            break;
+
+        case HCI_ISOC_EVENT_CIS_DISCONNECTED:
+            /* CIS disconnected - handle cleanup */
+            if (g_le_audio_ctx.state == LE_AUDIO_STATE_STREAMING) {
+                /* Unexpected disconnect - notify error */
+                notify_error(HCI_ISOC_ERROR_COMMAND_FAILED);
+            }
+            break;
+
+        case HCI_ISOC_EVENT_BIG_CREATED:
+            /* BIG created successfully - store info */
+            if (g_le_audio_ctx.mode == LE_AUDIO_MODE_BROADCAST_SOURCE) {
+                g_le_audio_ctx.mode_state.broadcast.big_handle =
+                    event->data.big_info.big_handle;
+            }
+            break;
+
+        case HCI_ISOC_EVENT_BIG_TERMINATED:
+            /* BIG terminated */
+            if (g_le_audio_ctx.mode == LE_AUDIO_MODE_BROADCAST_SOURCE) {
+                g_le_audio_ctx.mode_state.broadcast.big_handle = 0;
+                g_le_audio_ctx.mode_state.broadcast.advertising = false;
+            }
+            break;
+
+        case HCI_ISOC_EVENT_RX_DATA:
+            /* Received ISO data - forward to callback */
+            isoc_rx_callback(event->data.rx_data.handle,
+                            event->data.rx_data.data,
+                            event->data.rx_data.sdu_length,
+                            event->data.rx_data.timestamp);
+            break;
+
+        case HCI_ISOC_EVENT_ERROR:
+            notify_error(event->data.error_code);
+            break;
+
+        default:
+            break;
+    }
 }
 
 /*******************************************************************************
@@ -870,13 +1111,47 @@ int le_audio_init(const le_audio_codec_config_t *codec_config)
         return -6;  /* FreeRTOS resource allocation failed */
     }
 
-    /*
-     * TODO: Initialize Bluetooth stack integration
-     *
-     * - Register ISOC callbacks
-     * - Initialize BAP profiles
-     * - Set up PACS (Published Audio Capabilities Service)
-     */
+    /* Initialize HCI ISOC module */
+    result = hci_isoc_init();
+    if (result != HCI_ISOC_OK) {
+        lc3_wrapper_deinit(g_le_audio_ctx.lc3_ctx);
+        vQueueDelete(g_le_audio_ctx.tx_queue_handle);
+        vQueueDelete(g_le_audio_ctx.rx_queue_handle);
+        vSemaphoreDelete(g_le_audio_ctx.state_mutex);
+        return -7;
+    }
+
+    /* Register ISOC callback for RX data */
+    hci_isoc_register_callback(le_audio_isoc_event_handler, NULL);
+
+    /* Initialize BAP Unicast profile */
+    result = bap_unicast_init();
+    if (result != BAP_UNICAST_OK) {
+        hci_isoc_deinit();
+        lc3_wrapper_deinit(g_le_audio_ctx.lc3_ctx);
+        vQueueDelete(g_le_audio_ctx.tx_queue_handle);
+        vQueueDelete(g_le_audio_ctx.rx_queue_handle);
+        vSemaphoreDelete(g_le_audio_ctx.state_mutex);
+        return -8;
+    }
+
+    /* Initialize BAP Broadcast profile (Auracast) */
+    result = bap_broadcast_init();
+    if (result != BAP_BROADCAST_OK) {
+        bap_unicast_deinit();
+        hci_isoc_deinit();
+        lc3_wrapper_deinit(g_le_audio_ctx.lc3_ctx);
+        vQueueDelete(g_le_audio_ctx.tx_queue_handle);
+        vQueueDelete(g_le_audio_ctx.rx_queue_handle);
+        vSemaphoreDelete(g_le_audio_ctx.state_mutex);
+        return -9;
+    }
+
+    /* Initialize PACS (Published Audio Capabilities Service) */
+    result = pacs_init();
+    if (result != 0) {
+        /* PACS init failure is non-fatal, continue anyway */
+    }
 
     g_le_audio_ctx.state = LE_AUDIO_STATE_IDLE;
     g_le_audio_ctx.mode = LE_AUDIO_MODE_IDLE;
@@ -1285,19 +1560,87 @@ bool le_audio_broadcast_is_advertising(void)
 
 void le_audio_process(void)
 {
+    pcm_buffer_t pcm_buffer;
+    lc3_frame_t lc3_frame;
+    uint8_t encoded_frame[LE_AUDIO_MAX_LC3_FRAME_SIZE];
+    uint16_t encoded_len;
+    int16_t decoded_samples[LE_AUDIO_MAX_PCM_SAMPLES];
+    static uint8_t tx_seq_num = 0;
+    int result;
+
     if (!g_le_audio_ctx.initialized) {
         return;
     }
 
-    /*
-     * TODO: Process LE Audio state machine
-     *
-     * This function handles:
-     * - State transitions (idle → configuring → streaming)
-     * - Codec negotiations
-     * - QoS updates
-     * - ISOC stream monitoring
-     */
+    /* Take state mutex for thread-safe operation */
+    if (xSemaphoreTake(g_le_audio_ctx.state_mutex, 0) != pdTRUE) {
+        return;  /* Could not acquire mutex */
+    }
 
-    /* Placeholder - actual implementation needs BAP integration */
+    switch (g_le_audio_ctx.state) {
+        case LE_AUDIO_STATE_IDLE:
+        case LE_AUDIO_STATE_CONFIGURED:
+            /* Nothing to process in these states */
+            break;
+
+        case LE_AUDIO_STATE_ENABLING:
+            /* Wait for enable to complete - handled by callbacks */
+            break;
+
+        case LE_AUDIO_STATE_STREAMING:
+            /* Process TX queue - encode and send pending PCM frames */
+            while (xQueueReceive(g_le_audio_ctx.tx_queue_handle, &pcm_buffer, 0) == pdTRUE) {
+                /* Encode PCM to LC3 */
+                result = encode_audio_frame(pcm_buffer.samples, encoded_frame, &encoded_len);
+                if (result == 0) {
+                    /* Send based on mode */
+                    if (g_le_audio_ctx.mode == LE_AUDIO_MODE_UNICAST_SOURCE ||
+                        g_le_audio_ctx.mode == LE_AUDIO_MODE_UNICAST_DUPLEX) {
+                        /* Send to first connected device */
+                        if (g_le_audio_ctx.mode_state.unicast.num_devices > 0) {
+                            unicast_device_t *dev = &g_le_audio_ctx.mode_state.unicast.devices[0];
+                            isoc_send_sdu(dev->cis_handle, encoded_frame, encoded_len,
+                                         pcm_buffer.timestamp, tx_seq_num++);
+                        }
+                    } else if (g_le_audio_ctx.mode == LE_AUDIO_MODE_BROADCAST_SOURCE) {
+                        /* Send to all active BIS */
+                        for (int i = 0; i < g_le_audio_ctx.mode_state.broadcast.num_bis; i++) {
+                            bis_stream_t *bis = &g_le_audio_ctx.mode_state.broadcast.bis[i];
+                            if (bis->active) {
+                                isoc_send_sdu(bis->bis_handle, encoded_frame, encoded_len,
+                                             pcm_buffer.timestamp, tx_seq_num);
+                            }
+                        }
+                        tx_seq_num++;
+                    }
+                    g_le_audio_ctx.frames_sent++;
+                }
+            }
+
+            /* Process RX queue - decode received LC3 frames */
+            while (xQueueReceive(g_le_audio_ctx.rx_queue_handle, &lc3_frame, 0) == pdTRUE) {
+                if (lc3_frame.length > 0) {
+                    /* Normal decode */
+                    result = decode_audio_frame(lc3_frame.data, lc3_frame.length, decoded_samples);
+                } else {
+                    /* Packet loss - use PLC */
+                    result = decode_audio_frame(NULL, 0, decoded_samples);
+                }
+
+                if (result == 0) {
+                    /* Push decoded samples to output - could notify audio task here */
+                    /* For now, samples are decoded and available */
+                }
+            }
+            break;
+
+        case LE_AUDIO_STATE_DISABLING:
+            /* Wait for disable to complete - handled by callbacks */
+            break;
+
+        default:
+            break;
+    }
+
+    xSemaphoreGive(g_le_audio_ctx.state_mutex);
 }

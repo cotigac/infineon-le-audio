@@ -43,8 +43,8 @@
 /** Task notification wait timeout (ms) */
 #define NOTIFICATION_TIMEOUT_MS         100
 
-/** Timing measurement macros */
-#define GET_TIME_US()                   0 /* TODO: Replace with actual timer read */
+/** Timing measurement macros - use FreeRTOS tick count converted to microseconds */
+#define GET_TIME_US()                   ((uint32_t)(xTaskGetTickCount() * (1000000UL / configTICK_RATE_HZ)))
 
 /*******************************************************************************
  * Private Types
@@ -601,15 +601,20 @@ int audio_task_suspend(void)
         return AUDIO_TASK_ERROR_INVALID_STATE;
     }
 
-    /* TODO: Suspend FreeRTOS task */
-    /* vTaskSuspend((TaskHandle_t)g_audio_task.task_handle); */
-
     /* Mark all streams as suspended */
     for (int i = 0; i < AUDIO_TASK_MAX_STREAMS; i++) {
         if (g_audio_task.streams[i].info.active) {
             g_audio_task.streams[i].flags |= STREAM_FLAG_SUSPENDED;
         }
     }
+
+    /* Suspend FreeRTOS task */
+    if (g_audio_task.task_handle != NULL) {
+        vTaskSuspend((TaskHandle_t)g_audio_task.task_handle);
+    }
+
+    g_audio_task.state = AUDIO_TASK_STATE_SUSPENDED;
+    notify_state_change(AUDIO_TASK_STATE_SUSPENDED);
 
     return AUDIO_TASK_OK;
 }
@@ -620,13 +625,22 @@ int audio_task_resume(void)
         return AUDIO_TASK_ERROR_NOT_INITIALIZED;
     }
 
-    /* TODO: Resume FreeRTOS task */
-    /* vTaskResume((TaskHandle_t)g_audio_task.task_handle); */
+    if (g_audio_task.state != AUDIO_TASK_STATE_SUSPENDED) {
+        return AUDIO_TASK_ERROR_INVALID_STATE;
+    }
+
+    /* Resume FreeRTOS task */
+    if (g_audio_task.task_handle != NULL) {
+        vTaskResume((TaskHandle_t)g_audio_task.task_handle);
+    }
 
     /* Clear suspended flag from all streams */
     for (int i = 0; i < AUDIO_TASK_MAX_STREAMS; i++) {
         g_audio_task.streams[i].flags &= ~STREAM_FLAG_SUSPENDED;
     }
+
+    g_audio_task.state = AUDIO_TASK_STATE_RUNNING;
+    notify_state_change(AUDIO_TASK_STATE_RUNNING);
 
     return AUDIO_TASK_OK;
 }
@@ -815,8 +829,45 @@ void* audio_task_get_handle(void)
 
 void audio_task_print_debug(void)
 {
-    /* TODO: Implement debug printing */
-    /* Print state, active streams, buffer levels, etc. */
+    printf("=== Audio Task Debug ===\n");
+    printf("State: %d, Initialized: %s\n",
+           g_audio_task.state,
+           g_audio_task.initialized ? "yes" : "no");
+    printf("Active streams: %d/%d\n",
+           g_audio_task.active_stream_count, AUDIO_TASK_MAX_STREAMS);
+    printf("Volume: %d%%, Muted: %s\n",
+           g_audio_task.volume_percent,
+           g_audio_task.muted ? "yes" : "no");
+    printf("CPU usage: %d%%\n", audio_task_get_cpu_usage());
+
+    /* Print per-stream info */
+    for (int i = 0; i < AUDIO_TASK_MAX_STREAMS; i++) {
+        stream_context_t *stream = &g_audio_task.streams[i];
+        if (stream->flags & STREAM_FLAG_CONFIGURED) {
+            printf("Stream %d: active=%s, dir=%d, type=%d, frames=%lu, errors=%lu\n",
+                   i,
+                   stream->info.active ? "yes" : "no",
+                   stream->info.direction,
+                   stream->info.type,
+                   (unsigned long)stream->frames_processed,
+                   (unsigned long)stream->codec_errors);
+        }
+    }
+
+    /* Print statistics */
+    printf("Stats: encoded=%lu, decoded=%lu, dropped_tx=%lu, dropped_rx=%lu\n",
+           (unsigned long)g_audio_task.stats.frames_encoded,
+           (unsigned long)g_audio_task.stats.frames_decoded,
+           (unsigned long)g_audio_task.stats.frames_dropped_tx,
+           (unsigned long)g_audio_task.stats.frames_dropped_rx);
+    printf("Errors: encode=%lu, decode=%lu\n",
+           (unsigned long)g_audio_task.stats.encode_errors,
+           (unsigned long)g_audio_task.stats.decode_errors);
+    printf("Timing: max_encode=%lu us, max_decode=%lu us, max_latency=%lu us\n",
+           (unsigned long)g_audio_task.stats.max_encode_time_us,
+           (unsigned long)g_audio_task.stats.max_decode_time_us,
+           (unsigned long)g_audio_task.stats.max_latency_us);
+    printf("========================\n");
 }
 
 /*******************************************************************************
@@ -993,10 +1044,19 @@ static int process_tx_path(stream_context_t *stream)
         stream->frames_dropped++;
     }
 
-    /* TODO: Send to ISOC handler */
-    /* isoc_handler_send_sdu(stream->info.isoc_stream_id, */
-    /*                       g_audio_task.lc3_encode_buffer, lc3_len, */
-    /*                       meta.timestamp); */
+    /* Send to ISOC handler based on stream type */
+    if (stream->info.type == AUDIO_STREAM_TYPE_UNICAST) {
+        /* Unicast: send via CIS handle */
+        isoc_handler_send_sdu(stream->info.cis_handle,
+                              g_audio_task.lc3_encode_buffer, lc3_len,
+                              meta.timestamp);
+    } else if (stream->info.type == AUDIO_STREAM_TYPE_BROADCAST) {
+        /* Broadcast: send via BIS handle (derived from big_handle + bis_index) */
+        uint16_t bis_handle = (uint16_t)((stream->info.big_handle << 8) | stream->info.bis_index);
+        isoc_handler_send_sdu(bis_handle,
+                              g_audio_task.lc3_encode_buffer, lc3_len,
+                              meta.timestamp);
+    }
 
     return AUDIO_TASK_OK;
 }

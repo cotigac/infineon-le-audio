@@ -26,6 +26,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Infineon HAL headers */
+#include "cyhal.h"
+#include "cyhal_uart.h"
+
 /* FreeRTOS headers */
 #include "FreeRTOS.h"
 #include "queue.h"
@@ -687,40 +691,67 @@ static void controller_rx_callback(const uint8_t *data, uint16_t length)
  * Controller UART
  ******************************************************************************/
 
+/** Static UART object for controller communication */
+static cyhal_uart_t controller_uart_obj;
+static bool controller_uart_initialized = false;
+
 static int controller_uart_init(uint32_t baud_rate)
 {
-    (void)baud_rate;
+    cy_rslt_t result;
+    cyhal_uart_cfg_t uart_config = {
+        .data_bits = 8,
+        .stop_bits = 1,
+        .parity = CYHAL_UART_PARITY_NONE,
+        .rx_buffer = g_midi_router_ctx.controller_rx_buffer,
+        .rx_buffer_size = sizeof(g_midi_router_ctx.controller_rx_buffer),
+    };
 
-    /*
-     * TODO: Initialize UART for MIDI communication with main controller
-     *
-     * cyhal_uart_cfg_t uart_config = {
-     *     .data_bits = 8,
-     *     .stop_bits = 1,
-     *     .parity = CYHAL_UART_PARITY_NONE,
-     *     .rx_buffer = controller_rx_buffer,
-     *     .rx_buffer_size = sizeof(controller_rx_buffer),
-     * };
-     *
-     * cyhal_uart_init(&uart_obj, TX_PIN, RX_PIN, NC, NC, NULL, &uart_config);
-     * cyhal_uart_set_baud(&uart_obj, baud_rate, NULL);
-     * cyhal_uart_register_callback(&uart_obj, uart_event_handler, NULL);
-     * cyhal_uart_enable_event(&uart_obj, CYHAL_UART_IRQ_RX_NOT_EMPTY, 3, true);
+    /* Initialize UART for MIDI communication with main controller */
+    /* Note: Pin assignments should come from board configuration (cybsp.h) */
+    /* Using placeholder pins - actual pins depend on hardware design */
+    result = cyhal_uart_init(&controller_uart_obj, NC, NC, NC, NC, NULL, &uart_config);
+    if (result != CY_RSLT_SUCCESS) {
+        return -1;
+    }
+
+    /* Set MIDI baud rate (31250 baud standard) */
+    result = cyhal_uart_set_baud(&controller_uart_obj, baud_rate, NULL);
+    if (result != CY_RSLT_SUCCESS) {
+        cyhal_uart_free(&controller_uart_obj);
+        return -2;
+    }
+
+    /* Note: Callback registration would be done here for async RX
+     * cyhal_uart_register_callback(&controller_uart_obj, uart_event_handler, NULL);
+     * cyhal_uart_enable_event(&controller_uart_obj, CYHAL_UART_IRQ_RX_NOT_EMPTY, 3, true);
      */
 
+    controller_uart_initialized = true;
     return 0;
 }
 
 static int controller_uart_send(const uint8_t *data, uint16_t length)
 {
-    (void)data;
-    (void)length;
+    cy_rslt_t result;
+    size_t bytes_written = length;
 
-    /*
-     * TODO: Send data over UART
-     *
-     * return cyhal_uart_write(&uart_obj, (void*)data, &length);
-     */
+    if (!controller_uart_initialized) {
+        return -1;
+    }
+
+    if (data == NULL || length == 0) {
+        return -2;
+    }
+
+    /* Send data over UART */
+    result = cyhal_uart_write(&controller_uart_obj, (void*)data, &bytes_written);
+    if (result != CY_RSLT_SUCCESS) {
+        return -3;
+    }
+
+    if (bytes_written != length) {
+        return -4;  /* Partial write */
+    }
 
     return 0;
 }

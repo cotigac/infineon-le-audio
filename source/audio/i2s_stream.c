@@ -220,9 +220,10 @@ static uint32_t ring_buffer_write(ring_buffer_t *rb, const int16_t *data, uint32
         written++;
     }
 
-    /* Atomic update of count */
-    /* TODO: Use critical section or atomic operation */
+    /* Atomic update of count using critical section */
+    taskENTER_CRITICAL();
     rb->count += written;
+    taskEXIT_CRITICAL();
 
     return written;
 }
@@ -247,9 +248,10 @@ static uint32_t ring_buffer_read(ring_buffer_t *rb, int16_t *data, uint32_t coun
         read_count++;
     }
 
-    /* Atomic update of count */
-    /* TODO: Use critical section or atomic operation */
+    /* Atomic update of count using critical section */
+    taskENTER_CRITICAL();
     rb->count -= read_count;
+    taskEXIT_CRITICAL();
 
     return read_count;
 }

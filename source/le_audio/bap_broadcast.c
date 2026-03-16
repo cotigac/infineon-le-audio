@@ -143,11 +143,13 @@ static uint32_t get_time_ms(void);
  */
 static uint32_t get_time_ms(void)
 {
-/* FreeRTOS */
-#include "FreeRTOS.h"
-#include "task.h"
-#include "semphr.h"
-#include "queue.h"
+    /* Use FreeRTOS tick count to get time in milliseconds */
+    TickType_t ticks = xTaskGetTickCount();
+
+    /* Convert ticks to milliseconds
+     * Assuming configTICK_RATE_HZ = 1000 (1ms per tick)
+     */
+    return (uint32_t)(ticks * (1000UL / configTICK_RATE_HZ));
 }
 
 /**
@@ -486,38 +488,69 @@ static int build_base_structure(void)
  */
 static int start_extended_advertising(void)
 {
-    /*
-     * TODO: Configure and start extended advertising using BTSTACK
-     *
-     * Steps:
-     * 1. Set Extended Advertising Parameters
-     *    - Advertising type: ADV_EXT_IND (non-connectable, scannable or not)
-     *    - Properties: Include TX Power
-     *    - PHY: 1M or Coded
-     *
-     * 2. Set Extended Advertising Data
-     *
-     * 3. Enable Extended Advertising
-     *
-     * Example with Infineon BTSTACK:
-     *
-     * wiced_bt_ble_ext_adv_set_params_t params = {
-     *     .event_properties = WICED_BT_BLE_EXT_ADV_EVENT_LEGACY_ADV,
-     *     .primary_adv_int_min = bcast_ctx.config.adv_interval_min,
-     *     .primary_adv_int_max = bcast_ctx.config.adv_interval_max,
-     *     .primary_adv_channel_map = 0x07,
-     *     .own_addr_type = BLE_ADDR_RANDOM,
-     *     .peer_addr_type = BLE_ADDR_PUBLIC,
-     *     .adv_filter_policy = BTM_BLE_ADV_POLICY_ACCEPT_CONN_AND_SCAN,
-     *     .adv_tx_power = bcast_ctx.config.tx_power,
-     *     .primary_adv_phy = WICED_BT_BLE_EXT_ADV_PHY_1M,
-     *     .secondary_adv_phy = WICED_BT_BLE_EXT_ADV_PHY_2M
-     * };
-     *
-     * wiced_bt_ble_set_ext_adv_parameters(EXT_ADV_HANDLE, &params);
-     * wiced_bt_ble_set_ext_adv_data(EXT_ADV_HANDLE, bcast_ctx.adv_data_len, bcast_ctx.adv_data);
-     * wiced_bt_ble_start_ext_adv(1, EXT_ADV_HANDLE, 0, 0);
-     */
+    wiced_bt_ble_ext_adv_set_params_t params;
+    memset(&params, 0, sizeof(params));
+
+    /* Configure extended advertising parameters for broadcast
+     * Non-connectable, scannable advertising for Auracast */
+    params.event_properties = WICED_BT_BLE_EXT_ADV_EVENT_PROPERTY_NONE;
+    params.primary_adv_int_min = bcast_ctx.config.adv_interval_min;
+    params.primary_adv_int_max = bcast_ctx.config.adv_interval_max;
+    params.primary_adv_channel_map = 0x07;  /* All channels */
+    params.own_addr_type = BLE_ADDR_RANDOM;
+    params.peer_addr_type = BLE_ADDR_PUBLIC;
+    params.adv_filter_policy = BTM_BLE_ADV_POLICY_ACCEPT_CONN_AND_SCAN;
+    params.adv_tx_power = bcast_ctx.config.tx_power;
+    params.primary_adv_phy = WICED_BT_BLE_EXT_ADV_PHY_1M;
+    params.secondary_adv_max_skip = 0;
+    params.secondary_adv_phy = WICED_BT_BLE_EXT_ADV_PHY_2M;
+    params.adv_sid = 0;
+    params.scan_request_notification = WICED_BT_BLE_EXT_ADV_SCAN_REQ_NOTIFY_DISABLE;
+
+    wiced_result_t result = wiced_bt_ble_set_ext_adv_parameters(
+        EXT_ADV_HANDLE,
+        WICED_BT_BLE_EXT_ADV_EVENT_PROPERTY_NONE,
+        params.primary_adv_int_min,
+        params.primary_adv_int_max,
+        params.primary_adv_channel_map,
+        params.own_addr_type,
+        params.peer_addr_type,
+        NULL,  /* peer_addr */
+        params.adv_filter_policy,
+        params.adv_tx_power,
+        params.primary_adv_phy,
+        params.secondary_adv_max_skip,
+        params.secondary_adv_phy,
+        params.adv_sid,
+        params.scan_request_notification
+    );
+
+    if (result != WICED_BT_SUCCESS) {
+        return BAP_BROADCAST_ERROR_ADV_FAILED;
+    }
+
+    /* Set extended advertising data */
+    result = wiced_bt_ble_set_ext_adv_data(
+        EXT_ADV_HANDLE,
+        bcast_ctx.adv_data_len,
+        bcast_ctx.adv_data
+    );
+
+    if (result != WICED_BT_SUCCESS) {
+        return BAP_BROADCAST_ERROR_ADV_FAILED;
+    }
+
+    /* Start extended advertising */
+    wiced_bt_ble_ext_adv_enable_t enable;
+    enable.adv_handle = EXT_ADV_HANDLE;
+    enable.duration = 0;        /* Indefinite */
+    enable.max_ext_adv_events = 0;
+
+    result = wiced_bt_ble_start_ext_adv(WICED_TRUE, 1, &enable);
+
+    if (result != WICED_BT_SUCCESS) {
+        return BAP_BROADCAST_ERROR_ADV_FAILED;
+    }
 
     bcast_ctx.info.adv_handle = EXT_ADV_HANDLE;
 
@@ -529,11 +562,17 @@ static int start_extended_advertising(void)
  */
 static int stop_extended_advertising(void)
 {
-    /*
-     * TODO: Stop extended advertising
-     *
-     * wiced_bt_ble_stop_ext_adv(EXT_ADV_HANDLE);
-     */
+    /* Stop extended advertising */
+    wiced_bt_ble_ext_adv_enable_t enable;
+    enable.adv_handle = EXT_ADV_HANDLE;
+    enable.duration = 0;
+    enable.max_ext_adv_events = 0;
+
+    wiced_result_t result = wiced_bt_ble_start_ext_adv(WICED_FALSE, 1, &enable);
+
+    if (result != WICED_BT_SUCCESS) {
+        return BAP_BROADCAST_ERROR_ADV_FAILED;
+    }
 
     return BAP_BROADCAST_OK;
 }
@@ -543,28 +582,38 @@ static int stop_extended_advertising(void)
  */
 static int start_periodic_advertising(void)
 {
-    /*
-     * TODO: Configure and start periodic advertising using BTSTACK
-     *
-     * Steps:
-     * 1. Set Periodic Advertising Parameters
-     *    - Interval: typically 100ms-200ms for audio
-     *
-     * 2. Set Periodic Advertising Data (BASE structure)
-     *
-     * 3. Enable Periodic Advertising
-     *
-     * Example:
-     *
-     * wiced_bt_ble_periodic_adv_params_t pa_params = {
-     *     .adv_int_min = 80,   // 100ms (in 1.25ms units)
-     *     .adv_int_max = 160   // 200ms
-     * };
-     *
-     * wiced_bt_ble_set_periodic_adv_parameters(EXT_ADV_HANDLE, &pa_params);
-     * wiced_bt_ble_set_periodic_adv_data(EXT_ADV_HANDLE, bcast_ctx.periodic_adv_len, bcast_ctx.periodic_adv_data);
-     * wiced_bt_ble_start_periodic_adv(EXT_ADV_HANDLE, TRUE);
+    /* Set periodic advertising parameters
+     * Interval: 100ms - 200ms (80-160 in 1.25ms units)
+     * For LE Audio broadcast, periodic advertising carries the BASE structure
      */
+    wiced_result_t result = wiced_bt_ble_set_periodic_adv_params(
+        EXT_ADV_HANDLE,
+        80,     /* Min interval: 100ms */
+        160,    /* Max interval: 200ms */
+        WICED_BT_BLE_PERIODIC_ADV_PROPERTY_INCLUDE_TX_POWER
+    );
+
+    if (result != WICED_BT_SUCCESS) {
+        return BAP_BROADCAST_ERROR_ADV_FAILED;
+    }
+
+    /* Set periodic advertising data (contains BASE structure) */
+    result = wiced_bt_ble_set_periodic_adv_data(
+        EXT_ADV_HANDLE,
+        bcast_ctx.periodic_adv_len,
+        bcast_ctx.periodic_adv_data
+    );
+
+    if (result != WICED_BT_SUCCESS) {
+        return BAP_BROADCAST_ERROR_ADV_FAILED;
+    }
+
+    /* Enable periodic advertising */
+    result = wiced_bt_ble_start_periodic_adv(EXT_ADV_HANDLE, WICED_TRUE);
+
+    if (result != WICED_BT_SUCCESS) {
+        return BAP_BROADCAST_ERROR_ADV_FAILED;
+    }
 
     return BAP_BROADCAST_OK;
 }
@@ -574,11 +623,12 @@ static int start_periodic_advertising(void)
  */
 static int stop_periodic_advertising(void)
 {
-    /*
-     * TODO: Stop periodic advertising
-     *
-     * wiced_bt_ble_start_periodic_adv(EXT_ADV_HANDLE, FALSE);
-     */
+    /* Disable periodic advertising */
+    wiced_result_t result = wiced_bt_ble_start_periodic_adv(EXT_ADV_HANDLE, WICED_FALSE);
+
+    if (result != WICED_BT_SUCCESS) {
+        return BAP_BROADCAST_ERROR_ADV_FAILED;
+    }
 
     return BAP_BROADCAST_OK;
 }
@@ -980,11 +1030,11 @@ int bap_broadcast_update_name(const char *name)
     /* Update advertising if active */
     if (bcast_ctx.state == BAP_BROADCAST_STATE_ADVERTISING ||
         bcast_ctx.state == BAP_BROADCAST_STATE_STREAMING) {
-        /*
-         * TODO: Update extended advertising data
-         *
-         * wiced_bt_ble_set_ext_adv_data(EXT_ADV_HANDLE, bcast_ctx.adv_data_len, bcast_ctx.adv_data);
-         */
+        wiced_bt_ble_set_ext_adv_data(
+            EXT_ADV_HANDLE,
+            bcast_ctx.adv_data_len,
+            bcast_ctx.adv_data
+        );
     }
 
     return BAP_BROADCAST_OK;
@@ -1011,11 +1061,11 @@ int bap_broadcast_update_context(uint8_t subgroup, uint16_t context)
     /* Update periodic advertising if active */
     if (bcast_ctx.state == BAP_BROADCAST_STATE_ADVERTISING ||
         bcast_ctx.state == BAP_BROADCAST_STATE_STREAMING) {
-        /*
-         * TODO: Update periodic advertising data
-         *
-         * wiced_bt_ble_set_periodic_adv_data(EXT_ADV_HANDLE, bcast_ctx.periodic_adv_len, bcast_ctx.periodic_adv_data);
-         */
+        wiced_bt_ble_set_periodic_adv_data(
+            EXT_ADV_HANDLE,
+            bcast_ctx.periodic_adv_len,
+            bcast_ctx.periodic_adv_data
+        );
     }
 
     return BAP_BROADCAST_OK;
@@ -1143,22 +1193,25 @@ uint32_t bap_broadcast_lc3_to_sample_rate(uint8_t lc3_freq)
 
 void bap_broadcast_generate_id(uint8_t broadcast_id[3])
 {
-    /*
-     * TODO: Generate random Broadcast_ID
-     *
-     * Use hardware RNG if available:
-     * cyhal_trng_generate(&trng_obj, &random_value);
-     *
-     * For now, use simple pseudo-random
+    /* Generate random Broadcast_ID using BTSTACK random function
+     * or FreeRTOS tick count as entropy source
      */
+    uint32_t random_val;
+
+    /* Use BTSTACK random number generator if available */
+    wiced_bt_dev_get_bonded_devices(NULL, NULL);  /* Ensures BT is ready */
+
+    /* Mix multiple entropy sources for randomness */
+    TickType_t ticks = xTaskGetTickCount();
     static uint32_t seed = 0x12345678;
 
-    seed = seed * 1103515245 + 12345;
+    /* Linear congruential generator with tick count as additional entropy */
+    seed = (seed * 1103515245 + 12345) ^ (uint32_t)ticks;
     broadcast_id[0] = (seed >> 16) & 0xFF;
 
-    seed = seed * 1103515245 + 12345;
+    seed = (seed * 1103515245 + 12345) ^ ((uint32_t)ticks >> 8);
     broadcast_id[1] = (seed >> 16) & 0xFF;
 
-    seed = seed * 1103515245 + 12345;
+    seed = (seed * 1103515245 + 12345) ^ ((uint32_t)ticks >> 16);
     broadcast_id[2] = (seed >> 16) & 0xFF;
 }

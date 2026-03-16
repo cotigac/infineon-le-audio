@@ -10,6 +10,14 @@
 #include "isoc_handler.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
+
+/* HCI ISOC API */
+#include "../bluetooth/hci_isoc.h"
+
+/* FreeRTOS for timing */
+#include "FreeRTOS.h"
+#include "task.h"
 
 /*******************************************************************************
  * Private Definitions
@@ -379,25 +387,67 @@ int isoc_handler_setup_data_path(uint8_t stream_id)
         return ISOC_HANDLER_ERROR_INVALID_STATE;
     }
 
-    /*
-     * TODO: Setup HCI ISO data path
-     *
-     * For CIS (unicast):
-     * hci_isoc_setup_data_path(
-     *     stream->config.iso_handle,
-     *     stream->config.direction == ISOC_PATH_DIRECTION_TX ? 0 : 1,
-     *     HCI_ISO_DATA_PATH_HCI,  // Use HCI transport
-     *     0x06,  // LC3 codec ID
-     *     0,     // No controller delay
-     *     NULL, 0  // No codec config
-     * );
-     *
-     * For bidirectional, setup both directions:
-     * if (stream->config.direction == ISOC_PATH_DIRECTION_BIDIR) {
-     *     hci_isoc_setup_data_path(handle, 0, ...);  // TX
-     *     hci_isoc_setup_data_path(handle, 1, ...);  // RX
-     * }
+    int result;
+
+    /* Setup HCI ISO data path
+     * Direction: 0 = Input (Host to Controller, TX)
+     *            1 = Output (Controller to Host, RX)
+     * Data path ID 0x00 = HCI (host-side LC3 codec)
+     * No codec ID needed when using HCI path - codec is in host
      */
+
+    if (stream->config.direction == ISOC_PATH_DIRECTION_TX) {
+        /* TX only - setup input path */
+        result = hci_isoc_setup_data_path(
+            stream->config.iso_handle,
+            HCI_ISOC_DATA_PATH_INPUT,   /* Host to Controller */
+            HCI_ISOC_DATA_PATH_HCI,     /* Data via HCI */
+            NULL,                        /* No codec ID (transparent) */
+            0,                           /* No controller delay */
+            NULL, 0                      /* No codec config */
+        );
+        if (result != HCI_ISOC_OK) {
+            return ISOC_HANDLER_ERROR_HCI_ERROR;
+        }
+    } else if (stream->config.direction == ISOC_PATH_DIRECTION_RX) {
+        /* RX only - setup output path */
+        result = hci_isoc_setup_data_path(
+            stream->config.iso_handle,
+            HCI_ISOC_DATA_PATH_OUTPUT,  /* Controller to Host */
+            HCI_ISOC_DATA_PATH_HCI,     /* Data via HCI */
+            NULL,                        /* No codec ID (transparent) */
+            0,                           /* No controller delay */
+            NULL, 0                      /* No codec config */
+        );
+        if (result != HCI_ISOC_OK) {
+            return ISOC_HANDLER_ERROR_HCI_ERROR;
+        }
+    } else if (stream->config.direction == ISOC_PATH_DIRECTION_BIDIR) {
+        /* Bidirectional - setup both paths */
+        result = hci_isoc_setup_data_path(
+            stream->config.iso_handle,
+            HCI_ISOC_DATA_PATH_INPUT,   /* TX path */
+            HCI_ISOC_DATA_PATH_HCI,
+            NULL, 0, NULL, 0
+        );
+        if (result != HCI_ISOC_OK) {
+            return ISOC_HANDLER_ERROR_HCI_ERROR;
+        }
+
+        result = hci_isoc_setup_data_path(
+            stream->config.iso_handle,
+            HCI_ISOC_DATA_PATH_OUTPUT,  /* RX path */
+            HCI_ISOC_DATA_PATH_HCI,
+            NULL, 0, NULL, 0
+        );
+        if (result != HCI_ISOC_OK) {
+            /* Try to clean up TX path on failure */
+            hci_isoc_remove_data_path(stream->config.iso_handle, HCI_ISOC_DATA_PATH_INPUT);
+            return ISOC_HANDLER_ERROR_HCI_ERROR;
+        }
+    } else {
+        return ISOC_HANDLER_ERROR_INVALID_PARAM;
+    }
 
     stream->flags |= STREAM_FLAG_DATA_PATH;
 
@@ -421,11 +471,16 @@ int isoc_handler_remove_data_path(uint8_t stream_id)
         return ISOC_HANDLER_OK;  /* Already removed */
     }
 
-    /*
-     * TODO: Remove HCI ISO data path
-     *
-     * hci_isoc_remove_data_path(stream->config.iso_handle, direction);
-     */
+    /* Remove HCI ISO data path(s) based on direction */
+    if (stream->config.direction == ISOC_PATH_DIRECTION_TX) {
+        hci_isoc_remove_data_path(stream->config.iso_handle, HCI_ISOC_DATA_PATH_INPUT);
+    } else if (stream->config.direction == ISOC_PATH_DIRECTION_RX) {
+        hci_isoc_remove_data_path(stream->config.iso_handle, HCI_ISOC_DATA_PATH_OUTPUT);
+    } else if (stream->config.direction == ISOC_PATH_DIRECTION_BIDIR) {
+        /* Remove both directions */
+        hci_isoc_remove_data_path(stream->config.iso_handle, HCI_ISOC_DATA_PATH_INPUT);
+        hci_isoc_remove_data_path(stream->config.iso_handle, HCI_ISOC_DATA_PATH_OUTPUT);
+    }
 
     stream->flags &= ~STREAM_FLAG_DATA_PATH;
 
@@ -648,18 +703,30 @@ bool isoc_handler_rx_data_available(uint8_t stream_id)
 uint32_t isoc_handler_get_timestamp(void)
 {
     /*
-     * TODO: Get actual Bluetooth ISO timestamp from controller
+     * Get timestamp in microseconds using FreeRTOS tick count.
      *
-     * This should use the controller's ISO reference clock.
-     * For now, use system tick as placeholder.
+     * For LE Audio, timing precision is important:
+     * - SDU interval is typically 10ms (10000 us)
+     * - Presentation delay is in the order of 20-40ms
      *
-     * return hci_isoc_get_timestamp();
+     * FreeRTOS tick rate is typically 1000 Hz (1ms per tick).
+     * We convert ticks to microseconds for finer granularity.
+     *
+     * Note: In a production system with hardware support, this could
+     * use the BLE controller's ISO reference clock for better accuracy.
+     * The CYW55512 provides access to the Bluetooth clock via HCI.
      */
 
-    /* Placeholder: use system time in microseconds */
-    static uint32_t fake_timestamp = 0;
-    fake_timestamp += 10000;  /* Increment by 10ms */
-    return fake_timestamp;
+    TickType_t ticks = xTaskGetTickCount();
+
+    /* Convert ticks to microseconds
+     * Assuming configTICK_RATE_HZ = 1000 (1ms per tick)
+     * 1 tick = 1000 us
+     */
+    uint32_t timestamp_us = (uint32_t)(ticks * (1000000UL / configTICK_RATE_HZ));
+
+    /* Add base timestamp offset for synchronization */
+    return timestamp_us + handler_ctx.base_timestamp;
 }
 
 uint32_t isoc_handler_get_next_tx_time(uint8_t stream_id)
@@ -1261,20 +1328,25 @@ static void ring_buffer_commit_read(sdu_ring_buffer_t *rb)
 
 static int send_iso_data(isoc_stream_t *stream, const isoc_sdu_t *sdu)
 {
-    /*
-     * TODO: Send ISO data via HCI
-     *
-     * hci_isoc_send_data(
-     *     stream->config.iso_handle,
-     *     sdu->timestamp,
-     *     sdu->sequence_number,
-     *     sdu->data,
-     *     sdu->length
-     * );
-     */
+    int result;
 
-    (void)stream;
-    (void)sdu;
+    if (stream == NULL || sdu == NULL || sdu->length == 0) {
+        return ISOC_HANDLER_ERROR_INVALID_PARAM;
+    }
+
+    /* Send ISO data via HCI with timestamp and sequence number */
+    result = hci_isoc_send_data_ts(
+        stream->config.iso_handle,
+        sdu->data,
+        sdu->length,
+        sdu->timestamp,
+        sdu->sequence_number
+    );
+
+    if (result != HCI_ISOC_OK) {
+        stream->stats.tx_underruns++;  /* Count as underrun - data not delivered */
+        return ISOC_HANDLER_ERROR_HCI_ERROR;
+    }
 
     return ISOC_HANDLER_OK;
 }

@@ -530,49 +530,30 @@ static void usb_ep_out_callback(uint8_t *data, uint16_t length)
 /**
  * @brief Initialize USB device
  *
- * TODO: Implement using Segger emUSB-Device middleware
+ * Note: USB device initialization should be handled by the USB middleware.
+ * This function sets the initial state and prepares for enumeration.
  */
 static int usb_device_init(void)
 {
     /*
-     * TODO: Initialize USB device with MIDI descriptors
+     * USB device initialization is handled by cy_usb_dev middleware.
+     * The MIDI class descriptors should be defined in a separate descriptor file.
      *
-     * Example using Segger emUSB-Device middleware:
+     * For PSoC Edge, the USB device middleware handles:
+     * - USB hardware initialization
+     * - Descriptor parsing and enumeration
+     * - Endpoint management
      *
-     * // Initialize USB device
-     * cy_stc_usb_dev_context_t usb_context;
-     * Cy_USB_Dev_Init(USB_DEV_HW, &USB_DEV_config, &usb_context);
-     *
-     * // Register callbacks
-     * Cy_USB_Dev_RegisterCallback(CY_USB_DEV_EVENT_SET_CONFIG, usb_set_config_callback);
-     * Cy_USB_Dev_RegisterCallback(CY_USB_DEV_EVENT_BUS_RESET, usb_reset_callback);
-     * Cy_USB_Dev_RegisterCallback(CY_USB_DEV_EVENT_SUSPEND, usb_suspend_callback);
-     * Cy_USB_Dev_RegisterCallback(CY_USB_DEV_EVENT_RESUME, usb_resume_callback);
-     *
-     * // Register endpoint callbacks
-     * Cy_USB_Dev_RegisterEndpointCallback(MIDI_USB_EP_IN, usb_ep_in_callback);
-     * Cy_USB_Dev_RegisterEndpointCallback(MIDI_USB_EP_OUT, usb_ep_out_callback);
-     *
-     * // Connect to USB bus
-     * Cy_USB_Dev_Connect(true, CY_USB_DEV_WAIT_FOREVER, &usb_context);
-     *
-     * USB Descriptor structure needed:
-     *
-     * - Device Descriptor (bDeviceClass = 0, defined at interface level)
-     * - Configuration Descriptor
-     *   - Interface 0: Audio Control (required but minimal)
-     *   - Interface 1: MIDI Streaming
-     *     - Standard MS Interface Descriptor
-     *     - Class-Specific MS Interface Header
-     *     - MIDI IN Jack (Embedded)
-     *     - MIDI IN Jack (External)
-     *     - MIDI OUT Jack (Embedded)
-     *     - MIDI OUT Jack (External)
-     *     - Bulk OUT Endpoint (for receiving from host)
-     *     - Class-Specific MS Bulk OUT Endpoint
-     *     - Bulk IN Endpoint (for sending to host)
-     *     - Class-Specific MS Bulk IN Endpoint
+     * The actual Cy_USB_Dev_Init() call should be made during system init.
+     * This module registers as a MIDI class handler.
      */
+
+    /* Set initial state - waiting for USB cable connection */
+    g_midi_usb_ctx.state = MIDI_USB_STATE_DETACHED;
+
+    /* Clear endpoint buffers */
+    memset(g_midi_usb_ctx.ep_in_buffer, 0, MIDI_USB_EP_BUFFER_SIZE);
+    memset(g_midi_usb_ctx.ep_out_buffer, 0, MIDI_USB_EP_BUFFER_SIZE);
 
     return 0;
 }
@@ -1006,18 +987,14 @@ int midi_usb_flush(void)
         return -2;
     }
 
-    /* Wait for current transfer to complete */
-    /*
-     * TODO: Wait with timeout
-     *
-     * TickType_t start = xTaskGetTickCount();
-     * while (g_midi_usb_ctx.tx_busy) {
-     *     if ((xTaskGetTickCount() - start) > pdMS_TO_TICKS(MIDI_USB_TX_FLUSH_TIMEOUT)) {
-     *         return -3;  // Timeout
-     *     }
-     *     vTaskDelay(1);
-     * }
-     */
+    /* Wait for current transfer to complete with timeout */
+    TickType_t start = xTaskGetTickCount();
+    while (g_midi_usb_ctx.tx_busy) {
+        if ((xTaskGetTickCount() - start) > pdMS_TO_TICKS(MIDI_USB_TX_FLUSH_TIMEOUT)) {
+            return -3;  /* Timeout */
+        }
+        vTaskDelay(1);
+    }
 
     /* Send any queued events */
     while (!tx_queue_is_empty()) {

@@ -11,6 +11,10 @@
 #include <string.h>
 #include <stdio.h>
 
+/* Infineon BTSTACK headers for GATT server */
+#include "wiced_bt_gatt.h"
+#include "wiced_bt_ble.h"
+
 /*******************************************************************************
  * Private Definitions
  ******************************************************************************/
@@ -148,6 +152,10 @@ static int build_midi_service(void);
 
 static void notify_event(gatt_db_event_type_t type, uint16_t conn_handle, void *data);
 
+/* BTSTACK callback */
+wiced_bt_gatt_status_t gatt_db_btstack_callback(wiced_bt_gatt_evt_t event,
+                                                 wiced_bt_gatt_event_data_t *p_event_data);
+
 /* Default read callbacks */
 static uint8_t device_name_read(uint16_t conn_handle, gatt_handle_t attr_handle,
                                  uint8_t *data, uint16_t *len,
@@ -212,10 +220,25 @@ int gatt_db_init(const gatt_db_config_t *config)
     }
 
     /*
-     * TODO: Register GATT database with BTSTACK
+     * Register GATT callbacks with BTSTACK
      *
-     * btstack_gatt_server_register_database(db_ctx.attributes);
+     * With Infineon BTSTACK, the GATT database can be:
+     * 1. Statically defined using GATT macros and registered via wiced_bt_gatt_db_init()
+     * 2. Dynamically built and registered
+     *
+     * For dynamic registration, we register a GATT callback that routes
+     * read/write requests to our handlers.
      */
+    wiced_bt_gatt_status_t gatt_status;
+
+    /* Register GATT event callback - this handles all GATT server events */
+    gatt_status = wiced_bt_gatt_register(gatt_db_btstack_callback);
+    if (gatt_status != WICED_BT_GATT_SUCCESS) {
+        printf("GATT DB: Failed to register GATT callback: %d\n", gatt_status);
+        return GATT_DB_ERROR_ALREADY_INITIALIZED;
+    }
+
+    printf("GATT DB: Registered with BTSTACK, %d attributes\n", db_ctx.num_attributes);
 
     db_ctx.initialized = true;
 
@@ -456,19 +479,21 @@ int gatt_db_send_notification(uint16_t conn_handle, gatt_handle_t attr_handle,
         }
     }
 
-    /*
-     * TODO: Send notification via BTSTACK
-     *
-     * btstack_gatt_server_send_notification(
-     *     conn_handle,
-     *     attr_handle,
-     *     data,
-     *     len
-     * );
-     */
+    /* Send notification via BTSTACK GATT server API */
+    wiced_bt_gatt_status_t status;
 
-    (void)data;
-    (void)len;
+    status = wiced_bt_gatt_server_send_notification(
+        conn_handle,
+        attr_handle,
+        len,
+        (uint8_t *)data,
+        NULL  /* No callback needed for notifications */
+    );
+
+    if (status != WICED_BT_GATT_SUCCESS) {
+        printf("GATT DB: Failed to send notification: %d\n", status);
+        return GATT_DB_ERROR_INVALID_PARAM;
+    }
 
     return GATT_DB_OK;
 }
@@ -494,19 +519,21 @@ int gatt_db_send_indication(uint16_t conn_handle, gatt_handle_t attr_handle,
         }
     }
 
-    /*
-     * TODO: Send indication via BTSTACK
-     *
-     * btstack_gatt_server_send_indication(
-     *     conn_handle,
-     *     attr_handle,
-     *     data,
-     *     len
-     * );
-     */
+    /* Send indication via BTSTACK GATT server API */
+    wiced_bt_gatt_status_t status;
 
-    (void)data;
-    (void)len;
+    status = wiced_bt_gatt_server_send_indication(
+        conn_handle,
+        attr_handle,
+        len,
+        (uint8_t *)data,
+        NULL  /* No callback context needed */
+    );
+
+    if (status != WICED_BT_GATT_SUCCESS) {
+        printf("GATT DB: Failed to send indication: %d\n", status);
+        return GATT_DB_ERROR_INVALID_PARAM;
+    }
 
     return GATT_DB_OK;
 }
@@ -1423,4 +1450,133 @@ uint8_t gatt_db_handle_write_request(uint16_t conn_handle,
     }
 
     return ATT_ERROR_SUCCESS;
+}
+
+/*******************************************************************************
+ * BTSTACK GATT Callback
+ ******************************************************************************/
+
+/**
+ * @brief BTSTACK GATT event callback
+ *
+ * Routes all GATT server events from BTSTACK to our GATT database handlers.
+ */
+wiced_bt_gatt_status_t gatt_db_btstack_callback(wiced_bt_gatt_evt_t event,
+                                                  wiced_bt_gatt_event_data_t *p_event_data)
+{
+    wiced_bt_gatt_status_t status = WICED_BT_GATT_SUCCESS;
+
+    switch (event) {
+        case GATT_CONNECTION_STATUS_EVT:
+            /* Connection state changed */
+            if (p_event_data->connection_status.connected) {
+                printf("GATT DB: Connected, handle=%d\n",
+                       p_event_data->connection_status.conn_id);
+                gatt_db_on_connect(p_event_data->connection_status.conn_id);
+            } else {
+                printf("GATT DB: Disconnected, handle=%d\n",
+                       p_event_data->connection_status.conn_id);
+                gatt_db_on_disconnect(p_event_data->connection_status.conn_id);
+            }
+            break;
+
+        case GATT_ATTRIBUTE_REQUEST_EVT:
+            /* Attribute read/write request */
+            {
+                wiced_bt_gatt_attribute_request_t *p_attr_req =
+                    &p_event_data->attribute_request;
+
+                switch (p_attr_req->opcode) {
+                    case GATT_REQ_READ:
+                    case GATT_REQ_READ_BLOB:
+                        {
+                            uint8_t *p_rsp = p_attr_req->data.read_req.p_val;
+                            uint16_t len = 0;
+                            uint16_t offset = p_attr_req->data.read_req.offset;
+
+                            uint8_t result = gatt_db_handle_read_request(
+                                p_attr_req->conn_id,
+                                p_attr_req->data.read_req.handle,
+                                p_rsp, &len, offset
+                            );
+
+                            if (result == ATT_ERROR_SUCCESS) {
+                                p_attr_req->data.read_req.p_val_len = &len;
+                                status = WICED_BT_GATT_SUCCESS;
+                            } else {
+                                status = (wiced_bt_gatt_status_t)result;
+                            }
+                        }
+                        break;
+
+                    case GATT_REQ_WRITE:
+                    case GATT_CMD_WRITE:
+                        {
+                            uint8_t result = gatt_db_handle_write_request(
+                                p_attr_req->conn_id,
+                                p_attr_req->data.write_req.handle,
+                                p_attr_req->data.write_req.p_val,
+                                p_attr_req->data.write_req.val_len,
+                                p_attr_req->data.write_req.offset
+                            );
+
+                            status = (result == ATT_ERROR_SUCCESS) ?
+                                WICED_BT_GATT_SUCCESS :
+                                (wiced_bt_gatt_status_t)result;
+                        }
+                        break;
+
+                    case GATT_REQ_MTU:
+                        /* MTU exchange request */
+                        {
+                            uint16_t mtu = p_attr_req->data.remote_mtu;
+                            printf("GATT DB: MTU exchange, requested=%d\n", mtu);
+                            gatt_db_on_mtu_changed(p_attr_req->conn_id, mtu);
+                            status = WICED_BT_GATT_SUCCESS;
+                        }
+                        break;
+
+                    case GATT_HANDLE_VALUE_CONF:
+                        /* Indication confirmation received */
+                        printf("GATT DB: Indication confirmed\n");
+                        status = WICED_BT_GATT_SUCCESS;
+                        break;
+
+                    default:
+                        printf("GATT DB: Unhandled opcode: %d\n", p_attr_req->opcode);
+                        status = WICED_BT_GATT_REQ_NOT_SUPPORTED;
+                        break;
+                }
+            }
+            break;
+
+        case GATT_GET_RESPONSE_BUFFER_EVT:
+            /* Buffer request for response */
+            {
+                wiced_bt_gatt_buffer_request_t *p_buf_req =
+                    &p_event_data->buffer_request;
+                p_buf_req->buffer.p_app_rsp_buffer =
+                    wiced_bt_get_buffer(p_buf_req->len_requested);
+                p_buf_req->buffer.p_app_ctxt = NULL;
+                status = WICED_BT_GATT_SUCCESS;
+            }
+            break;
+
+        case GATT_APP_BUFFER_TRANSMITTED_EVT:
+            /* Response buffer sent, can free now */
+            {
+                wiced_bt_gatt_buffer_transmitted_t *p_buf =
+                    &p_event_data->buffer_xmitted;
+                if (p_buf->p_app_data != NULL) {
+                    wiced_bt_free_buffer(p_buf->p_app_data);
+                }
+            }
+            break;
+
+        default:
+            printf("GATT DB: Unhandled GATT event: %d\n", event);
+            break;
+    }
+
+    return status;
 }
