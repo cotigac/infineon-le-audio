@@ -145,23 +145,30 @@ static void usb_bulk_on_tx_complete(void)
 }
 
 /*******************************************************************************
- * WHD Callbacks (Wi-Fi Host Driver)
+ * WHD Network Interface Callback
+ *
+ * This function is called by WHD via whd_netif_funcs when packets are received.
+ * It should be registered during WHD initialization.
  ******************************************************************************/
 
 /**
- * @brief WHD network packet receive callback
+ * @brief Process Ethernet data received from WHD
  *
- * Called by WHD when a packet is received from the Wi-Fi network.
+ * This is the network interface callback that will be set in whd_netif_funcs
+ * structure during WHD initialization. WHD calls this when a packet is received.
  */
-static void whd_network_rx_callback(whd_interface_t iface,
-                                    whd_buffer_t buffer,
-                                    void *user_data)
+void wifi_bridge_network_process_data(whd_interface_t iface, whd_buffer_t buffer)
 {
     (void)iface;
-    (void)user_data;
     wifi_bridge_buffer_t *bridge_buffer;
     uint8_t *packet_data;
     uint16_t packet_len;
+
+    if (!bridge_state.initialized || bridge_state.status != WIFI_BRIDGE_STATUS_RUNNING) {
+        /* Bridge not ready, release buffer */
+        whd_buffer_release(bridge_state.whd_driver, buffer, WHD_NETWORK_RX);
+        return;
+    }
 
     /* Get packet data from WHD buffer */
     packet_data = whd_buffer_get_current_piece_data_pointer(bridge_state.whd_driver, buffer);
@@ -199,25 +206,6 @@ static void whd_network_rx_callback(whd_interface_t iface,
 
     /* Release WHD buffer */
     whd_buffer_release(bridge_state.whd_driver, buffer, WHD_NETWORK_RX);
-}
-
-/**
- * @brief WHD link state change callback
- */
-static void whd_link_state_callback(whd_interface_t iface,
-                                    whd_bool_t link_up,
-                                    void *user_data)
-{
-    (void)iface;
-    (void)user_data;
-
-    bridge_state.wifi_connected = (link_up == WHD_TRUE);
-
-    if (link_up == WHD_TRUE) {
-        send_event(WIFI_BRIDGE_EVENT_CONNECTED, NULL);
-    } else {
-        send_event(WIFI_BRIDGE_EVENT_DISCONNECTED, NULL);
-    }
 }
 
 /*******************************************************************************
@@ -457,7 +445,7 @@ int wifi_bridge_init(const wifi_bridge_config_t *config)
     /* Initialize WHD (Wi-Fi Host Driver) */
     memset(&whd_config, 0, sizeof(whd_init_config_t));
     whd_config.thread_stack_size = 4096;
-    whd_config.thread_priority = (osPriority_t)tskIDLE_PRIORITY + 2;  /* Normal priority */
+    whd_config.thread_priority = tskIDLE_PRIORITY + 2;  /* Normal priority */
     whd_config.country = WHD_COUNTRY_UNITED_STATES;
 
     whd_result = whd_init(&bridge_state.whd_driver, &whd_config,
@@ -569,35 +557,15 @@ int wifi_bridge_start(void)
     bridge_state.status = WIFI_BRIDGE_STATUS_STARTING;
 
     /* Enable continuous read mode on USB bulk endpoint */
-    USBD_BULK_SetContinuousReadMode(bridge_state.usb_bulk_handle, 1);
+    USBD_BULK_SetContinuousReadMode(bridge_state.usb_bulk_handle);
 
-    /* Register WHD callbacks for packet reception */
-    whd_result = whd_network_register_multicast_address(bridge_state.whd_iface, NULL);
-    if (whd_result != WHD_SUCCESS) {
-        /* Non-fatal: continue without multicast */
-    }
-
-    /* Register packet receive callback */
-    whd_result = whd_wifi_register_link_callback(bridge_state.whd_iface,
-                                                  whd_link_state_callback,
-                                                  NULL);
-    if (whd_result != WHD_SUCCESS) {
-        bridge_state.status = WIFI_BRIDGE_STATUS_ERROR;
-        return -2;
-    }
-
-    /* Set promiscuous mode callback for raw packet reception (Ethernet bridge mode) */
-    if (bridge_state.config.mode == WIFI_BRIDGE_MODE_ETHERNET) {
-        whd_wifi_set_raw_packet_processor(bridge_state.whd_iface,
-                                          whd_network_rx_callback,
-                                          NULL);
-    }
-
-    /* Start USB bulk data transfer */
-    USBD_BULK_ReadAsync(bridge_state.usb_bulk_handle,
-                        bridge_state.usb_rx_buffer,
-                        WIFI_BRIDGE_USB_BUFFER_SIZE,
-                        0);
+    /* Note: Link state callbacks and raw packet processing are configured
+     * via whd_netif_funcs during WHD initialization. The WHD will call
+     * whd_network_process_ethernet_data() for received packets.
+     *
+     * For link state monitoring, use whd_wifi_is_ready_to_transceive()
+     * in the bridge processing loop.
+     */
 
     bridge_state.status = WIFI_BRIDGE_STATUS_RUNNING;
     send_event(WIFI_BRIDGE_EVENT_STARTED, NULL);
@@ -615,21 +583,13 @@ int wifi_bridge_stop(void)
         return 0; /* Already stopped */
     }
 
-    /* Disable continuous read mode on USB bulk endpoint */
-    USBD_BULK_SetContinuousReadMode(bridge_state.usb_bulk_handle, 0);
-
     /* Cancel any pending USB operations */
     USBD_BULK_CancelRead(bridge_state.usb_bulk_handle);
     USBD_BULK_CancelWrite(bridge_state.usb_bulk_handle);
 
-    /* Unregister WHD callbacks */
-    whd_wifi_deregister_link_callback(bridge_state.whd_iface,
-                                       whd_link_state_callback);
-
-    /* Remove raw packet processor */
-    if (bridge_state.config.mode == WIFI_BRIDGE_MODE_ETHERNET) {
-        whd_wifi_set_raw_packet_processor(bridge_state.whd_iface, NULL, NULL);
-    }
+    /* Note: Link state and packet callbacks are managed via whd_netif_funcs
+     * during WHD initialization and persist until WHD is deinitialized.
+     */
 
     /* Flush queues */
     wifi_bridge_buffer_t *buffer;

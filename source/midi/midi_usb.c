@@ -22,7 +22,16 @@
 
 /* Segger emUSB-Device middleware headers */
 #include "USB.h"
-#include "USB_MIDI.h"
+#include "USB_Bulk.h"
+
+/* USB MIDI uses bulk endpoints - no native MIDI class in emUSB-Device */
+typedef USB_BULK_HANDLE USB_MIDI_HANDLE;
+typedef USB_BULK_INIT_DATA USB_MIDI_INIT_DATA;
+
+/* MIDI-over-USB uses USB Audio class with bulk endpoints for data */
+#define USBD_MIDI_Add(init)      USBD_BULK_Add(init)
+#define USBD_MIDI_Receive(h,d,l,t) USBD_BULK_Read(h,d,l,t)
+#define USBD_MIDI_Write(h,d,l,t)   USBD_BULK_Write(h,d,l,t)
 
 /* FreeRTOS headers */
 #include "FreeRTOS.h"

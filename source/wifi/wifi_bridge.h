@@ -246,6 +246,29 @@ uint32_t wifi_bridge_get_tx_available(void);
  */
 uint32_t wifi_bridge_get_rx_pending(void);
 
+/*******************************************************************************
+ * WHD Network Interface Callback
+ *
+ * This function should be assigned to whd_netif_funcs.whd_network_process_ethernet_data
+ * during WHD initialization to receive packets from the Wi-Fi interface.
+ ******************************************************************************/
+
+/* Forward declare WHD types to avoid including WHD headers in public API */
+struct whd_interface;
+typedef struct whd_interface *whd_interface_t;
+typedef void *whd_buffer_t;
+
+/**
+ * @brief WHD network data callback
+ *
+ * Assign this to whd_netif_funcs.whd_network_process_ethernet_data during
+ * WHD initialization to enable Wi-Fi packet reception for the bridge.
+ *
+ * @param iface WHD interface handle
+ * @param buffer WHD buffer containing received packet
+ */
+void wifi_bridge_network_process_data(whd_interface_t iface, whd_buffer_t buffer);
+
 #ifdef __cplusplus
 }
 #endif
