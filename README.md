@@ -39,7 +39,8 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
 |-----------|-------------|-------------|
 | **MCU** | PSE823GOS4DBZQ3 | PSoC Edge E82, Cortex-M55 @ 400MHz + Cortex-M33 |
 | **Wireless** | CYW55512IUBGT | AIROC Wi-Fi 6 + Bluetooth 6.0 combo IC |
-| **Eval Kit** | KIT_PSE84_EVAL | PSoC Edge E84 Evaluation Kit (USB HS, SDIO) |
+| **Eval Kit (MCU)** | [KIT_PSE84_EVAL_EPC2](https://github.com/Infineon/TARGET_KIT_PSE84_EVAL_EPC2) | PSoC Edge E84 Evaluation Kit (USB HS, SDIO) |
+| **Eval Kit (Wireless)** | [CYW955513EVK-01](https://github.com/Infineon/TARGET_CYW955513EVK-01) | CYW55513 Bluetooth/Wi-Fi Evaluation Kit |
 
 ### Hardware Architecture
 
@@ -167,6 +168,24 @@ ModusToolbox provides:
 
 ### Dependencies (Git Submodules)
 
+#### Board Support Packages (BSPs)
+
+| Library | License | Purpose |
+|---------|---------|---------|
+| [TARGET_KIT_PSE84_EVAL_EPC2](https://github.com/Infineon/TARGET_KIT_PSE84_EVAL_EPC2) | Apache 2.0 | PSoC Edge E84 Evaluation Kit BSP |
+| [TARGET_CYW955513EVK-01](https://github.com/Infineon/TARGET_CYW955513EVK-01) | Apache 2.0 | CYW55513 Bluetooth/Wi-Fi EVK BSP |
+
+#### HAL/PDL Libraries
+
+| Library | License | Purpose |
+|---------|---------|---------|
+| [mtb-hal-cat1](https://github.com/Infineon/mtb-hal-cat1) | Apache 2.0 | Hardware Abstraction Layer for CAT1 devices |
+| [mtb-pdl-cat1](https://github.com/Infineon/mtb-pdl-cat1) | Apache 2.0 | Peripheral Driver Library for CAT1 devices |
+| [abstraction-rtos](https://github.com/Infineon/abstraction-rtos) | Apache 2.0 | RTOS abstraction layer |
+| [core-lib](https://github.com/Infineon/core-lib) | Apache 2.0 | Infineon core library |
+
+#### Middleware Libraries
+
 | Library | License | Purpose |
 |---------|---------|---------|
 | [liblc3](https://github.com/google/liblc3) | Apache 2.0 | LC3 codec encode/decode |
@@ -231,11 +250,17 @@ infineon-le-audio/
 │       └── gatt_db.c/h             # GATT database
 │
 └── libs/                           # External libraries (submodules)
+    ├── TARGET_KIT_PSE84_EVAL_EPC2/ # PSoC Edge E84 BSP
+    ├── TARGET_CYW955513EVK-01/     # CYW55513 EVK BSP
+    ├── mtb-hal-cat1/               # Hardware Abstraction Layer
+    ├── mtb-pdl-cat1/               # Peripheral Driver Library
+    ├── abstraction-rtos/           # RTOS abstraction
+    ├── core-lib/                   # Infineon core library
     ├── btstack/                    # Infineon BTSTACK
     ├── btstack-integration/        # HCI UART porting layer
     ├── liblc3/                     # Google LC3 codec
     ├── freertos/                   # FreeRTOS kernel
-    ├── emusb-device/               # Segger USB middleware
+    ├── emusb-device/               # Infineon USB middleware
     └── wifi-host-driver/           # Infineon WHD
 ```
 
@@ -257,7 +282,109 @@ If you already cloned without `--recursive`:
 git submodule update --init --recursive
 ```
 
-### 3. Build with CMake
+### 3. Build with ModusToolbox (Recommended for EVKs)
+
+The recommended build method for KIT_PSE84_EVAL and CYW955513EVK-01 evaluation kits uses the **ModusToolbox modus-shell terminal**.
+
+#### Step 1: Create a Project from Template
+
+Use the ModusToolbox project-creator to create a project based on the BLE Isochronous example (LE Audio foundation):
+
+```bash
+# Windows Command Prompt
+"C:\Users\<username>\ModusToolbox\tools_3.7\project-creator\project-creator-cli.exe" ^
+    --board-id KIT_PSE84_EVAL_EPC2 ^
+    --app-id mtb-example-psoc-edge-btstack-isoc-peripheral ^
+    --user-app-name le-audio-demo ^
+    --target-dir "C:\Users\<username>\source\repos\mtb-le-audio-demo"
+```
+
+#### Step 2: Open ModusToolbox modus-shell
+
+```
+C:\Users\<username>\ModusToolbox\tools_3.7\modus-shell\Cygwin.bat
+```
+
+#### Step 3: Fetch Dependencies and Build
+
+```bash
+# Navigate to project
+cd /cygdrive/c/Users/<username>/source/repos/mtb-le-audio-demo/le-audio-demo
+
+# Fetch all library dependencies
+make getlibs
+
+# Build the project
+make build
+```
+
+#### Successful Build Output
+
+A successful build produces firmware for all three cores (CM33 Secure, CM33 Non-Secure, CM55):
+
+```
+==============================================================================
+= Build complete =
+==============================================================================
+```
+
+**Memory Usage Summary:**
+
+| Core | Region | Used | Available |
+|------|--------|------|-----------|
+| **CM33 Secure** | SRAM (code) | 1.5 KB | 217 KB |
+| **CM33 Secure** | SRAM (data) | 133 KB | 135 KB |
+| **CM33 Non-Secure** | SRAM (code) | 12.8 KB | 413 KB |
+| **CM33 Non-Secure** | SRAM (data) | 258 KB | 262 KB |
+| **CM55** | ITCM (code) | 11.7 KB | 262 KB |
+| **CM55** | DTCM (data) | 3.7 KB | 262 KB |
+| **CM55** | SOCMEM (heap) | 2.8 MB | 2.8 MB |
+
+**Flash Usage (SMIF0MEM1 External QSPI):**
+
+| Image | Size |
+|-------|------|
+| CM33 Secure | 27 KB |
+| CM33 Non-Secure | 273 KB |
+| CM55 | 14 KB |
+
+**Output Files:**
+
+| File | Description |
+|------|-------------|
+| `build/project_hex/proj_cm33_s_signed.hex` | Signed secure image |
+| `build/project_hex/proj_cm33_ns_shifted.hex` | Non-secure image (relocated) |
+| `build/project_hex/` (merged) | Combined image for flashing |
+
+#### Step 4: Flash to Hardware
+
+```bash
+make program
+```
+
+### Available PSoC Edge Examples
+
+These examples are available for KIT_PSE84_EVAL_EPC2 and can serve as starting points:
+
+| Example | Description |
+|---------|-------------|
+| `mtb-example-psoc-edge-btstack-isoc-central` | BLE Isochronous Central (LE Audio) |
+| `mtb-example-psoc-edge-btstack-isoc-peripheral` | BLE Isochronous Peripheral (LE Audio) |
+| `mtb-example-psoc-edge-i2s` | I2S Audio Streaming |
+| `mtb-example-psoc-edge-pdm-to-i2s` | PDM Microphone to I2S |
+| `mtb-example-psoc-edge-usb-device-audio-playback` | USB Audio Playback |
+| `mtb-example-psoc-edge-usb-device-audio-recorder` | USB Audio Recorder |
+
+List all available examples:
+```bash
+"C:\Users\<username>\ModusToolbox\tools_3.7\project-creator\project-creator-cli.exe" --list-apps KIT_PSE84_EVAL_EPC2
+```
+
+---
+
+### Alternative: Build with CMake (Standalone)
+
+For standalone CMake builds without ModusToolbox's make system:
 
 #### Windows (Git Bash or PowerShell)
 
@@ -280,7 +407,9 @@ cmake -G Ninja -DCMAKE_TOOLCHAIN_FILE=../cmake/arm-cortex-m55.cmake ..
 cmake --build .
 ```
 
-### Build Options
+> **Note:** The CMake build requires the BSPs and HAL/PDL libraries. The `cycfg_*.h` configuration headers are generated by ModusToolbox's Device Configurator tool from the `design.modus` files in the BSP.
+
+### CMake Build Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
