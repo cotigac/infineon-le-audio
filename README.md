@@ -3,7 +3,7 @@
 PSoC Edge E82 + CYW55512 demo: Full-duplex LE Audio (LC3), Auracast broadcast, BLE/USB MIDI, Wi-Fi bridge, and I2S streaming for musical instruments.
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-PSoC%20Edge%20E82-green.svg)](https://www.infineon.com/cms/en/product/microcontroller/32-bit-psoc-arm-cortex-microcontroller/psoc-edge-microcontrollers/)
+[![Platform](https://img.shields.io/badge/Platform-PSoC%20Edge%20E82-green.svg)](https://www.infineon.com/products/microcontroller/32-bit-psoc-arm-cortex/32-bit-psoc-edge-arm/psoc-edge-e82)
 [![Bluetooth](https://img.shields.io/badge/Bluetooth-6.0%20LE%20Audio-blue.svg)](https://www.bluetooth.com/learn-about-bluetooth/recent-enhancements/le-audio/)
 
 ## Overview
