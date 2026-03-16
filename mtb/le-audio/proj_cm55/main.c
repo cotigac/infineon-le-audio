@@ -230,14 +230,9 @@ static int init_audio_modules(void)
     i2s_stream_register_rx_callback(i2s_rx_callback, NULL);
     i2s_stream_register_tx_callback(i2s_tx_callback, NULL);
 
-    /* Initialize audio buffers */
-    printf("  Audio buffers...\n");
-    result = audio_buffers_init();
-    if (result != 0) {
-        printf("  WARNING: Audio buffers init failed: %d\n", result);
-    } else {
-        printf("  Audio buffers: OK\n");
-    }
+    /* Audio buffers: Using static ping-pong buffers (declared globally)
+     * LC3 frames are transferred via IPC (audio_ipc.c) */
+    printf("  Audio buffers: static ping-pong (no init required)\n");
 
     printf("[CM55] Audio module initialization complete\n\n");
     return 0;
