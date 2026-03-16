@@ -26,6 +26,12 @@
 #include "USB_Bulk.h"
 
 /*******************************************************************************
+ * Forward Declarations
+ ******************************************************************************/
+
+static void send_event(wifi_bridge_event_type_t type, void *data);
+
+/*******************************************************************************
  * Private Definitions
  ******************************************************************************/
 
@@ -451,7 +457,7 @@ int wifi_bridge_init(const wifi_bridge_config_t *config)
     /* Initialize WHD (Wi-Fi Host Driver) */
     memset(&whd_config, 0, sizeof(whd_init_config_t));
     whd_config.thread_stack_size = 4096;
-    whd_config.thread_priority = osPriorityNormal;
+    whd_config.thread_priority = (osPriority_t)tskIDLE_PRIORITY + 2;  /* Normal priority */
     whd_config.country = WHD_COUNTRY_UNITED_STATES;
 
     whd_result = whd_init(&bridge_state.whd_driver, &whd_config,
@@ -466,7 +472,7 @@ int wifi_bridge_init(const wifi_bridge_config_t *config)
     /* Power on Wi-Fi */
     whd_result = whd_wifi_on(bridge_state.whd_driver, &bridge_state.whd_iface);
     if (whd_result != WHD_SUCCESS) {
-        whd_deinit(bridge_state.whd_driver);
+        whd_deinit(bridge_state.whd_iface);
         wifi_sdio_deinit();
         return -5;
     }
@@ -484,8 +490,8 @@ int wifi_bridge_init(const wifi_bridge_config_t *config)
 
     bridge_state.usb_bulk_handle = USBD_BULK_Add(&usb_bulk_init);
     if (bridge_state.usb_bulk_handle == 0) {
-        whd_wifi_off(bridge_state.whd_driver, bridge_state.whd_iface);
-        whd_deinit(bridge_state.whd_driver);
+        whd_wifi_off(bridge_state.whd_iface);
+        whd_deinit(bridge_state.whd_iface);
         wifi_sdio_deinit();
         return -6;
     }
@@ -514,10 +520,10 @@ void wifi_bridge_deinit(void)
         }
 
         /* Power off Wi-Fi */
-        whd_wifi_off(bridge_state.whd_driver, bridge_state.whd_iface);
+        whd_wifi_off(bridge_state.whd_iface);
 
         /* Deinitialize WHD driver */
-        whd_deinit(bridge_state.whd_driver);
+        whd_deinit(bridge_state.whd_iface);
 
         bridge_state.whd_initialized = false;
         bridge_state.whd_driver = NULL;
