@@ -20,6 +20,7 @@
 /* BTSTACK 4.x extended advertising and scanning headers */
 #include "wiced_bt_adv_scan_extended.h"
 #include "wiced_bt_adv_scan_periodic.h"
+#include "wiced_bt_ble_conn.h"
 
 /* GATT database for device name updates */
 #include "gatt_db.h"
@@ -929,9 +930,9 @@ int gap_periodic_adv_create_sync(uint8_t adv_sid, const gap_address_t *address,
     memcpy(&sync->address, address, sizeof(gap_address_t));
 
     /* Create periodic advertising sync via BTSTACK 4.x API */
-    wiced_ble_padv_sync_params_t sync_params;
+    wiced_ble_padv_create_sync_params_t sync_params;
     memset(&sync_params, 0, sizeof(sync_params));
-    sync_params.options = 0;
+    sync_params.options = WICED_BLE_PADV_CREATE_SYNC_OPTION_IGNORE_PA_LIST;
     sync_params.adv_sid = adv_sid;
     sync_params.adv_addr_type = (wiced_bt_ble_address_type_t)address->type;
     memcpy(sync_params.adv_addr, address->addr, 6);
@@ -956,7 +957,7 @@ int gap_periodic_adv_cancel_sync(void)
     }
 
     /* Cancel pending sync via BTSTACK 4.x API */
-    wiced_result_t result = wiced_ble_padv_cancel_create_sync();
+    wiced_result_t result = wiced_ble_padv_cancel_sync();
     if (result != WICED_BT_SUCCESS) {
         printf("GAP: Failed to cancel periodic sync: %d\n", result);
         return GAP_ERROR_INVALID_STATE;
@@ -1089,22 +1090,22 @@ int gap_set_ext_scan_params(const gap_ext_scan_params_t *params)
     /* Configure extended scan parameters via BTSTACK 4.x API */
     wiced_ble_ext_scan_params_t ext_params;
     memset(&ext_params, 0, sizeof(ext_params));
-    ext_params.own_addr_type = (wiced_bt_ble_address_type_t)params->own_addr_type;
-    ext_params.scanning_filter_policy = (wiced_bt_ble_scanner_filter_policy_t)params->filter_policy;
+    ext_params.own_addr_type = (wiced_ble_own_address_options_t)params->own_addr_type;
+    ext_params.scan_filter_policy = (wiced_ble_scanning_filter_policy_t)params->filter_policy;
     ext_params.scanning_phys = params->scanning_phys;
 
     /* Configure parameters for 1M PHY */
     if (params->scanning_phys & 0x01) {
-        ext_params.params_1m_phy.scan_type = params->phy_params[0].scan_type;
-        ext_params.params_1m_phy.scan_interval = params->phy_params[0].scan_interval;
-        ext_params.params_1m_phy.scan_window = params->phy_params[0].scan_window;
+        ext_params.sp_1m.scan_type = params->phy_params[0].scan_type;
+        ext_params.sp_1m.scan_interval = params->phy_params[0].scan_interval;
+        ext_params.sp_1m.scan_window = params->phy_params[0].scan_window;
     }
 
     /* Configure parameters for Coded PHY */
     if (params->scanning_phys & 0x04) {
-        ext_params.params_coded_phy.scan_type = params->phy_params[1].scan_type;
-        ext_params.params_coded_phy.scan_interval = params->phy_params[1].scan_interval;
-        ext_params.params_coded_phy.scan_window = params->phy_params[1].scan_window;
+        ext_params.sp_le_coded_phy.scan_type = params->phy_params[1].scan_type;
+        ext_params.sp_le_coded_phy.scan_interval = params->phy_params[1].scan_interval;
+        ext_params.sp_le_coded_phy.scan_window = params->phy_params[1].scan_window;
     }
 
     wiced_result_t result = wiced_ble_ext_scan_set_params(&ext_params);
@@ -1128,12 +1129,11 @@ int gap_start_ext_scanning(gap_scan_dup_filter_t filter_duplicates,
     }
 
     /* Enable extended scanning via BTSTACK 4.x API */
-    wiced_result_t result = wiced_ble_ext_scan_enable(
-        WICED_TRUE,
-        (wiced_ble_ext_scan_filter_duplicate_t)filter_duplicates,
-        duration,
-        period
-    );
+    wiced_ble_ext_scan_enable_params_t scan_enable_params;
+    scan_enable_params.filter_duplicates = (uint8_t)filter_duplicates;
+    scan_enable_params.scan_duration = duration;
+    scan_enable_params.scan_period = period;
+    wiced_result_t result = wiced_ble_ext_scan_enable(WICED_TRUE, &scan_enable_params);
     if (result != WICED_BT_SUCCESS && result != WICED_BT_PENDING) {
         printf("GAP: Failed to start ext scanning: %d\n", result);
         return GAP_ERROR_INVALID_STATE;
@@ -1157,12 +1157,11 @@ int gap_stop_ext_scanning(void)
     }
 
     /* Disable extended scanning via BTSTACK 4.x API */
-    wiced_result_t result = wiced_ble_ext_scan_enable(
-        WICED_FALSE,
-        WICED_BLE_EXT_SCAN_FILTER_DUPLICATE_DISABLE,
-        0,
-        0
-    );
+    wiced_ble_ext_scan_enable_params_t scan_disable_params;
+    scan_disable_params.filter_duplicates = WICED_BLE_EXT_SCAN_FILTER_DUPLICATE_DISABLE;
+    scan_disable_params.scan_duration = 0;
+    scan_disable_params.scan_period = 0;
+    wiced_result_t result = wiced_ble_ext_scan_enable(WICED_FALSE, &scan_disable_params);
     if (result != WICED_BT_SUCCESS) {
         printf("GAP: Failed to stop ext scanning: %d\n", result);
     }
@@ -1188,29 +1187,31 @@ int gap_connect(const gap_address_t *peer_addr, const gap_conn_params_t *params)
         return GAP_ERROR_INVALID_PARAM;
     }
 
-    /* Create connection via BTSTACK */
-    wiced_bt_ble_conn_params_t conn_params;
-    conn_params.conn_interval_min = params->conn_interval_min;
-    conn_params.conn_interval_max = params->conn_interval_max;
-    conn_params.conn_latency = params->conn_latency;
-    conn_params.conn_supervision_timeout = params->supervision_timeout;
+    /* Create connection via BTSTACK 4.x legacy create connection API */
+    wiced_ble_legacy_create_conn_t conn_cfg;
+    memset(&conn_cfg, 0, sizeof(conn_cfg));
 
-    wiced_bool_t result = wiced_bt_ble_update_background_connection_device(
-        WICED_TRUE,
-        (uint8_t *)peer_addr->addr
-    );
-    if (result != WICED_TRUE) {
-        printf("GAP: Failed to add device for connection\n");
-        return GAP_ERROR_INVALID_PARAM;
-    }
+    /* Set scan parameters for connection establishment */
+    conn_cfg.le_scan_interval = 0x0060;  /* 60ms scan interval */
+    conn_cfg.le_scan_window = 0x0030;    /* 30ms scan window */
+    conn_cfg.initiator_filter_policy = WICED_BLE_LEGACY_INITIATOR_DO_NOT_USE_FILTER_LIST;
+    conn_cfg.peer_address_type = (wiced_bt_ble_address_type_t)peer_addr->type;
+    memcpy(conn_cfg.peer_address, peer_addr->addr, sizeof(wiced_bt_device_address_t));
+    conn_cfg.own_address_type = BLE_ADDR_PUBLIC;
 
     /* Set preferred connection parameters */
-    wiced_bt_ble_set_conn_params(
-        params->conn_interval_min,
-        params->conn_interval_max,
-        params->conn_latency,
-        params->supervision_timeout
-    );
+    conn_cfg.conn_params.conn_interval_min = params->conn_interval_min;
+    conn_cfg.conn_params.conn_interval_max = params->conn_interval_max;
+    conn_cfg.conn_params.conn_latency = params->conn_latency;
+    conn_cfg.conn_params.conn_supervision_timeout = params->supervision_timeout;
+    conn_cfg.conn_params.min_ce_length = 0;
+    conn_cfg.conn_params.max_ce_length = 0;
+
+    wiced_result_t result = wiced_ble_legacy_create_connection(&conn_cfg);
+    if (result != WICED_BT_SUCCESS && result != WICED_BT_PENDING) {
+        printf("GAP: Failed to create connection: %d\n", result);
+        return GAP_ERROR_INVALID_PARAM;
+    }
 
     printf("GAP: Initiating connection to %02X:%02X:%02X:%02X:%02X:%02X\n",
            peer_addr->addr[0], peer_addr->addr[1], peer_addr->addr[2],
@@ -1225,8 +1226,11 @@ int gap_cancel_connect(void)
         return GAP_ERROR_NOT_INITIALIZED;
     }
 
-    /* Cancel pending connection via BTSTACK */
-    wiced_bt_ble_update_background_connection_device(WICED_FALSE, NULL);
+    /* Cancel pending connection via BTSTACK 4.x API */
+    wiced_result_t result = wiced_ble_cancel_connection();
+    if (result != WICED_BT_SUCCESS) {
+        printf("GAP: Failed to cancel connection: %d\n", result);
+    }
     printf("GAP: Connection cancelled\n");
 
     return GAP_OK;
@@ -1575,8 +1579,8 @@ int gap_whitelist_add(const gap_address_t *address)
 
     /* Add to filter accept list via BTSTACK 4.x API */
     wiced_result_t result = wiced_ble_add_to_filter_accept_list(
-        (wiced_bt_ble_address_type_t)address->type,
-        (uint8_t *)address->addr
+        (uint8_t *)address->addr,
+        (wiced_bt_ble_address_type_t)address->type
     );
     if (result != WICED_BT_SUCCESS) {
         printf("GAP: Failed to add device to whitelist: %d\n", result);
@@ -1598,8 +1602,8 @@ int gap_whitelist_remove(const gap_address_t *address)
 
     /* Remove from filter accept list via BTSTACK 4.x API */
     wiced_result_t result = wiced_ble_remove_from_filter_accept_list(
-        (wiced_bt_ble_address_type_t)address->type,
-        (uint8_t *)address->addr
+        (uint8_t *)address->addr,
+        (wiced_bt_ble_address_type_t)address->type
     );
     if (result != WICED_BT_SUCCESS) {
         printf("GAP: Failed to remove device from whitelist: %d\n", result);
