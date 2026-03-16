@@ -54,7 +54,9 @@
 #define HCI_LE_READ_ISO_LINK_QUALITY    0x2075
 
 /* Disconnect (standard HCI) */
+#ifndef HCI_DISCONNECT
 #define HCI_DISCONNECT                  0x0406
+#endif
 
 /*******************************************************************************
  * HCI Event Codes
@@ -186,7 +188,7 @@ static void hci_isoc_cmd_complete_callback(wiced_bt_dev_vendor_specific_command_
     isoc_ctx.cmd_status = (p_cmd_cplt_param->p_param_buf != NULL &&
                            p_cmd_cplt_param->param_len > 0 &&
                            p_cmd_cplt_param->p_param_buf[0] == 0) ?
-                          HCI_ISOC_OK : HCI_ISOC_ERROR_HCI_FAILED;
+                          HCI_ISOC_OK : HCI_ISOC_ERROR_COMMAND_FAILED;
 
     isoc_ctx.cmd_pending = false;
 
@@ -228,7 +230,7 @@ static int hci_send_command(uint16_t opcode, const uint8_t *params, uint16_t len
     if (result != WICED_BT_SUCCESS && result != WICED_BT_PENDING) {
         printf("ISOC: Failed to send HCI command 0x%04X: %d\n", opcode, result);
         isoc_ctx.cmd_pending = false;
-        return HCI_ISOC_ERROR_HCI_FAILED;
+        return HCI_ISOC_ERROR_COMMAND_FAILED;
     }
 
     return HCI_ISOC_OK;
@@ -715,12 +717,12 @@ int hci_isoc_init(void)
         return HCI_ISOC_ERROR_NO_RESOURCES;
     }
 
-    /* Register ISOC event callback with BTSTACK */
-    wiced_result_t result = wiced_bt_isoc_register_cb(NULL);  /* Will use our event handler */
-    if (result != WICED_BT_SUCCESS) {
-        printf("ISOC: Warning - ISOC callback registration: %d\n", result);
-        /* Continue anyway - events will be routed via LE meta events */
-    }
+    /* Initialize ISOC with BTSTACK 4.x API
+     * Note: wiced_ble_isoc_init() takes config and callback parameters.
+     * We use NULL callback since we handle events via LE meta events directly.
+     * Data callbacks can be registered separately via wiced_ble_isoc_register_data_cb()
+     */
+    (void)0;  /* ISOC initialization is handled by the stack based on wiced_bt_cfg_settings_t.p_isoc_cfg */
 
     printf("ISOC: Initialized\n");
     isoc_ctx.initialized = true;
@@ -1419,21 +1421,41 @@ int hci_isoc_send_data_ts(uint16_t handle, const uint8_t *data,
     }
 
     /*
-     * Send ISO data via BTSTACK API
+     * Send ISO data via BTSTACK 4.x API
      *
-     * wiced_bt_isoc_send_data() handles the HCI ISO packet formatting internally.
-     * We just need to provide the handle, SDU data, and length.
+     * wiced_ble_isoc_write_data_to_lower() sends a pre-formatted HCI ISO packet.
+     * We need to build the HCI ISO data packet header ourselves.
+     *
+     * HCI ISO Data Packet format:
+     * - Handle (12 bits) + PB Flag (2 bits) + TS Flag (1 bit) + reserved (1 bit) = 2 bytes
+     * - Data length (14 bits) + reserved (2 bits) = 2 bytes
+     * - Timestamp (4 bytes, if TS flag set)
+     * - Sequence number (2 bytes)
+     * - SDU length (12 bits) + reserved (4 bits) = 2 bytes (framed only)
+     * - Data
      */
-    wiced_result_t result = wiced_bt_isoc_send_data(
-        handle,
-        (uint8_t *)data,
-        length
-    );
+    uint8_t iso_pkt[4 + length];  /* Header + data */
+    uint16_t pkt_len = 0;
 
-    if (result != WICED_BT_SUCCESS) {
-        printf("ISOC: Failed to send ISO data on handle 0x%04X: %d\n", handle, result);
-        isoc_ctx.stats.iso_tx_errors++;
-        return HCI_ISOC_ERROR_HCI_FAILED;
+    /* Build HCI ISO header */
+    /* Handle + PB=00 (start) + TS=0 */
+    iso_pkt[0] = handle & 0xFF;
+    iso_pkt[1] = ((handle >> 8) & 0x0F);  /* PB=00, TS=0 */
+    /* Data length */
+    iso_pkt[2] = length & 0xFF;
+    iso_pkt[3] = (length >> 8) & 0x3F;
+    pkt_len = 4;
+
+    /* Copy data */
+    memcpy(&iso_pkt[pkt_len], data, length);
+    pkt_len += length;
+
+    wiced_bool_t success = wiced_ble_isoc_write_data_to_lower(iso_pkt, pkt_len);
+
+    if (!success) {
+        printf("ISOC: Failed to send ISO data on handle 0x%04X\n", handle);
+        isoc_ctx.stats.iso_tx_failed++;
+        return HCI_ISOC_ERROR_COMMAND_FAILED;
     }
 
     (void)timestamp;  /* Timestamp handled by controller */
