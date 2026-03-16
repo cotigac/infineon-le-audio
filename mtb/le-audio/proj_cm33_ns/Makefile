@@ -55,7 +55,7 @@ DEFINES+=CYBSP_BT_PLATFORM_CFG_BAUD_FEATURE=3000000
 # ... then code in directories named COMPONENT_foo and COMPONENT_bar will be
 # added to the build
 #
-COMPONENTS+=FREERTOS RTOS_AWARE WICED_BLE 
+COMPONENTS+=FREERTOS RTOS_AWARE WICED_BLE WIFI6 WIFI_INTERFACE_SDIO 
 
 # Like COMPONENTS, but disable optional code that was enabled by default.
 DISABLE_COMPONENTS=
@@ -134,7 +134,9 @@ INCLUDES+= \
     ../../../source/wifi \
     ../../../source/ipc \
     ../../../config \
-    ../../../libs/liblc3/include
+    ../../../libs/liblc3/include \
+    ../../../libs/wifi-host-driver/WHD/COMPONENT_WIFI6/inc \
+    ../../../libs/wifi-host-driver/WHD/COMPONENT_WIFI6/src/include
 
 # Add additional defines to the build process (without a leading -D).
 DEFINES+=CY_RETARGET_IO_CONVERT_LF_TO_CRLF
