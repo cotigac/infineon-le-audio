@@ -48,6 +48,12 @@
 #define SDIO_CMD52              52  /* IO_RW_DIRECT */
 #define SDIO_CMD53              53  /* IO_RW_EXTENDED */
 
+/** Base clock frequency for SD Host (from BSP) */
+#define SDIO_BASE_CLK_HZ        100000000UL  /* 100 MHz typical */
+
+/** Polling timeout for command/transfer complete (iterations) */
+#define SDIO_POLL_TIMEOUT       100000
+
 /*******************************************************************************
  * Private Types
  ******************************************************************************/
@@ -135,6 +141,79 @@ static uint32_t get_freq_for_speed(wifi_sdio_speed_t speed)
     }
 }
 
+/**
+ * @brief Set SD clock frequency using clock divider
+ *
+ * PDL doesn't have Cy_SD_Host_SetSdClkFrequency(), so we calculate the divider
+ * and use Cy_SD_Host_SetSdClkDiv() instead.
+ */
+static cy_en_sd_host_status_t set_sd_clk_frequency(SDHC_Type *base, uint32_t freq_hz)
+{
+    /* Calculate divider: div = base_clk / (2 * target_freq) */
+    uint16_t clk_div;
+    if (freq_hz >= SDIO_BASE_CLK_HZ) {
+        clk_div = 0;  /* No division */
+    } else {
+        clk_div = (uint16_t)((SDIO_BASE_CLK_HZ + (2 * freq_hz) - 1) / (2 * freq_hz));
+        if (clk_div > 0) {
+            clk_div--;  /* Divider is (clk_div + 1) * 2 */
+        }
+    }
+    return Cy_SD_Host_SetSdClkDiv(base, clk_div);
+}
+
+/**
+ * @brief Poll for command completion
+ *
+ * PDL doesn't have Cy_SD_Host_PollCmdComplete(), so we poll the interrupt status.
+ */
+static cy_en_sd_host_status_t poll_cmd_complete(SDHC_Type *base)
+{
+    uint32_t status;
+    uint32_t timeout = SDIO_POLL_TIMEOUT;
+
+    while (timeout > 0) {
+        status = Cy_SD_Host_GetNormalInterruptStatus(base);
+        if (status & CY_SD_HOST_CMD_COMPLETE) {
+            Cy_SD_Host_ClearNormalInterruptStatus(base, CY_SD_HOST_CMD_COMPLETE);
+            return CY_SD_HOST_SUCCESS;
+        }
+        /* Check for errors */
+        if (Cy_SD_Host_GetErrorInterruptStatus(base) != 0) {
+            Cy_SD_Host_ClearErrorInterruptStatus(base, 0xFFFFFFFFUL);
+            return CY_SD_HOST_ERROR;
+        }
+        timeout--;
+    }
+    return CY_SD_HOST_ERROR_TIMEOUT;
+}
+
+/**
+ * @brief Poll for transfer completion
+ *
+ * PDL doesn't have Cy_SD_Host_PollTransferComplete(), so we poll the interrupt status.
+ */
+static cy_en_sd_host_status_t poll_transfer_complete(SDHC_Type *base)
+{
+    uint32_t status;
+    uint32_t timeout = SDIO_POLL_TIMEOUT;
+
+    while (timeout > 0) {
+        status = Cy_SD_Host_GetNormalInterruptStatus(base);
+        if (status & CY_SD_HOST_XFER_COMPLETE) {
+            Cy_SD_Host_ClearNormalInterruptStatus(base, CY_SD_HOST_XFER_COMPLETE);
+            return CY_SD_HOST_SUCCESS;
+        }
+        /* Check for errors */
+        if (Cy_SD_Host_GetErrorInterruptStatus(base) != 0) {
+            Cy_SD_Host_ClearErrorInterruptStatus(base, 0xFFFFFFFFUL);
+            return CY_SD_HOST_ERROR;
+        }
+        timeout--;
+    }
+    return CY_SD_HOST_ERROR_TIMEOUT;
+}
+
 /*******************************************************************************
  * Public Functions
  ******************************************************************************/
@@ -179,7 +258,7 @@ int wifi_sdio_init(const wifi_sdio_config_t *config)
 
     /* Set initial clock frequency */
     sdio_state.current_freq_hz = get_freq_for_speed(sdio_state.config.speed);
-    Cy_SD_Host_SetSdClkFrequency(CYBSP_WIFI_SDIO_HW, sdio_state.current_freq_hz, &sdio_state.sd_host_context);
+    set_sd_clk_frequency(CYBSP_WIFI_SDIO_HW, sdio_state.current_freq_hz);
 
     /* Set 4-bit bus width if configured */
     if (sdio_state.config.bus_width == WIFI_SDIO_BUS_WIDTH_4BIT) {
@@ -287,7 +366,7 @@ int wifi_sdio_cmd52(bool write, uint8_t function, uint32_t address,
     }
 
     /* Wait for command complete */
-    result = Cy_SD_Host_PollCmdComplete(CYBSP_WIFI_SDIO_HW);
+    result = poll_cmd_complete(CYBSP_WIFI_SDIO_HW);
     if (result != CY_SD_HOST_SUCCESS) {
         xSemaphoreGive(sdio_state.bus_mutex);
         sdio_state.stats.errors++;
@@ -403,7 +482,7 @@ int wifi_sdio_cmd53(bool write, uint8_t function, uint32_t address,
     }
 
     /* Wait for command complete */
-    result = Cy_SD_Host_PollCmdComplete(CYBSP_WIFI_SDIO_HW);
+    result = poll_cmd_complete(CYBSP_WIFI_SDIO_HW);
     if (result != CY_SD_HOST_SUCCESS) {
         xSemaphoreGive(sdio_state.bus_mutex);
         sdio_state.stats.errors++;
@@ -411,7 +490,7 @@ int wifi_sdio_cmd53(bool write, uint8_t function, uint32_t address,
     }
 
     /* Wait for transfer complete */
-    result = Cy_SD_Host_PollTransferComplete(CYBSP_WIFI_SDIO_HW);
+    result = poll_transfer_complete(CYBSP_WIFI_SDIO_HW);
 
     xSemaphoreGive(sdio_state.bus_mutex);
 
@@ -549,7 +628,7 @@ int wifi_sdio_set_speed(wifi_sdio_speed_t speed)
     }
 
     /* Reconfigure clock frequency */
-    Cy_SD_Host_SetSdClkFrequency(CYBSP_WIFI_SDIO_HW, freq_hz, &sdio_state.sd_host_context);
+    set_sd_clk_frequency(CYBSP_WIFI_SDIO_HW, freq_hz);
 
     sdio_state.config.speed = speed;
     sdio_state.current_freq_hz = freq_hz;
