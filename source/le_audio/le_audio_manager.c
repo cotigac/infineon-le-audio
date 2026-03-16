@@ -181,9 +181,9 @@ typedef struct {
     uint32_t decode_errors;
 
     /* Synchronization (FreeRTOS) */
-    /* QueueHandle_t tx_queue_handle; */
-    /* QueueHandle_t rx_queue_handle; */
-    /* SemaphoreHandle_t state_mutex; */
+    QueueHandle_t tx_queue_handle;
+    QueueHandle_t rx_queue_handle;
+    SemaphoreHandle_t state_mutex;
 
 } le_audio_ctx_t;
 
@@ -858,15 +858,17 @@ int le_audio_init(const le_audio_codec_config_t *codec_config)
         return -5;
     }
 
-    /*
-     * TODO: Initialize FreeRTOS synchronization
-     *
-     * g_le_audio_ctx.tx_queue_handle = xQueueCreate(LE_AUDIO_FRAME_QUEUE_DEPTH,
-     *                                               sizeof(pcm_buffer_t));
-     * g_le_audio_ctx.rx_queue_handle = xQueueCreate(LE_AUDIO_FRAME_QUEUE_DEPTH,
-     *                                               sizeof(lc3_frame_t));
-     * g_le_audio_ctx.state_mutex = xSemaphoreCreateMutex();
-     */
+    /* Initialize FreeRTOS synchronization */
+    g_le_audio_ctx.tx_queue_handle = xQueueCreate(LE_AUDIO_FRAME_QUEUE_DEPTH,
+                                                  sizeof(pcm_buffer_t));
+    g_le_audio_ctx.rx_queue_handle = xQueueCreate(LE_AUDIO_FRAME_QUEUE_DEPTH,
+                                                  sizeof(lc3_frame_t));
+    g_le_audio_ctx.state_mutex = xSemaphoreCreateMutex();
+    if (g_le_audio_ctx.tx_queue_handle == NULL ||
+        g_le_audio_ctx.rx_queue_handle == NULL ||
+        g_le_audio_ctx.state_mutex == NULL) {
+        return -6;  /* FreeRTOS resource allocation failed */
+    }
 
     /*
      * TODO: Initialize Bluetooth stack integration
@@ -912,19 +914,19 @@ void le_audio_deinit(void)
         g_le_audio_ctx.lc3_ctx = NULL;
     }
 
-    /*
-     * TODO: Delete FreeRTOS synchronization
-     *
-     * if (g_le_audio_ctx.tx_queue_handle != NULL) {
-     *     vQueueDelete(g_le_audio_ctx.tx_queue_handle);
-     * }
-     * if (g_le_audio_ctx.rx_queue_handle != NULL) {
-     *     vQueueDelete(g_le_audio_ctx.rx_queue_handle);
-     * }
-     * if (g_le_audio_ctx.state_mutex != NULL) {
-     *     vSemaphoreDelete(g_le_audio_ctx.state_mutex);
-     * }
-     */
+    /* Delete FreeRTOS synchronization */
+    if (g_le_audio_ctx.tx_queue_handle != NULL) {
+        vQueueDelete(g_le_audio_ctx.tx_queue_handle);
+        g_le_audio_ctx.tx_queue_handle = NULL;
+    }
+    if (g_le_audio_ctx.rx_queue_handle != NULL) {
+        vQueueDelete(g_le_audio_ctx.rx_queue_handle);
+        g_le_audio_ctx.rx_queue_handle = NULL;
+    }
+    if (g_le_audio_ctx.state_mutex != NULL) {
+        vSemaphoreDelete(g_le_audio_ctx.state_mutex);
+        g_le_audio_ctx.state_mutex = NULL;
+    }
 
     g_le_audio_ctx.initialized = false;
 }

@@ -257,7 +257,7 @@ static int app_init(void)
 
     /* Initialize MIDI router */
     printf("Initializing MIDI router...\n");
-    result = midi_router_init();
+    result = midi_router_init(NULL);
     if (result != 0) {
         printf("WARNING: MIDI router initialization failed: %d\n", result);
     } else {
@@ -266,7 +266,7 @@ static int app_init(void)
 
     /* Initialize USB MIDI */
     printf("Initializing USB MIDI...\n");
-    result = midi_usb_init();
+    result = midi_usb_init(NULL);
     if (result != 0) {
         printf("WARNING: USB MIDI initialization failed: %d\n", result);
     } else {
@@ -275,7 +275,7 @@ static int app_init(void)
 
     /* Initialize BLE MIDI */
     printf("Initializing BLE MIDI...\n");
-    result = midi_ble_init();
+    result = midi_ble_init(NULL);
     if (result != 0) {
         printf("WARNING: BLE MIDI initialization failed: %d\n", result);
     } else {

@@ -110,7 +110,7 @@ typedef struct {
     midi_ble_stats_t stats;
 
     /* Synchronization */
-    /* SemaphoreHandle_t tx_mutex; */
+    SemaphoreHandle_t tx_mutex;
 
 } midi_ble_ctx_t;
 
@@ -774,13 +774,11 @@ int midi_ble_init(const midi_ble_config_t *config)
     parser_reset(&g_midi_ble_ctx.parser);
 
     /*
-     * TODO: Create FreeRTOS synchronization
-     *
-     * g_midi_ble_ctx.tx_mutex = xSemaphoreCreateMutex();
-     * if (g_midi_ble_ctx.tx_mutex == NULL) {
-     *     return -2;
-     * }
-     */
+    /* Create FreeRTOS synchronization */
+    g_midi_ble_ctx.tx_mutex = xSemaphoreCreateMutex();
+    if (g_midi_ble_ctx.tx_mutex == NULL) {
+        return -2;
+    }
 
     /* Initialize BLE stack */
     result = ble_stack_init();
@@ -818,13 +816,11 @@ void midi_ble_deinit(void)
         midi_ble_disconnect();
     }
 
-    /*
-     * TODO: Delete FreeRTOS synchronization
-     *
-     * if (g_midi_ble_ctx.tx_mutex != NULL) {
-     *     vSemaphoreDelete(g_midi_ble_ctx.tx_mutex);
-     * }
-     */
+    /* Delete FreeRTOS synchronization */
+    if (g_midi_ble_ctx.tx_mutex != NULL) {
+        vSemaphoreDelete(g_midi_ble_ctx.tx_mutex);
+        g_midi_ble_ctx.tx_mutex = NULL;
+    }
 
     g_midi_ble_ctx.initialized = false;
 }

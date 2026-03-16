@@ -116,8 +116,8 @@ typedef struct {
     midi_usb_stats_t stats;
 
     /* Synchronization */
-    /* SemaphoreHandle_t tx_mutex; */
-    /* SemaphoreHandle_t rx_mutex; */
+    SemaphoreHandle_t tx_mutex;
+    SemaphoreHandle_t rx_mutex;
 
     /* USB device handle */
     /* cy_stc_usb_dev_context_t *usb_context; */
@@ -653,12 +653,12 @@ int midi_usb_init(const midi_usb_config_t *config)
     /* Initialize state */
     g_midi_usb_ctx.state = MIDI_USB_STATE_DETACHED;
 
-    /*
-     * TODO: Create FreeRTOS synchronization
-     *
-     * g_midi_usb_ctx.tx_mutex = xSemaphoreCreateMutex();
-     * g_midi_usb_ctx.rx_mutex = xSemaphoreCreateMutex();
-     */
+    /* Create FreeRTOS synchronization */
+    g_midi_usb_ctx.tx_mutex = xSemaphoreCreateMutex();
+    g_midi_usb_ctx.rx_mutex = xSemaphoreCreateMutex();
+    if (g_midi_usb_ctx.tx_mutex == NULL || g_midi_usb_ctx.rx_mutex == NULL) {
+        return -3;  /* FreeRTOS resource allocation failed */
+    }
 
     /* Initialize USB device */
     result = usb_device_init();
@@ -684,16 +684,15 @@ void midi_usb_deinit(void)
      * Cy_USB_Dev_DeInit(&usb_context);
      */
 
-    /*
-     * TODO: Delete FreeRTOS synchronization
-     *
-     * if (g_midi_usb_ctx.tx_mutex != NULL) {
-     *     vSemaphoreDelete(g_midi_usb_ctx.tx_mutex);
-     * }
-     * if (g_midi_usb_ctx.rx_mutex != NULL) {
-     *     vSemaphoreDelete(g_midi_usb_ctx.rx_mutex);
-     * }
-     */
+    /* Delete FreeRTOS synchronization */
+    if (g_midi_usb_ctx.tx_mutex != NULL) {
+        vSemaphoreDelete(g_midi_usb_ctx.tx_mutex);
+        g_midi_usb_ctx.tx_mutex = NULL;
+    }
+    if (g_midi_usb_ctx.rx_mutex != NULL) {
+        vSemaphoreDelete(g_midi_usb_ctx.rx_mutex);
+        g_midi_usb_ctx.rx_mutex = NULL;
+    }
 
     g_midi_usb_ctx.initialized = false;
 }

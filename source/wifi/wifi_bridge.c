@@ -9,11 +9,11 @@
 #include "wifi_sdio.h"
 #include <string.h>
 
-/* TODO: Include FreeRTOS headers */
-/* #include "FreeRTOS.h" */
-/* #include "task.h" */
-/* #include "queue.h" */
-/* #include "semphr.h" */
+/* FreeRTOS headers */
+#include "FreeRTOS.h"
+#include "task.h"
+#include "queue.h"
+#include "semphr.h"
 
 /* TODO: Include WHD headers */
 /* #include "whd.h" */

@@ -113,8 +113,8 @@ typedef struct {
     uint8_t controller_running_status;
 
     /* Synchronization */
-    /* SemaphoreHandle_t queue_mutex; */
-    /* QueueHandle_t msg_queue; */
+    SemaphoreHandle_t queue_mutex;
+    QueueHandle_t msg_queue;
 
 } midi_router_ctx_t;
 
@@ -778,13 +778,13 @@ int midi_router_init(const midi_router_config_t *config)
         midi_router_set_default_routing();
     }
 
-    /*
-     * TODO: Create FreeRTOS synchronization
-     *
-     * g_midi_router_ctx.queue_mutex = xSemaphoreCreateMutex();
-     * g_midi_router_ctx.msg_queue = xQueueCreate(MIDI_ROUTER_QUEUE_SIZE,
-     *                                            sizeof(queue_entry_t));
-     */
+    /* Create FreeRTOS synchronization */
+    g_midi_router_ctx.queue_mutex = xSemaphoreCreateMutex();
+    g_midi_router_ctx.msg_queue = xQueueCreate(MIDI_ROUTER_QUEUE_SIZE,
+                                               sizeof(queue_entry_t));
+    if (g_midi_router_ctx.queue_mutex == NULL || g_midi_router_ctx.msg_queue == NULL) {
+        return -3;  /* FreeRTOS resource allocation failed */
+    }
 
     g_midi_router_ctx.initialized = true;
 
@@ -801,16 +801,15 @@ void midi_router_deinit(void)
     midi_ble_register_callback(NULL, NULL);
     midi_usb_register_callback(NULL, NULL);
 
-    /*
-     * TODO: Delete FreeRTOS synchronization
-     *
-     * if (g_midi_router_ctx.queue_mutex != NULL) {
-     *     vSemaphoreDelete(g_midi_router_ctx.queue_mutex);
-     * }
-     * if (g_midi_router_ctx.msg_queue != NULL) {
-     *     vQueueDelete(g_midi_router_ctx.msg_queue);
-     * }
-     */
+    /* Delete FreeRTOS synchronization */
+    if (g_midi_router_ctx.queue_mutex != NULL) {
+        vSemaphoreDelete(g_midi_router_ctx.queue_mutex);
+        g_midi_router_ctx.queue_mutex = NULL;
+    }
+    if (g_midi_router_ctx.msg_queue != NULL) {
+        vQueueDelete(g_midi_router_ctx.msg_queue);
+        g_midi_router_ctx.msg_queue = NULL;
+    }
 
     g_midi_router_ctx.initialized = false;
 }
