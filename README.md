@@ -589,11 +589,27 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 
 ## Acknowledgments
 
-- **Google** for the open-source [liblc3](https://github.com/google/liblc3) implementation
-- **Zephyr Project** for the comprehensive LE Audio stack reference
+### Open Source Components
+- **Google** for the open-source [liblc3](https://github.com/google/liblc3) LC3 codec implementation (Apache-2.0)
+- **FreeRTOS Project** for the real-time operating system kernel (MIT)
+- **Infineon/Cypress** for the open-source HAL, PDL, and RTOS abstraction layers (Apache-2.0)
+
+### Reference Documentation
+- **Zephyr Project** for the comprehensive [LE Audio architecture documentation](https://docs.zephyrproject.org/latest/connectivity/bluetooth/api/audio/bluetooth-le-audio-arch.html) (Apache-2.0)
+- **Bluetooth SIG** for the LE Audio specifications (BAP, PACS, ASCS, LC3)
+
+### Proprietary Components
 - **Infineon** for the PSoC Edge and CYW55512 hardware platform
-- **Segger** for the emUSB-Device middleware
-- **Bluetooth SIG** for the LE Audio specifications
+- **Infineon** for the btstack Bluetooth Host Stack and wifi-host-driver (Infineon EULA)
+- **SEGGER** for the emUSB-Device middleware (commercial, licensed via Infineon)
+
+## License Compliance
+
+This project is licensed under Apache-2.0. See [LICENSE](LICENSE) for details.
+
+**Important:** This project depends on proprietary Infineon middleware (btstack, wifi-host-driver) and SEGGER middleware (emusb-device) which are subject to their respective license terms. These components are NOT open source.
+
+See [SBOM.md](SBOM.md) for the complete Software Bill of Materials and [NOTICE](NOTICE) for third-party attributions.
 
 ## References
 

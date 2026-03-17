@@ -1,0 +1,92 @@
+Infineon LE Audio Demo
+Licensed under Apache-2.0. See LICENSE file.
+
+================================================================================
+THIRD-PARTY OPEN SOURCE COMPONENTS
+================================================================================
+
+liblc3
+  License: Apache-2.0
+  Copyright: 2022 Google LLC
+  Source: https://github.com/google/liblc3
+
+FreeRTOS
+  License: MIT
+  Copyright: FreeRTOS Project
+  Source: https://github.com/FreeRTOS/FreeRTOS-Kernel
+
+mtb-hal-cat1 (ModusToolbox Hardware Abstraction Layer)
+  License: Apache-2.0
+  Copyright: 2018-2024 Cypress Semiconductor Corporation (an Infineon company)
+  Source: https://github.com/Infineon/mtb-hal-cat1
+
+mtb-pdl-cat1 (ModusToolbox Peripheral Driver Library)
+  License: Apache-2.0
+  Copyright: Cypress Semiconductor Corporation (an Infineon company)
+  Source: https://github.com/Infineon/mtb-pdl-cat1
+
+abstraction-rtos
+  License: Apache-2.0
+  Copyright: 2018-2022 Cypress Semiconductor Corporation (an Infineon company)
+  Source: https://github.com/Infineon/abstraction-rtos
+
+core-lib
+  License: Apache-2.0
+  Copyright: 2018-2025 Infineon Technologies AG
+  Source: https://github.com/Infineon/core-lib
+
+================================================================================
+THIRD-PARTY PROPRIETARY COMPONENTS (Infineon End User License Agreement)
+================================================================================
+
+btstack (Infineon Bluetooth Host Stack)
+  License: Infineon EULA (NOT open source)
+  Copyright: Infineon Technologies Americas Corp.
+  Source: https://github.com/Infineon/btstack
+  Note: Proprietary middleware for Cypress/Infineon Bluetooth controllers
+
+btstack-integration
+  License: Infineon EULA (NOT open source)
+  Copyright: Infineon Technologies Americas Corp.
+  Source: https://github.com/Infineon/btstack-integration
+  Note: Platform adaptation layer for btstack
+
+wifi-host-driver (WHD)
+  License: Infineon EULA (NOT open source)
+  Copyright: Infineon Technologies Americas Corp.
+  Source: https://github.com/Infineon/wifi-host-driver
+  Note: Proprietary Wi-Fi Host Driver for Infineon WLAN chips
+
+emusb-device
+  License: SEGGER Commercial (licensed via Infineon)
+  Copyright: 2022-2025 Cypress Semiconductor Corporation (an Infineon company)
+  Source: https://github.com/Infineon/emusb-device
+  Note: Binary-only USB device stack from SEGGER Microcontroller Systems GmbH
+
+TARGET_KIT_PSE84_EVAL_EPC2 (Board Support Package)
+  License: Infineon EULA
+  Copyright: Infineon Technologies
+  Source: https://github.com/Infineon/TARGET_KIT_PSE84_EVAL_EPC2
+
+TARGET_CYW955513EVK-01 (Board Support Package)
+  License: Infineon EULA
+  Copyright: Infineon Technologies
+  Source: https://github.com/Infineon/TARGET_CYW955513EVK-01
+
+================================================================================
+REFERENCE DOCUMENTATION
+================================================================================
+
+Bluetooth SIG Specifications:
+  - Basic Audio Profile (BAP) 1.0.1
+  - Published Audio Capabilities Service (PACS)
+  - Audio Stream Control Service (ASCS)
+  - Low Complexity Communication Codec (LC3)
+  Source: https://www.bluetooth.com/specifications/specs/
+
+Zephyr Project LE Audio Architecture Documentation:
+  License: Apache-2.0
+  Source: https://docs.zephyrproject.org/latest/connectivity/bluetooth/api/audio/bluetooth-le-audio-arch.html
+  Note: Used as architectural reference only; no code derived from Zephyr
+
+================================================================================
