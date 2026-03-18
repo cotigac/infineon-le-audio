@@ -52,6 +52,7 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
 +-------------------------------------+---------------------------------------+
                                       | USB High-Speed (480 Mbps)
                                       |   - USB MIDI Class
+                                      |   - CDC/ACM (AT commands)
                                       |   - Wi-Fi Data (bridged)
                                       v
 +-----------------------------------------------------------------------------+
@@ -61,13 +62,13 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
 |  +--------------+  +--------------+  +--------------+  +------------------+ |
 |  |   USB HS     |  |    I2S       |  |   UART       |  |     SDIO 3.0     | |
 |  |  (480Mbps)   |  |   Master     |  |   (HCI)      |  |   (SDR50/DDR50)  | |
-|  |  MIDI + Data |  |   Audio      |  |   BT Host    |  |   WLAN Host      | |
+|  | MIDI+CDC+Data|  |   Audio      |  |   BT Host    |  |   WLAN Host      | |
 |  +------+-------+  +------+-------+  +------+-------+  +--------+---------+ |
 |         |                 |                 |                    |           |
 |  +------v-------+  +------v-------+  +------v-------+  +--------v---------+ |
 |  | emUSB-Device |  |  Audio DMA   |  |  BTSTACK +   |  |  wifi-host-drv   | |
-|  |  Middleware  |  |   Buffer     |  |  LE Audio    |  |  Wi-Fi Bridge    | |
-|  | (HS capable) |  |  (Ping-pong) |  |  Profiles    |  |                  | |
+|  | MIDI + CDC   |  |   Buffer     |  |  LE Audio    |  |  Wi-Fi Bridge    | |
+|  | + AT Parser  |  |  (Ping-pong) |  |  Profiles    |  |                  | |
 |  +--------------+  +------+-------+  +------^-------+  +------------------+ |
 |                           |                 |                                |
 |                    +------v-----------------+------+                        |
@@ -76,7 +77,7 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
 |                    |  Unified for Unicast+Broadcast|                        |
 |                    +-------------------------------+                        |
 |                                                                              |
-|  FreeRTOS (Tasks: Audio/LC3, BLE, USB, Wi-Fi, MIDI)                         |
+|  FreeRTOS (Tasks: Audio/LC3, BLE, USB/CDC, Wi-Fi, MIDI)                     |
 +------------------------------+----------------------+-----------------------+
                                |                      |
                                | UART (HCI+ISOC)      | SDIO (Wi-Fi Data)
