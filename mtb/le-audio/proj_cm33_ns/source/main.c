@@ -57,6 +57,15 @@
 #include "le_audio/le_audio_manager.h"
 #include "ipc/audio_ipc.h"
 
+/* USB Composite and CDC/AT Command Interface */
+#include "usb/usb_composite.h"
+#include "cdc/cdc_acm.h"
+#include "cdc/at_parser.h"
+#include "cdc/at_system_cmds.h"
+#include "cdc/at_bt_cmds.h"
+#include "cdc/at_leaudio_cmds.h"
+#include "cdc/at_wifi_cmds.h"
+
 /*******************************************************************************
  * Macros
  ******************************************************************************/
@@ -204,13 +213,54 @@ static int init_control_modules(void)
         printf("  MIDI router: OK\n");
     }
 
-    /* Initialize USB MIDI (using emUSB-Device) */
-    printf("  USB MIDI...\n");
-    result = midi_usb_init(NULL);
+    /* Initialize USB composite device (MIDI + CDC/ACM) */
+    printf("  USB composite (MIDI + CDC)...\n");
+    result = usb_composite_init(NULL);
     if (result != 0) {
-        printf("  WARNING: USB MIDI init failed: %d\n", result);
+        printf("  WARNING: USB composite init failed: %d\n", result);
     } else {
-        printf("  USB MIDI: OK\n");
+        printf("  USB composite: OK\n");
+    }
+
+    /* Register AT system commands */
+    printf("  AT commands...\n");
+    result = at_system_cmds_register();
+    if (result != 0) {
+        printf("  WARNING: AT system commands registration failed: %d\n", result);
+    } else {
+        printf("  AT system commands: OK\n");
+    }
+
+    /* Register AT Bluetooth commands */
+    result = at_bt_cmds_register();
+    if (result != 0) {
+        printf("  WARNING: AT BT commands registration failed: %d\n", result);
+    } else {
+        printf("  AT BT commands: OK\n");
+    }
+
+    /* Register AT LE Audio commands */
+    result = at_leaudio_cmds_register();
+    if (result != 0) {
+        printf("  WARNING: AT LE Audio commands registration failed: %d\n", result);
+    } else {
+        printf("  AT LE Audio commands: OK\n");
+    }
+
+    /* Register AT Wi-Fi commands */
+    result = at_wifi_cmds_register();
+    if (result != 0) {
+        printf("  WARNING: AT Wi-Fi commands registration failed: %d\n", result);
+    } else {
+        printf("  AT Wi-Fi commands: OK\n");
+    }
+
+    /* Start USB device enumeration */
+    result = usb_composite_start();
+    if (result != 0) {
+        printf("  WARNING: USB composite start failed: %d\n", result);
+    } else {
+        printf("  USB started: OK\n");
     }
 
     /* Initialize BLE MIDI service */
@@ -278,9 +328,9 @@ static void ble_task(void *pvParameters)
 }
 
 /**
- * @brief USB task - USB device enumeration and MIDI
+ * @brief USB task - USB composite device (MIDI + CDC/ACM AT commands)
  *
- * Priority 4: Handles USB High-Speed device, MIDI over USB
+ * Priority 4: Handles USB High-Speed device, MIDI over USB, CDC/ACM AT commands
  */
 static void usb_task(void *pvParameters)
 {
@@ -291,10 +341,24 @@ static void usb_task(void *pvParameters)
     xSemaphoreTake(g_bt_ready_sem, portMAX_DELAY);
     xSemaphoreGive(g_bt_ready_sem);
 
-    printf("[USB] Starting USB MIDI processing\n");
+    printf("[USB] Starting USB composite processing (MIDI + CDC/AT)\n");
 
     while (g_app_running) {
+        /* Process USB composite device (handles CDC state) */
+        usb_composite_process();
+
+        /* Process USB MIDI events */
         midi_usb_process();
+
+        /* Process BT async events (scan results, connection events) */
+        at_bt_cmds_process();
+
+        /* Process LE Audio async events (state changes, stream events) */
+        at_leaudio_cmds_process();
+
+        /* Process Wi-Fi async events (scan results, etc.) */
+        at_wifi_cmds_process();
+
         vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
@@ -402,8 +466,10 @@ int main(void)
     printf("==============================================================\n");
     printf("   Infineon LE Audio - PSoC Edge E84 + CYW55512\n");
     printf("==============================================================\n");
-    printf("CM33 Core: BT Stack, USB, Wi-Fi, MIDI Control\n");
+    printf("CM33 Core: BT Stack, USB, Wi-Fi, MIDI, CDC/AT Commands\n");
     printf("CM55 Core: LC3 Codec, I2S Audio DSP\n");
+    printf("==============================================================\n");
+    printf("USB Interfaces: MIDI + CDC/ACM (AT command console)\n");
     printf("==============================================================\n\n");
 
     /***************************************************************************

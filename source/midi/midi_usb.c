@@ -1195,3 +1195,52 @@ uint16_t midi_usb_rx_available(void)
 
     return g_midi_usb_ctx.rx_count;
 }
+
+/*******************************************************************************
+ * USB Composite Device Support
+ ******************************************************************************/
+
+void midi_usb_set_handle(int handle)
+{
+    g_midi_usb_ctx.usb_midi_handle = (USB_MIDI_HANDLE)handle;
+}
+
+int midi_usb_init_composite(const midi_usb_config_t *config)
+{
+    if (g_midi_usb_ctx.initialized) {
+        return -1;  /* Already initialized */
+    }
+
+    /* Clear context */
+    memset(&g_midi_usb_ctx, 0, sizeof(g_midi_usb_ctx));
+
+    /* Apply configuration */
+    if (config != NULL) {
+        g_midi_usb_ctx.config = *config;
+    } else {
+        midi_usb_config_t default_config = MIDI_USB_CONFIG_DEFAULT;
+        g_midi_usb_ctx.config = default_config;
+    }
+
+    /* Validate configuration */
+    if (g_midi_usb_ctx.config.num_cables == 0 ||
+        g_midi_usb_ctx.config.num_cables > MIDI_USB_MAX_CABLES) {
+        g_midi_usb_ctx.config.num_cables = 1;
+    }
+
+    /* Initialize state - USB init is done by composite module */
+    g_midi_usb_ctx.state = MIDI_USB_STATE_DETACHED;
+
+    /* Create FreeRTOS synchronization */
+    g_midi_usb_ctx.tx_mutex = xSemaphoreCreateMutex();
+    g_midi_usb_ctx.rx_mutex = xSemaphoreCreateMutex();
+    if (g_midi_usb_ctx.tx_mutex == NULL || g_midi_usb_ctx.rx_mutex == NULL) {
+        return -3;  /* FreeRTOS resource allocation failed */
+    }
+
+    /* Note: USB handle is set by midi_usb_set_handle() from composite init */
+
+    g_midi_usb_ctx.initialized = true;
+
+    return 0;
+}

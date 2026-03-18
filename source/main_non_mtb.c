@@ -47,6 +47,14 @@
 #include "bluetooth/bt_init.h"
 #include "wifi/wifi_bridge.h"
 
+/* USB Composite and CDC headers */
+#include "usb/usb_composite.h"
+#include "cdc/at_system_cmds.h"
+#include "cdc/at_bt_cmds.h"
+#include "cdc/at_leaudio_cmds.h"
+#include "cdc/at_wifi_cmds.h"
+#include "cdc/at_parser.h"
+
 /*******************************************************************************
  * Definitions
  ******************************************************************************/
@@ -180,6 +188,7 @@ int main(void)
     printf("  - Auracast Broadcast (BIS)\n");
     printf("  - BLE MIDI 1.0\n");
     printf("  - USB MIDI (High-Speed 480 Mbps)\n");
+    printf("  - USB CDC/ACM AT Command Interface\n");
     printf("  - Wi-Fi 6 Data Bridge\n");
     printf("  - IPC to CM55 for LC3 codec\n");
     printf("\n");
@@ -337,13 +346,54 @@ static int app_init(void)
         printf("  MIDI router: OK\n");
     }
 
-    /* Initialize USB MIDI */
-    printf("Initializing USB MIDI...\n");
-    result = midi_usb_init(NULL);
+    /* Initialize USB composite device (MIDI + CDC) */
+    printf("Initializing USB composite device...\n");
+    result = usb_composite_init(NULL);
     if (result != 0) {
-        printf("WARNING: USB MIDI initialization failed: %d\n", result);
+        printf("WARNING: USB composite initialization failed: %d\n", result);
     } else {
-        printf("  USB MIDI: OK\n");
+        printf("  USB composite (MIDI + CDC): OK\n");
+    }
+
+    /* Register AT system commands */
+    printf("Registering AT commands...\n");
+    result = at_system_cmds_register();
+    if (result != 0) {
+        printf("WARNING: AT system commands registration failed: %d\n", result);
+    } else {
+        printf("  AT system commands: OK\n");
+    }
+
+    /* Register AT Bluetooth commands */
+    result = at_bt_cmds_register();
+    if (result != 0) {
+        printf("WARNING: AT BT commands registration failed: %d\n", result);
+    } else {
+        printf("  AT BT commands: OK\n");
+    }
+
+    /* Register AT LE Audio commands */
+    result = at_leaudio_cmds_register();
+    if (result != 0) {
+        printf("WARNING: AT LE Audio commands registration failed: %d\n", result);
+    } else {
+        printf("  AT LE Audio commands: OK\n");
+    }
+
+    /* Register AT Wi-Fi commands */
+    result = at_wifi_cmds_register();
+    if (result != 0) {
+        printf("WARNING: AT Wi-Fi commands registration failed: %d\n", result);
+    } else {
+        printf("  AT Wi-Fi commands: OK\n");
+    }
+
+    /* Start USB device enumeration */
+    result = usb_composite_start();
+    if (result != 0) {
+        printf("WARNING: USB composite start failed: %d\n", result);
+    } else {
+        printf("  USB started: OK\n");
     }
 
     /* Initialize BLE MIDI */
@@ -397,17 +447,29 @@ static void ble_task(void *pvParameters)
 }
 
 /**
- * @brief USB task - handles USB enumeration and MIDI
+ * @brief USB task - handles USB composite device (MIDI + CDC/ACM)
  */
 static void usb_task(void *pvParameters)
 {
     (void)pvParameters;
 
-    printf("USB task started\n");
+    printf("USB task started (MIDI + CDC/ACM)\n");
 
     while (g_app_running) {
+        /* Process USB composite device (CDC + MIDI) */
+        usb_composite_process();
+
         /* Process USB MIDI events */
         midi_usb_process();
+
+        /* Process BT async events (scan results, connection events) */
+        at_bt_cmds_process();
+
+        /* Process LE Audio async events (state changes, stream events) */
+        at_leaudio_cmds_process();
+
+        /* Process Wi-Fi async events (scan results, etc.) */
+        at_wifi_cmds_process();
 
         /* Yield to other tasks */
         vTaskDelay(pdMS_TO_TICKS(1));

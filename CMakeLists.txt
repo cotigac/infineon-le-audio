@@ -42,6 +42,7 @@ option(ENABLE_LE_AUDIO "Enable LE Audio (BAP, PACS, ASCS)" ON)
 option(ENABLE_AURACAST "Enable Auracast Broadcast (BIS)" ON)
 option(ENABLE_MIDI "Enable MIDI over BLE and USB" ON)
 option(ENABLE_USB "Enable USB Device support" ON)
+option(ENABLE_CDC "Enable USB CDC/ACM AT command interface" ON)
 option(ENABLE_WIFI "Enable Wi-Fi data bridge" ON)
 option(ENABLE_DEBUG "Enable debug output" ON)
 option(ENABLE_STATS "Enable runtime statistics" ON)
@@ -142,6 +143,7 @@ add_compile_definitions(
     $<$<BOOL:${ENABLE_AURACAST}>:ENABLE_AURACAST=1>
     $<$<BOOL:${ENABLE_MIDI}>:ENABLE_MIDI=1>
     $<$<BOOL:${ENABLE_USB}>:ENABLE_USB=1>
+    $<$<BOOL:${ENABLE_CDC}>:ENABLE_CDC=1>
     $<$<BOOL:${ENABLE_WIFI}>:ENABLE_WIFI=1>
     $<$<BOOL:${ENABLE_DEBUG}>:ENABLE_DEBUG=1>
     $<$<BOOL:${ENABLE_STATS}>:ENABLE_STATS=1>
@@ -161,6 +163,8 @@ set(PROJECT_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/source/bluetooth
     ${CMAKE_CURRENT_SOURCE_DIR}/source/le_audio
     ${CMAKE_CURRENT_SOURCE_DIR}/source/midi
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/cdc
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/usb
     ${CMAKE_CURRENT_SOURCE_DIR}/source/wifi
 )
 
@@ -420,9 +424,24 @@ set(WIFI_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/source/wifi/wifi_bridge.c
 )
 
+# USB composite device sources
+set(USB_COMPOSITE_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/usb/usb_composite.c
+)
+
+# CDC/ACM AT command interface sources
+set(CDC_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/cdc/cdc_acm.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/cdc/at_parser.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/cdc/at_system_cmds.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/cdc/at_bt_cmds.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/cdc/at_leaudio_cmds.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/cdc/at_wifi_cmds.c
+)
+
 # Main application
 set(APP_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/source/main.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/main_non_mtb.c
 )
 
 # Combine all sources
@@ -442,6 +461,14 @@ endif()
 
 if(ENABLE_WIFI)
     list(APPEND ALL_SOURCES ${WIFI_SOURCES})
+endif()
+
+if(ENABLE_USB)
+    list(APPEND ALL_SOURCES ${USB_COMPOSITE_SOURCES})
+endif()
+
+if(ENABLE_CDC)
+    list(APPEND ALL_SOURCES ${CDC_SOURCES})
 endif()
 
 #-------------------------------------------------------------------------------
@@ -553,6 +580,7 @@ message(STATUS "  LE Audio:        ${ENABLE_LE_AUDIO}")
 message(STATUS "  Auracast:        ${ENABLE_AURACAST}")
 message(STATUS "  MIDI:            ${ENABLE_MIDI}")
 message(STATUS "  USB:             ${ENABLE_USB}")
+message(STATUS "  CDC/ACM:         ${ENABLE_CDC}")
 message(STATUS "  Wi-Fi:           ${ENABLE_WIFI}")
 message(STATUS "  Debug:           ${ENABLE_DEBUG}")
 message(STATUS "  Statistics:      ${ENABLE_STATS}")

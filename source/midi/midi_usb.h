@@ -340,6 +340,33 @@ int midi_usb_receive(midi_usb_event_t *event);
  */
 uint16_t midi_usb_rx_available(void);
 
+/*******************************************************************************
+ * USB Composite Device Support
+ ******************************************************************************/
+
+/**
+ * @brief Set MIDI bulk handle from USB composite init
+ *
+ * When using USB composite device mode, this function is called
+ * from usb_composite_init() after MIDI endpoints are configured.
+ * When set, midi_usb_init() skips its own USB initialization.
+ * Note: USB_BULK_HANDLE is defined as 'int' in USB_Bulk.h
+ *
+ * @param handle BULK handle from USBD_BULK_Add()
+ */
+void midi_usb_set_handle(int handle);
+
+/**
+ * @brief Initialize MIDI USB for composite device mode
+ *
+ * Lightweight init that doesn't create USB endpoints.
+ * Used when USB is managed by usb_composite module.
+ *
+ * @param config Pointer to configuration (NULL for defaults)
+ * @return 0 on success, negative error code on failure
+ */
+int midi_usb_init_composite(const midi_usb_config_t *config);
+
 #ifdef __cplusplus
 }
 #endif

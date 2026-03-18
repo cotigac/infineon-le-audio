@@ -121,6 +121,16 @@ SOURCES+= \
     ../../../libs/emusb-device/export/Config/usbd_config_io.c \
     ../../../libs/emusb-device/export/Config/COMPONENT_PSE84/usbd_config.c
 
+# USB Composite Device and CDC/ACM AT Command Interface
+SOURCES+= \
+    ../../../source/usb/usb_composite.c \
+    ../../../source/cdc/cdc_acm.c \
+    ../../../source/cdc/at_parser.c \
+    ../../../source/cdc/at_system_cmds.c \
+    ../../../source/cdc/at_bt_cmds.c \
+    ../../../source/cdc/at_leaudio_cmds.c \
+    ../../../source/cdc/at_wifi_cmds.c
+
 # Wi-Fi bridge sources (our integration layer)
 SOURCES+= \
     ../../../source/wifi/wifi_bridge.c \
@@ -183,6 +193,8 @@ INCLUDES+= \
     ../../../source/bluetooth \
     ../../../source/le_audio \
     ../../../source/midi \
+    ../../../source/cdc \
+    ../../../source/usb \
     ../../../source/wifi \
     ../../../source/ipc \
     ../../../config \
