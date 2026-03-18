@@ -17,7 +17,6 @@ mtb/le-audio/build/
 mtb/le-audio/proj_*/build/
 mtb/le-audio/proj_*/libs/
 GeneratedSource/
-*.mtbx
 *.mtbproj
 *.mtbsearch
 .modustoolbox
