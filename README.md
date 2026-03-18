@@ -30,6 +30,7 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
 | **USB MIDI** | CM33 | USB High-Speed MIDI class device (480 Mbps) | Implemented |
 | **I2S Streaming** | CM55 | DMA-based bidirectional audio with ping-pong buffers | Implemented |
 | **Wi-Fi Bridge** | CM33 | USB HS to SDIO to CYW55512 WLAN data path | Implemented |
+| **USB CDC/ACM** | CM33 | AT command interface for BT/Wi-Fi/LE Audio configuration | Implemented |
 
 ## Hardware
 
@@ -239,8 +240,19 @@ infineon-le-audio/
 │   │   └── midi_router.c/h         # MIDI routing (BLE <-> USB <-> Controller)
 │   │
 │   ├── wifi/                       # Wi-Fi data bridge
-│   │   ├── wifi_sdio.c/h           # SDIO driver (cyhal_sdio HAL)
-│   │   └── wifi_bridge.c/h         # USB-to-Wi-Fi bridge (WHD)
+│   │   └── wifi_bridge.c/h         # USB-to-Wi-Fi bridge (WHD + cyhal_sdio)
+│   │
+│   ├── usb/                        # USB composite device
+│   │   └── usb_composite.c/h       # MIDI + CDC composite device
+│   │
+│   ├── cdc/                        # AT command interface
+│   │   ├── cdc_acm.c/h             # USB CDC/ACM virtual serial port
+│   │   ├── at_parser.c/h           # AT command parser
+│   │   ├── at_commands.h           # CME error codes
+│   │   ├── at_system_cmds.c/h      # System commands (AT, ATI, VERSION)
+│   │   ├── at_bt_cmds.c/h          # Bluetooth commands
+│   │   ├── at_leaudio_cmds.c/h     # LE Audio commands
+│   │   └── at_wifi_cmds.c/h        # Wi-Fi commands
 │   │
 │   └── bluetooth/                  # Bluetooth stack integration
 │       ├── bt_init.c/h             # BTSTACK initialization
@@ -497,7 +509,7 @@ le_audio_start_broadcast(&config);
 | **CM55** | Audio/LC3 | Highest | 4096 | LC3 encode/decode, frame sync |
 | **CM55** | IPC | High | 2048 | Inter-processor audio frame exchange |
 | **CM33** | BLE | 5 | 4096 | BTSTACK, LE Audio control plane |
-| **CM33** | USB | 4 | 2048 | USB enumeration, MIDI class |
+| **CM33** | USB | 4 | 2048 | USB enumeration, MIDI + CDC/ACM AT commands |
 | **CM33** | Wi-Fi | 3 | 4096 | WHD packet processing |
 | **CM33** | MIDI | 2 | 1024 | BLE/USB MIDI routing |
 
@@ -511,10 +523,11 @@ le_audio_start_broadcast(&config);
 | BTSTACK + profiles | 80 KB | LE Audio profiles |
 | liblc3 state | 40 KB | Encoder + decoder (stereo) |
 | Audio buffers | 20 KB | I2S + LC3 ring buffers |
-| USB middleware | 8 KB | MIDI + bulk classes |
+| USB middleware | 8 KB | MIDI + CDC classes |
+| CDC/AT buffers | 10 KB | Line buffer, TX/RX, URC queues |
 | Wi-Fi buffers | 16 KB | 16 x 1500 byte packets |
 | Application | 30 KB | Task stacks, variables |
-| **Total** | **~204 KB** | PSoC Edge E82 has 5 MB |
+| **Total** | **~214 KB** | PSoC Edge E82 has 5 MB |
 
 ### Flash Usage (Estimated)
 
@@ -570,6 +583,50 @@ midi_usb_send_note_on(0, 0, 60, 100);   // Cable 0, Channel 0, Note 60, Vel 100
 midi_usb_event_t event;
 if (midi_usb_receive(&event) == 0) {
     // Process received MIDI event
+}
+```
+
+### AT Command Interface (USB CDC/ACM)
+
+Connect to the USB CDC virtual serial port (115200 baud) and send AT commands:
+
+```
+# System commands
+AT              → OK
+ATI             → Infineon LE Audio Demo v1.0
+AT+VERSION?     → +VERSION: 1.0.0
+
+# Bluetooth commands
+AT+BTINIT       → OK
+AT+BTSTATE?     → +BTSTATE: INITIALIZED
+AT+BTNAME=MyDevice → OK
+AT+GAPADVSTART  → OK
+
+# LE Audio commands
+AT+LEAINIT      → +LEAINIT: OK,48000,10000
+AT+LEABROADCAST=1 → OK
+AT+LEASTATE?    → +LEASTATE: STREAMING
+
+# Wi-Fi commands
+AT+WIFIINIT     → OK
+AT+WIFISCAN     → +WIFISCAN: "NetworkName",-45,WPA2
+AT+WIFIJOIN=MyNetwork,password123 → OK
+AT+WIFIBRIDGE=1 → OK
+```
+
+**Programmatic access (from firmware):**
+
+```c
+#include "cdc/at_parser.h"
+#include "cdc/cdc_acm.h"
+
+// Send response to host
+cdc_acm_printf("\r\n+MYEVENT: data\r\n");
+
+// Register custom AT command handler
+int my_cmd_handler(int argc, const char *argv[]) {
+    cdc_acm_printf("\r\n+MYCMD: %s\r\n", argv[0]);
+    return CME_SUCCESS;
 }
 ```
 

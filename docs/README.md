@@ -46,6 +46,7 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
 | **USB MIDI** | CM33 | USB High-Speed MIDI class device | 🟡 Scaffolded |
 | **I2S Streaming** | CM55 | DMA-based bidirectional audio | 🟡 Scaffolded |
 | **Wi-Fi Bridge** | CM33 | USB HS → SDIO → CYW55512 WLAN | 🟡 Scaffolded |
+| **USB CDC/ACM** | CM33 | AT command interface for BT/WiFi/LE Audio config | ✅ Complete |
 
 ---
 
@@ -170,6 +171,13 @@ The project has **complete implementation** of all Bluetooth, LE Audio, MIDI, an
 | `le_audio_manager.h` | ✅ Header definitions complete |
 | `i2s_stream.c` | ✅ I2S streaming complete |
 | `midi_ble_service.c` | ✅ BLE MIDI service complete |
+| `cdc_acm.c` | ✅ USB CDC/ACM virtual serial port |
+| `at_parser.c` | ✅ AT command parser and dispatcher |
+| `at_system_cmds.c` | ✅ System AT commands (AT, ATI, VERSION) |
+| `at_bt_cmds.c` | ✅ Bluetooth AT commands |
+| `at_leaudio_cmds.c` | ✅ LE Audio AT commands |
+| `at_wifi_cmds.c` | ✅ Wi-Fi AT commands |
+| `usb_composite.c` | ✅ USB composite device (MIDI + CDC) |
 
 ---
 
@@ -315,6 +323,34 @@ BTSTACK → HCI Commands → UART → CYW55512 Controller
 | PACS | `pacs.c` | 0 | ✅ Published Audio Capabilities |
 | LE Audio Mgr | `le_audio_manager.c` | 0 | ✅ Timeout with FreeRTOS ticks |
 
+### Path 6: USB CDC/ACM AT Command Interface ✅ COMPLETE
+
+AT-style command interface over USB virtual serial port for configuring Bluetooth, Wi-Fi, and LE Audio.
+
+```
+Host PC → USB CDC/ACM → AT Parser → Command Handlers → BT/WiFi/LE Audio APIs
+Terminal   emUSB-Device   Tokenizer    at_*_cmds.c       BTSTACK/WHD/etc.
+```
+
+| Component | File | TODOs | Status |
+|-----------|------|-------|--------|
+| USB CDC Class | `cdc_acm.c` | 0 | ✅ emUSB-Device CDC/ACM |
+| AT Parser | `at_parser.c` | 0 | ✅ Line buffer, tokenizer, dispatcher |
+| System Commands | `at_system_cmds.c` | 0 | ✅ AT, ATI, VERSION, RST, ECHO |
+| Bluetooth Commands | `at_bt_cmds.c` | 0 | ✅ BTINIT, BTSTATE, GAP operations |
+| LE Audio Commands | `at_leaudio_cmds.c` | 0 | ✅ LEAINIT, BROADCAST, UNICAST |
+| Wi-Fi Commands | `at_wifi_cmds.c` | 0 | ✅ WIFIINIT, SCAN, JOIN, BRIDGE |
+| USB Composite | `usb_composite.c` | 0 | ✅ MIDI + CDC composite device |
+
+**AT Command Summary:**
+
+| Category | Commands |
+|----------|----------|
+| System | `AT`, `ATI`, `AT+VERSION?`, `AT+RST`, `AT+ECHO=0/1` |
+| Bluetooth | `AT+BTINIT`, `AT+BTSTATE?`, `AT+BTNAME=<name>`, `AT+GAPADVSTART`, `AT+GAPSCAN=1`, `AT+GAPCONN=<addr>` |
+| LE Audio | `AT+LEAINIT`, `AT+LEASTATE?`, `AT+LEABROADCAST=1`, `AT+LEAUNICAST=1,<handle>`, `AT+LEACODEC=<rate>,<duration>` |
+| Wi-Fi | `AT+WIFIINIT`, `AT+WIFISTATE?`, `AT+WIFISCAN`, `AT+WIFIJOIN=<ssid>,<pwd>`, `AT+WIFIBRIDGE=1` |
+
 ### Path Summary
 
 | Path | Description | TODOs | Status |
@@ -324,6 +360,7 @@ BTSTACK → HCI Commands → UART → CYW55512 Controller
 | 3 | BLE MIDI | 0 | ✅ Complete |
 | 4 | Wi-Fi Bridge | 0 | ✅ Complete |
 | 5 | Bluetooth HCI | 0 | ✅ Complete |
+| 6 | USB CDC/ACM AT | 0 | ✅ Complete |
 | **Total** | | **0** | ✅ All paths complete |
 
 ---

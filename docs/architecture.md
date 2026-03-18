@@ -35,8 +35,9 @@ The firmware uses a **dual-core architecture** to maximize performance:
 │  ┌─────────────────────────┐   │   ┌─────────────────────────────────────┐ │
 │  │ USB High-Speed          │   │   │ I2S DMA Streaming                   │ │
 │  │ - MIDI class            │   │   │ - Ping-pong buffers                 │ │
-│  │ - Wi-Fi data bridge     │   │   │ - 48kHz/16-bit stereo               │ │
-│  └─────────────────────────┘   │   │ - DMA half/complete callbacks       │ │
+│  │ - CDC/ACM (AT commands) │   │   │ - 48kHz/16-bit stereo               │ │
+│  │ - Wi-Fi data bridge     │   │   │ - DMA half/complete callbacks       │ │
+│  └─────────────────────────┘   │   └─────────────────────────────────────┘ │
 │                                 │   └─────────────────────────────────────┘ │
 │  ┌─────────────────────────┐   │                                            │
 │  │ Wi-Fi (WHD + SDIO)      │   │   ┌─────────────────────────────────────┐ │
@@ -257,6 +258,63 @@ Network data bridged from USB to Wi-Fi for the main controller.
 - [x] `cyhal_sdio_bulk_transfer()` - CMD53 (block data)
 - [x] `cyhal_sdio_register_callback()` - Async DMA with IRQ
 
+### Path 5: AT Command Interface (USB CDC/ACM)
+
+AT-style command interface for configuring Bluetooth, Wi-Fi, and LE Audio via USB virtual serial port.
+
+```
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│ Host PC      │───►│ USB CDC/ACM  │───►│ AT Parser    │───►│ Command      │
+│ Terminal     │    │ emUSB-Device │    │ Tokenizer    │    │ Handlers     │
+│ (AT+...)     │    │ EP 0x82/0x02 │    │ argc/argv    │    │ BT/WiFi/LEA  │
+└──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘
+                           │                   │                   │
+                    cdc_acm.c           at_parser.c         at_*_cmds.c
+```
+
+**AT Command Categories:**
+
+| Category | Commands | Handler File |
+|----------|----------|--------------|
+| System | `AT`, `ATI`, `AT+VERSION?`, `AT+RST`, `AT+ECHO` | `at_system_cmds.c` |
+| Bluetooth | `AT+BTINIT`, `AT+BTSTATE?`, `AT+BTNAME`, `AT+GAPADVSTART`, `AT+GAPSCAN`, `AT+GAPCONN` | `at_bt_cmds.c` |
+| LE Audio | `AT+LEAINIT`, `AT+LEABROADCAST`, `AT+LEAUNICAST`, `AT+LEACODEC`, `AT+LEAINFO?` | `at_leaudio_cmds.c` |
+| Wi-Fi | `AT+WIFIINIT`, `AT+WIFISCAN`, `AT+WIFIJOIN`, `AT+WIFIBRIDGE`, `AT+WIFIRSSI?` | `at_wifi_cmds.c` |
+
+**USB Composite Device Architecture:**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  USB Composite Device                        │
+├─────────────────────────┬───────────────────────────────────┤
+│   MIDI (existing)       │      CDC/ACM (new)                │
+│   EP 0x81/0x01          │      EP 0x82/0x02/0x83            │
+│   midi_usb.c            │      cdc_acm.c                    │
+└─────────────────────────┴───────────────────────────────────┘
+                                      │
+                          ┌───────────▼───────────┐
+                          │   AT Parser           │
+                          │   at_parser.c         │
+                          └───────────┬───────────┘
+               ┌──────────────────────┼──────────────────────┐
+               ▼                      ▼                      ▼
+      ┌────────────────┐    ┌────────────────┐    ┌────────────────┐
+      │ at_bt_cmds.c   │    │ at_wifi_cmds.c │    │at_leaudio_cmds │
+      │ BTSTACK APIs   │    │ WHD APIs       │    │ LE Audio APIs  │
+      └────────────────┘    └────────────────┘    └────────────────┘
+```
+
+**Implementation Status:**
+- [x] USB CDC/ACM class with emUSB-Device (`USBD_CDC_Add()`)
+- [x] AT command parser with line buffering and tokenization
+- [x] CME error codes (3GPP TS 27.007 based)
+- [x] System commands (AT, ATI, VERSION, RST, ECHO)
+- [x] Bluetooth commands (BTINIT, BTSTATE, BTNAME, GAP operations)
+- [x] LE Audio commands (LEAINIT, LEABROADCAST, LEAUNICAST, LEACODEC)
+- [x] Wi-Fi commands (WIFIINIT, WIFISCAN, WIFIJOIN, WIFIBRIDGE)
+- [x] USB composite device (MIDI + CDC)
+- [x] Async URC (Unsolicited Result Code) support for scan results
+
 ---
 
 ## Software Architecture
@@ -298,9 +356,12 @@ The firmware runs FreeRTOS on both cores with separate schedulers:
 | **CM55** | Audio/LC3 | Highest | 4096 | LC3 encode/decode, frame sync |
 | **CM55** | IPC | High | 2048 | Inter-processor queue management |
 | **CM33** | BLE | 5 | 4096 | BTSTACK, LE Audio control plane |
-| **CM33** | USB | 4 | 2048 | USB enumeration, MIDI class |
+| **CM33** | USB | 4 | 2048 | USB enumeration, MIDI + CDC/ACM |
 | **CM33** | Wi-Fi | 3 | 4096 | WHD packet processing |
 | **CM33** | MIDI | 2 | 1024 | BLE/USB routing |
+
+**Note:** CDC/ACM AT command processing is integrated into the USB task. The AT parser
+and command handlers run in the USB task context when processing CDC data.
 
 ### Task Stack Sizes
 
@@ -615,6 +676,18 @@ infineon-le-audio/
 │   ├── wifi/                        # ══════ Built on CM33 ══════
 │   │   └── wifi_bridge.c/h          # USB-Wi-Fi data bridge (uses WHD/cyhal_sdio)
 │   │
+│   ├── usb/                         # ══════ Built on CM33 ══════
+│   │   └── usb_composite.c/h        # USB composite device (MIDI + CDC)
+│   │
+│   ├── cdc/                         # ══════ Built on CM33 ══════
+│   │   ├── cdc_acm.c/h              # USB CDC/ACM virtual serial port
+│   │   ├── at_parser.c/h            # AT command parser (tokenizer, dispatcher)
+│   │   ├── at_commands.h            # CME error codes and common definitions
+│   │   ├── at_system_cmds.c/h       # System commands (AT, ATI, VERSION, RST)
+│   │   ├── at_bt_cmds.c/h           # Bluetooth commands (BTINIT, GAP operations)
+│   │   ├── at_leaudio_cmds.c/h      # LE Audio commands (broadcast, unicast)
+│   │   └── at_wifi_cmds.c/h         # Wi-Fi commands (scan, join, bridge)
+│   │
 │   └── bluetooth/                   # ══════ Built on CM33 ══════
 │       ├── bt_init.c/h              # BTSTACK initialization
 │       ├── bt_platform_config.c/h   # HCI UART configuration
@@ -678,6 +751,13 @@ infineon-le-audio/
 | **CM33** | `midi/midi_usb.c` | USB MIDI class |
 | **CM33** | `midi/midi_router.c` | MIDI routing logic |
 | **CM33** | `wifi/wifi_bridge.c` | USB-Wi-Fi data bridge (uses WHD/cyhal_sdio) |
+| **CM33** | `usb/usb_composite.c` | USB composite device (MIDI + CDC) |
+| **CM33** | `cdc/cdc_acm.c` | USB CDC/ACM virtual serial port |
+| **CM33** | `cdc/at_parser.c` | AT command parser and dispatcher |
+| **CM33** | `cdc/at_system_cmds.c` | System AT commands |
+| **CM33** | `cdc/at_bt_cmds.c` | Bluetooth AT commands |
+| **CM33** | `cdc/at_leaudio_cmds.c` | LE Audio AT commands |
+| **CM33** | `cdc/at_wifi_cmds.c` | Wi-Fi AT commands |
 
 ---
 
