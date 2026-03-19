@@ -2,12 +2,22 @@
  * @file usb_composite.h
  * @brief USB Composite Device Manager
  *
- * Manages USB composite device with MIDI and CDC/ACM interfaces.
+ * Manages USB composite device with MIDI, CDC/ACM, and Wi-Fi Bridge interfaces.
  * Handles centralized USB initialization and interface coordination.
  *
  * USB Interfaces:
- * - Interface 0: MIDI Streaming (Audio Class)
- * - Interface 1-2: CDC ACM (Control + Data)
+ * - Interface 0: Audio Control
+ * - Interface 1: MIDI Streaming (Audio Class)
+ * - Interface 2: CDC Control (ACM)
+ * - Interface 3: CDC Data
+ * - Interface 4: Wi-Fi Bridge (Bulk Data)
+ *
+ * USB Endpoints:
+ * - EP0:          Control (64 bytes)
+ * - EP 0x81/0x01: MIDI IN/OUT (512 bytes, High-Speed)
+ * - EP 0x82/0x02: CDC Data IN/OUT (64 bytes)
+ * - EP 0x83:      CDC Notifications (8 bytes, Interrupt)
+ * - EP 0x84/0x04: Wi-Fi Bridge IN/OUT (512 bytes, High-Speed)
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -50,6 +60,7 @@ typedef struct {
     uint16_t product_id;            /**< USB Product ID */
     bool enable_midi;               /**< Enable MIDI interface */
     bool enable_cdc;                /**< Enable CDC/ACM interface */
+    bool enable_wifi_bridge;        /**< Enable Wi-Fi bridge interface */
 } usb_composite_config_t;
 
 /**
@@ -75,7 +86,8 @@ typedef enum {
     .vendor_id = USB_COMPOSITE_VID,                 \
     .product_id = USB_COMPOSITE_PID,                \
     .enable_midi = true,                            \
-    .enable_cdc = true                              \
+    .enable_cdc = true,                             \
+    .enable_wifi_bridge = true                      \
 }
 
 /*******************************************************************************
@@ -86,7 +98,7 @@ typedef enum {
  * @brief Initialize USB composite device
  *
  * Initializes the USB device stack and configures all enabled
- * interfaces (MIDI, CDC). Must be called before starting USB.
+ * interfaces (MIDI, CDC, Wi-Fi Bridge). Must be called before starting USB.
  *
  * @param config Configuration (NULL for defaults)
  * @return 0 on success, negative error code on failure
@@ -137,6 +149,15 @@ bool usb_composite_is_configured(void);
  * Internally calls process functions for enabled interfaces.
  */
 void usb_composite_process(void);
+
+/**
+ * @brief Get Wi-Fi bridge bulk handle
+ *
+ * Used by wifi_bridge module when using composite device.
+ *
+ * @return Wi-Fi bridge bulk handle (USB_BULK_HANDLE)
+ */
+int usb_composite_get_wifi_bridge_handle(void);
 
 #ifdef __cplusplus
 }

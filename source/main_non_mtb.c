@@ -346,13 +346,39 @@ static int app_init(void)
         printf("  MIDI router: OK\n");
     }
 
-    /* Initialize USB composite device (MIDI + CDC) */
+    /* Initialize USB composite device (MIDI + CDC + Wi-Fi Bridge)
+     * This creates all USB endpoints as part of the composite device descriptor.
+     * Wi-Fi bridge USB endpoints are created here but WHD is initialized later.
+     */
     printf("Initializing USB composite device...\n");
     result = usb_composite_init(NULL);
     if (result != 0) {
         printf("WARNING: USB composite initialization failed: %d\n", result);
     } else {
-        printf("  USB composite (MIDI + CDC): OK\n");
+        printf("  USB composite (MIDI + CDC + Wi-Fi): OK\n");
+    }
+
+    /* Initialize Wi-Fi bridge (WHD/SDIO only - USB handle set separately)
+     * This must happen BEFORE usb_composite_start() so that the Wi-Fi bridge
+     * can receive the USB handle from the composite device.
+     */
+    printf("Initializing Wi-Fi bridge...\n");
+    result = wifi_bridge_init(NULL);
+    if (result != 0) {
+        printf("WARNING: Wi-Fi bridge initialization failed: %d\n", result);
+    } else {
+        printf("  Wi-Fi bridge (WHD/SDIO): OK\n");
+
+        /* Connect Wi-Fi bridge to USB composite endpoint */
+        int wifi_handle = usb_composite_get_wifi_bridge_handle();
+        if (wifi_handle != 0) {
+            result = wifi_bridge_set_handle(wifi_handle);
+            if (result != 0) {
+                printf("WARNING: Wi-Fi bridge USB handle set failed: %d\n", result);
+            } else {
+                printf("  Wi-Fi bridge USB endpoint: OK\n");
+            }
+        }
     }
 
     /* Register AT system commands */
@@ -388,7 +414,10 @@ static int app_init(void)
         printf("  AT Wi-Fi commands: OK\n");
     }
 
-    /* Start USB device enumeration */
+    /* Start USB device enumeration
+     * MUST be called after all USB endpoints are configured (MIDI, CDC, Wi-Fi)
+     * This finalizes the USB device descriptor and starts enumeration.
+     */
     result = usb_composite_start();
     if (result != 0) {
         printf("WARNING: USB composite start failed: %d\n", result);
@@ -403,15 +432,6 @@ static int app_init(void)
         printf("WARNING: BLE MIDI initialization failed: %d\n", result);
     } else {
         printf("  BLE MIDI: OK\n");
-    }
-
-    /* Initialize Wi-Fi bridge */
-    printf("Initializing Wi-Fi bridge...\n");
-    result = wifi_bridge_init(NULL);
-    if (result != 0) {
-        printf("WARNING: Wi-Fi bridge initialization failed: %d\n", result);
-    } else {
-        printf("  Wi-Fi bridge: OK\n");
     }
 
     g_app_running = true;

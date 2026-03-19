@@ -133,10 +133,26 @@ typedef void (*wifi_bridge_callback_t)(const wifi_bridge_event_t *event, void *u
 /**
  * @brief Initialize the Wi-Fi bridge
  *
+ * Initializes WHD, SDIO, and FreeRTOS resources. When used with
+ * usb_composite, the USB bulk handle must be set via wifi_bridge_set_handle()
+ * before calling wifi_bridge_start().
+ *
  * @param config Pointer to configuration (NULL for defaults)
  * @return 0 on success, negative error code on failure
  */
 int wifi_bridge_init(const wifi_bridge_config_t *config);
+
+/**
+ * @brief Set USB bulk handle for composite device mode
+ *
+ * When using usb_composite for USB initialization, call this function
+ * to provide the USB bulk handle created by usb_composite_init().
+ * This must be called after wifi_bridge_init() and before wifi_bridge_start().
+ *
+ * @param handle USB bulk handle from usb_composite_get_wifi_bridge_handle()
+ * @return 0 on success, negative error code on failure
+ */
+int wifi_bridge_set_handle(int handle);
 
 /**
  * @brief Deinitialize the Wi-Fi bridge

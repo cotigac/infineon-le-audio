@@ -45,6 +45,7 @@ typedef struct {
 /** Bridge state */
 typedef struct {
     bool initialized;
+    bool composite_mode;  /**< USB handle provided by usb_composite */
     wifi_bridge_config_t config;
     wifi_bridge_status_t status;
     wifi_bridge_stats_t stats;
@@ -414,7 +415,6 @@ int wifi_bridge_init(const wifi_bridge_config_t *config)
 {
     whd_init_config_t whd_config;
     whd_result_t whd_result;
-    USB_BULK_INIT_DATA usb_bulk_init;
 
     if (bridge_state.initialized) {
         return -1; /* Already initialized */
@@ -439,6 +439,8 @@ int wifi_bridge_init(const wifi_bridge_config_t *config)
     bridge_state.usb_rx_pending = false;
     bridge_state.whd_initialized = false;
     bridge_state.wifi_connected = false;
+    bridge_state.composite_mode = false;
+    bridge_state.usb_bulk_handle = 0;
 
     /* Create FreeRTOS synchronization primitives */
     bridge_state.buffer_mutex = xSemaphoreCreateMutex();
@@ -483,25 +485,40 @@ int wifi_bridge_init(const wifi_bridge_config_t *config)
 
     bridge_state.whd_initialized = true;
 
-    /* Initialize USB bulk endpoint for data bridge */
-    memset(&usb_bulk_init, 0, sizeof(USB_BULK_INIT_DATA));
-    usb_bulk_init.EPIn = USBD_AddEP(USB_DIR_IN, USB_TRANSFER_TYPE_BULK, 0,
-                                    bridge_state.usb_tx_buffer,
-                                    WIFI_BRIDGE_USB_BUFFER_SIZE);
-    usb_bulk_init.EPOut = USBD_AddEP(USB_DIR_OUT, USB_TRANSFER_TYPE_BULK, 0,
-                                     bridge_state.usb_rx_buffer,
-                                     WIFI_BRIDGE_USB_BUFFER_SIZE);
-
-    bridge_state.usb_bulk_handle = USBD_BULK_Add(&usb_bulk_init);
-    if (bridge_state.usb_bulk_handle == 0) {
-        whd_wifi_off(bridge_state.whd_iface);
-        whd_deinit(bridge_state.whd_iface);
-        whd_buffer_impl_deinit();
-        return -6;
-    }
+    /* USB bulk handle must be provided via wifi_bridge_set_handle()
+     * when using usb_composite. The handle is created by usb_composite_init()
+     * as part of the composite device descriptor.
+     *
+     * Call sequence for composite mode:
+     *   1. usb_composite_init()  - creates USB endpoints including Wi-Fi bridge
+     *   2. wifi_bridge_init()    - initializes WHD/SDIO (this function)
+     *   3. wifi_bridge_set_handle() - connects Wi-Fi bridge to USB endpoint
+     *   4. usb_composite_start() - starts USB enumeration
+     *   5. wifi_bridge_start()   - starts bridge data processing
+     */
 
     bridge_state.status = WIFI_BRIDGE_STATUS_STOPPED;
     bridge_state.initialized = true;
+
+    return 0;
+}
+
+int wifi_bridge_set_handle(int handle)
+{
+    if (!bridge_state.initialized) {
+        return -1;  /* Not initialized */
+    }
+
+    if (bridge_state.status == WIFI_BRIDGE_STATUS_RUNNING) {
+        return -2;  /* Cannot change handle while running */
+    }
+
+    if (handle == 0) {
+        return -3;  /* Invalid handle */
+    }
+
+    bridge_state.usb_bulk_handle = (USB_BULK_HANDLE)handle;
+    bridge_state.composite_mode = true;
 
     return 0;
 }
@@ -560,14 +577,17 @@ void wifi_bridge_deinit(void)
 
 int wifi_bridge_start(void)
 {
-    whd_result_t whd_result;
-
     if (!bridge_state.initialized) {
         return -1;
     }
 
     if (bridge_state.status == WIFI_BRIDGE_STATUS_RUNNING) {
         return 0; /* Already running */
+    }
+
+    /* Check that USB handle is set (required for composite mode) */
+    if (bridge_state.usb_bulk_handle == 0) {
+        return -2;  /* USB handle not set - call wifi_bridge_set_handle() first */
     }
 
     bridge_state.status = WIFI_BRIDGE_STATUS_STARTING;

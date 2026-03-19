@@ -20,6 +20,7 @@
 /* Interface modules */
 #include "../midi/midi_usb.h"
 #include "../cdc/cdc_acm.h"
+#include "../wifi/wifi_bridge.h"
 
 /*******************************************************************************
  * Private Definitions
@@ -34,8 +35,13 @@
 #define CDC_EP_OUT              0x02
 #define CDC_EP_INT              0x83
 
+/** Wi-Fi bridge endpoint addresses */
+#define WIFI_EP_IN              0x84
+#define WIFI_EP_OUT             0x04
+
 /** Endpoint buffer sizes */
 #define EP_BUFFER_SIZE          64
+#define EP_BUFFER_SIZE_HS       512  /**< High-speed bulk endpoint size */
 
 /*******************************************************************************
  * Private Types
@@ -52,13 +58,16 @@ typedef struct {
     /* Interface handles */
     USB_BULK_HANDLE midi_handle;
     USB_CDC_HANDLE cdc_handle;
+    USB_BULK_HANDLE wifi_bridge_handle;
 
     /* Endpoint buffers */
-    uint8_t midi_in_buffer[EP_BUFFER_SIZE];
-    uint8_t midi_out_buffer[EP_BUFFER_SIZE];
-    uint8_t cdc_in_buffer[EP_BUFFER_SIZE];
-    uint8_t cdc_out_buffer[EP_BUFFER_SIZE];
-    uint8_t cdc_int_buffer[8];
+    uint8_t midi_in_buffer[EP_BUFFER_SIZE_HS];   /**< MIDI IN: 512B High-Speed */
+    uint8_t midi_out_buffer[EP_BUFFER_SIZE_HS];  /**< MIDI OUT: 512B High-Speed */
+    uint8_t cdc_in_buffer[EP_BUFFER_SIZE];       /**< CDC Data IN: 64B */
+    uint8_t cdc_out_buffer[EP_BUFFER_SIZE];      /**< CDC Data OUT: 64B */
+    uint8_t cdc_int_buffer[8];                   /**< CDC Notifications: 8B */
+    uint8_t wifi_in_buffer[EP_BUFFER_SIZE_HS];   /**< Wi-Fi Bridge IN: 512B High-Speed */
+    uint8_t wifi_out_buffer[EP_BUFFER_SIZE_HS];  /**< Wi-Fi Bridge OUT: 512B High-Speed */
 
 } usb_composite_ctx_t;
 
@@ -88,6 +97,8 @@ static const USB_DEVICE_INFO g_device_info = {
 
 /**
  * @brief Initialize MIDI interface
+ *
+ * Creates USB High-Speed bulk endpoints (512 bytes) for MIDI streaming.
  */
 static int init_midi_interface(void)
 {
@@ -95,11 +106,11 @@ static int init_midi_interface(void)
 
     memset(&init_data, 0, sizeof(init_data));
 
-    /* Configure endpoints */
+    /* Configure High-Speed bulk endpoints for MIDI */
     init_data.EPIn = USBD_AddEP(USB_DIR_IN, USB_TRANSFER_TYPE_BULK, 0,
-                                g_usb_ctx.midi_in_buffer, EP_BUFFER_SIZE);
+                                g_usb_ctx.midi_in_buffer, EP_BUFFER_SIZE_HS);
     init_data.EPOut = USBD_AddEP(USB_DIR_OUT, USB_TRANSFER_TYPE_BULK, 0,
-                                 g_usb_ctx.midi_out_buffer, EP_BUFFER_SIZE);
+                                 g_usb_ctx.midi_out_buffer, EP_BUFFER_SIZE_HS);
 
     /* Add MIDI (via BULK) interface */
     g_usb_ctx.midi_handle = USBD_BULK_Add(&init_data);
@@ -137,6 +148,34 @@ static int init_cdc_interface(void)
 
     /* Pass handle to CDC ACM module */
     cdc_acm_set_handle(g_usb_ctx.cdc_handle);
+
+    return 0;
+}
+
+/**
+ * @brief Initialize Wi-Fi bridge interface
+ *
+ * Creates USB bulk endpoints for the Wi-Fi data bridge.
+ * Uses high-speed 512-byte endpoints for maximum throughput.
+ */
+static int init_wifi_bridge_interface(void)
+{
+    USB_BULK_INIT_DATA init_data;
+
+    memset(&init_data, 0, sizeof(init_data));
+
+    /* Configure high-speed bulk endpoints for Wi-Fi bridge */
+    init_data.EPIn = USBD_AddEP(USB_DIR_IN, USB_TRANSFER_TYPE_BULK, 0,
+                                g_usb_ctx.wifi_in_buffer, EP_BUFFER_SIZE_HS);
+    init_data.EPOut = USBD_AddEP(USB_DIR_OUT, USB_TRANSFER_TYPE_BULK, 0,
+                                 g_usb_ctx.wifi_out_buffer, EP_BUFFER_SIZE_HS);
+
+    /* Add bulk interface for Wi-Fi bridge */
+    g_usb_ctx.wifi_bridge_handle = USBD_BULK_Add(&init_data);
+
+    if (g_usb_ctx.wifi_bridge_handle == 0) {
+        return -1;
+    }
 
     return 0;
 }
@@ -214,6 +253,25 @@ int usb_composite_init(const usb_composite_config_t *config)
         }
     }
 
+    if (g_usb_ctx.config.enable_wifi_bridge) {
+        /* Add Wi-Fi bridge USB interface (endpoints only)
+         * The wifi_bridge module does its own WHD/SDIO initialization
+         * but we create the USB endpoints here as part of the composite device
+         * BEFORE USBD_Start() is called.
+         */
+        result = init_wifi_bridge_interface();
+        if (result != 0) {
+            if (g_usb_ctx.config.enable_cdc) {
+                cdc_acm_deinit();
+            }
+            if (g_usb_ctx.config.enable_midi) {
+                midi_usb_deinit();
+            }
+            USBD_DeInit();
+            return -6;
+        }
+    }
+
     g_usb_ctx.state = USB_COMPOSITE_STATE_DETACHED;
     g_usb_ctx.initialized = true;
 
@@ -228,6 +286,13 @@ void usb_composite_deinit(void)
 
     /* Stop USB */
     USBD_Stop();
+
+    /* Deinitialize Wi-Fi bridge if enabled
+     * Note: wifi_bridge_deinit() handles WHD cleanup but the USB bulk
+     * handle cleanup is handled by USBD_DeInit() below */
+    if (g_usb_ctx.config.enable_wifi_bridge) {
+        wifi_bridge_deinit();
+    }
 
     /* Deinitialize CDC if enabled */
     if (g_usb_ctx.config.enable_cdc) {
@@ -336,4 +401,18 @@ USB_BULK_HANDLE usb_composite_get_midi_handle(void)
 USB_CDC_HANDLE usb_composite_get_cdc_handle(void)
 {
     return g_usb_ctx.cdc_handle;
+}
+
+/**
+ * @brief Get Wi-Fi bridge bulk handle
+ *
+ * Used by wifi_bridge module when using composite device.
+ * The handle is created during usb_composite_init() and must be
+ * passed to wifi_bridge_set_handle() before wifi_bridge_start().
+ *
+ * @return Wi-Fi bridge bulk handle, or 0 if not enabled/initialized
+ */
+int usb_composite_get_wifi_bridge_handle(void)
+{
+    return (int)g_usb_ctx.wifi_bridge_handle;
 }

@@ -20,11 +20,11 @@ This document describes the implementation of a USB CDC/ACM virtual serial port 
 ┌─────────────────────────────────▼───────────────────────────────────────────┐
 │                         USB Composite Device                                 │
 │                           (emUSB-Device)                                     │
-├─────────────────────────────────┬───────────────────────────────────────────┤
-│      Interface 0-1: MIDI        │       Interface 2-3: CDC/ACM              │
-│      (Audio Class 0x01)         │       (Comm Class 0x02)                   │
-│      EP 0x81 (IN), 0x01 (OUT)   │       EP 0x82 (IN), 0x02 (OUT), 0x83 (INT)│
-└─────────────────────────────────┴───────────────────────────────────────────┘
+├─────────────────┬─────────────────────────────┬─────────────────────────────┤
+│ Interface 0-1:  │    Interface 2-3: CDC/ACM   │    Interface 4: Wi-Fi       │
+│ MIDI (Audio)    │    (Comm Class 0x02)        │    Bridge (Vendor 0xFF)     │
+│ EP 0x81, 0x01   │    EP 0x82, 0x02, 0x83      │    EP 0x84, 0x04            │
+└─────────────────┴─────────────────────────────┴─────────────────────────────┘
                                   │
                     ┌─────────────┴─────────────┐
                     │                           │
@@ -662,11 +662,13 @@ OK
 | Endpoint | Direction | Type | Size | Interface | Usage |
 |----------|-----------|------|------|-----------|-------|
 | EP0 | IN/OUT | Control | 64 | - | USB Control |
-| EP 0x81 | IN | Bulk | 64 | 1 | MIDI IN |
-| EP 0x01 | OUT | Bulk | 64 | 1 | MIDI OUT |
+| EP 0x81 | IN | Bulk | 512 | 1 | MIDI IN (High-Speed) |
+| EP 0x01 | OUT | Bulk | 512 | 1 | MIDI OUT (High-Speed) |
 | EP 0x82 | IN | Bulk | 64 | 3 | CDC Data IN |
 | EP 0x02 | OUT | Bulk | 64 | 3 | CDC Data OUT |
 | EP 0x83 | IN | Interrupt | 8 | 2 | CDC Notifications |
+| EP 0x84 | IN | Bulk | 512 | 4 | Wi-Fi Bridge IN (High-Speed) |
+| EP 0x04 | OUT | Bulk | 512 | 4 | Wi-Fi Bridge OUT (High-Speed) |
 
 ### 5.2 USB Descriptors
 
@@ -676,6 +678,7 @@ OK
 | 1 | 0x01 (Audio) | 0x03 (MIDI) | 0x00 | MIDI Streaming |
 | 2 | 0x02 (CDC) | 0x02 (ACM) | 0x01 (AT) | CDC Control |
 | 3 | 0x0A (Data) | 0x00 | 0x00 | CDC Data |
+| 4 | 0xFF (Vendor) | 0x00 | 0x00 | Wi-Fi Bridge (Bulk Data) |
 
 ### 5.3 Composite Device Setup
 
@@ -686,7 +689,14 @@ void usb_composite_init(void)
     USBD_Init();
     USBD_SetDeviceInfo(&g_device_info);
 
-    // Add CDC interface (must be before MIDI for interface numbering)
+    // Add MIDI interface (High-Speed bulk endpoints)
+    USB_BULK_INIT_DATA midi_init = {
+        .EPIn  = USBD_AddEP(USB_DIR_IN,  USB_TRANSFER_TYPE_BULK, 0, NULL, 512),
+        .EPOut = USBD_AddEP(USB_DIR_OUT, USB_TRANSFER_TYPE_BULK, 0, NULL, 512),
+    };
+    g_midi_handle = USBD_BULK_Add(&midi_init);
+
+    // Add CDC interface
     USB_CDC_INIT_DATA cdc_init = {
         .EPIn  = USBD_AddEP(USB_DIR_IN,  USB_TRANSFER_TYPE_BULK, 0, NULL, 64),
         .EPOut = USBD_AddEP(USB_DIR_OUT, USB_TRANSFER_TYPE_BULK, 0, NULL, 64),
@@ -695,17 +705,31 @@ void usb_composite_init(void)
     g_cdc_handle = USBD_CDC_Add(&cdc_init);
     USBD_CDC_SetOnLineCoding(g_cdc_handle, on_line_coding);
 
-    // Add MIDI interface (existing)
-    USB_BULK_INIT_DATA midi_init = {
-        .EPIn  = USBD_AddEP(USB_DIR_IN,  USB_TRANSFER_TYPE_BULK, 0, NULL, 64),
-        .EPOut = USBD_AddEP(USB_DIR_OUT, USB_TRANSFER_TYPE_BULK, 0, NULL, 64),
+    // Add Wi-Fi bridge interface (High-Speed bulk endpoints)
+    USB_BULK_INIT_DATA wifi_init = {
+        .EPIn  = USBD_AddEP(USB_DIR_IN,  USB_TRANSFER_TYPE_BULK, 0, NULL, 512),
+        .EPOut = USBD_AddEP(USB_DIR_OUT, USB_TRANSFER_TYPE_BULK, 0, NULL, 512),
     };
-    g_midi_handle = USBD_BULK_Add(&midi_init);
+    g_wifi_bridge_handle = USBD_BULK_Add(&wifi_init);
 
-    // Start USB
+    // NOTE: Do NOT call USBD_Start() here!
+    // Call wifi_bridge_init() first, then wifi_bridge_set_handle(g_wifi_bridge_handle),
+    // then call usb_composite_start() which calls USBD_Start().
+}
+
+void usb_composite_start(void)
+{
+    // Start USB enumeration (must be called after all endpoints configured)
     USBD_Start();
 }
 ```
+
+**Initialization Order (Critical!):**
+1. `usb_composite_init()` - Creates all USB endpoints for MIDI, CDC, and Wi-Fi bridge
+2. `wifi_bridge_init()` - Initializes WHD/SDIO and FreeRTOS resources
+3. `wifi_bridge_set_handle(usb_composite_get_wifi_bridge_handle())` - Connects Wi-Fi bridge to USB
+4. `usb_composite_start()` - Starts USB enumeration (calls USBD_Start)
+5. `wifi_bridge_start()` - Starts bridge data processing (called from Wi-Fi task)
 
 ---
 
