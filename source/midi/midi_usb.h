@@ -288,6 +288,46 @@ int midi_usb_send_sysex(uint8_t cable, const uint8_t *data, uint16_t length);
 int midi_usb_send_realtime(uint8_t cable, uint8_t status);
 
 /**
+ * @brief Send All Notes Off on all channels
+ *
+ * @param cable Cable number
+ * @return 0 on success, negative error code on failure
+ */
+int midi_usb_send_all_notes_off(uint8_t cable);
+
+/**
+ * @brief Send timing clock message
+ *
+ * @param cable Cable number
+ * @return 0 on success, negative error code on failure
+ */
+int midi_usb_send_clock(uint8_t cable);
+
+/**
+ * @brief Send start message
+ *
+ * @param cable Cable number
+ * @return 0 on success, negative error code on failure
+ */
+int midi_usb_send_start(uint8_t cable);
+
+/**
+ * @brief Send stop message
+ *
+ * @param cable Cable number
+ * @return 0 on success, negative error code on failure
+ */
+int midi_usb_send_stop(uint8_t cable);
+
+/**
+ * @brief Send continue message
+ *
+ * @param cable Cable number
+ * @return 0 on success, negative error code on failure
+ */
+int midi_usb_send_continue(uint8_t cable);
+
+/**
  * @brief Get current USB state
  *
  * @return Current USB MIDI state

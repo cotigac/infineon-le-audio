@@ -625,6 +625,39 @@ void hci_isoc_get_stats(hci_isoc_stats_t *stats);
  */
 void hci_isoc_reset_stats(void);
 
+/*******************************************************************************
+ * API Functions - HCI Event Processing
+ ******************************************************************************/
+
+/**
+ * @brief Process LE Meta Event for ISOC
+ *
+ * This function should be called from the main BT event handler
+ * when an LE Meta event related to ISOC is received.
+ *
+ * @param subevent LE Meta subevent code
+ * @param data Event data
+ * @param len Event data length
+ */
+void hci_isoc_process_le_meta_event(uint8_t subevent, const uint8_t *data, uint16_t len);
+
+/**
+ * @brief Process ISO Data received
+ *
+ * Called from HCI layer when ISO data packet is received.
+ *
+ * @param handle CIS or BIS handle
+ * @param pb_flag Packet boundary flag
+ * @param ts_flag Timestamp flag
+ * @param timestamp Timestamp (if ts_flag set)
+ * @param seq_num Packet sequence number
+ * @param data SDU data
+ * @param len SDU length
+ */
+void hci_isoc_process_rx_data(uint16_t handle, uint8_t pb_flag, uint8_t ts_flag,
+                               uint32_t timestamp, uint16_t seq_num,
+                               const uint8_t *data, uint16_t len);
+
 #ifdef __cplusplus
 }
 #endif

@@ -159,6 +159,24 @@ void usb_composite_process(void);
  */
 int usb_composite_get_wifi_bridge_handle(void);
 
+/**
+ * @brief Get MIDI bulk handle
+ *
+ * Used by midi_usb module when using composite device.
+ *
+ * @return MIDI bulk handle (USB_BULK_HANDLE)
+ */
+int usb_composite_get_midi_handle(void);
+
+/**
+ * @brief Get CDC handle
+ *
+ * Used by cdc_acm module when using composite device.
+ *
+ * @return CDC handle (USB_CDC_HANDLE)
+ */
+int usb_composite_get_cdc_handle(void);
+
 #ifdef __cplusplus
 }
 #endif
