@@ -3,11 +3,11 @@
  * @brief Bluetooth Stack Initialization API
  *
  * This module handles initialization of the Infineon BTSTACK and
- * HCI transport to the CYW55511 Bluetooth controller.
+ * HCI transport to the CYW55512 Bluetooth controller.
  *
  * Architecture:
- * - PSoC Edge E81 runs BTSTACK (host stack)
- * - CYW55511 runs BLE controller firmware
+ * - PSoC Edge E82 runs BTSTACK (host stack)
+ * - CYW55512 runs BLE controller firmware (Bluetooth 6.0)
  * - Communication via UART HCI transport
  * - Supports LE Audio with HCI ISOC (isochronous channels)
  *

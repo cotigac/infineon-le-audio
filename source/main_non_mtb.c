@@ -12,11 +12,11 @@
  * Note: This file is for non-ModusToolbox builds. The MTB build uses
  * proj_cm33_ns/main.c and proj_cm55/main.c instead.
  *
- * Architecture (dual-core PSoC Edge E84):
+ * Architecture (dual-core PSoC Edge E82):
  *   CM33: BLE stack, USB, Wi-Fi, MIDI, IPC (this file)
  *   CM55: LC3 codec, I2S audio DSP (separate main)
  *
- * Hardware: PSoC Edge E84 (CM33+CM55) + CYW55512 (BLE 6.0 + Wi-Fi 6)
+ * Hardware: PSoC Edge E82 (CM33+CM55) + CYW55512 (BLE 6.0 + Wi-Fi 6)
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -179,10 +179,10 @@ int main(void)
 
     printf("\n");
     printf("==============================================\n");
-    printf("   Infineon LE Audio Demo - PSoC Edge E84\n");
+    printf("   Infineon LE Audio Demo - PSoC Edge E82\n");
     printf("        CM33 Core (Standalone Build)\n");
     printf("==============================================\n");
-    printf("Hardware: PSoC Edge E84 + CYW55512\n");
+    printf("Hardware: PSoC Edge E82 + CYW55512\n");
     printf("Features:\n");
     printf("  - LE Audio Full-Duplex (ISOC transport)\n");
     printf("  - Auracast Broadcast (BIS)\n");
@@ -279,7 +279,7 @@ static int app_init(void)
 
     /* Now printf works - print startup message */
     printf("\n\n");
-    printf("Board initialized: PSoC Edge E84 (CM33 core)\n");
+    printf("Board initialized: PSoC Edge E82 (CM33 core)\n");
     printf("Debug UART ready at %lu baud\n", (unsigned long)CY_RETARGET_IO_BAUDRATE);
 
     /***************************************************************************
@@ -329,7 +329,7 @@ static int app_init(void)
 
     /* Initialize Bluetooth stack */
     printf("Initializing Bluetooth stack...\n");
-    result = bt_init();
+    result = bt_init(NULL);
     if (result != 0) {
         printf("WARNING: Bluetooth initialization failed: %d (continuing anyway)\n", result);
         /* Don't return error - allow system to boot for debugging */

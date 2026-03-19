@@ -9,8 +9,10 @@
 
 #include "isoc_handler.h"
 #include <string.h>
-#include <stdlib.h>
+#include <stddef.h>
 #include <stdio.h>
+
+/* Note: stdlib.h removed - no longer using malloc/free for real-time safety */
 
 /* HCI ISOC API */
 #include "../bluetooth/hci_isoc.h"
@@ -93,6 +95,33 @@ typedef struct {
  ******************************************************************************/
 
 static isoc_handler_context_t handler_ctx;
+
+/*******************************************************************************
+ * Static SDU Buffer Pools
+ *
+ * Pre-allocated SDU buffers for real-time audio path.
+ * Using static allocation instead of malloc() for deterministic timing.
+ *
+ * Placed in .isoc_buffers section which maps to BT_RAM region (1 MB)
+ * as defined in the linker script (psoc_edge_e82.ld).
+ *
+ * Memory usage: 8 streams * 2 (TX+RX) * 9 SDUs * ~320 bytes ≈ 46 KB
+ ******************************************************************************/
+
+/** Ring buffer size for max depth (depth + 1 for full/empty detection) */
+#define STATIC_RING_SIZE    (ISOC_HANDLER_MAX_BUFFER_DEPTH + 1)
+
+/** Static TX SDU pools - one per stream */
+__attribute__((section(".isoc_buffers")))
+static isoc_sdu_t g_tx_sdu_pools[ISOC_HANDLER_MAX_STREAMS][STATIC_RING_SIZE];
+
+/** Static RX SDU pools - one per stream */
+__attribute__((section(".isoc_buffers")))
+static isoc_sdu_t g_rx_sdu_pools[ISOC_HANDLER_MAX_STREAMS][STATIC_RING_SIZE];
+
+/** Pool allocation tracking */
+static bool g_tx_pool_used[ISOC_HANDLER_MAX_STREAMS];
+static bool g_rx_pool_used[ISOC_HANDLER_MAX_STREAMS];
 
 /*******************************************************************************
  * Private Function Prototypes
@@ -1230,23 +1259,35 @@ static isoc_stream_t* get_stream(uint8_t stream_id)
 static int init_buffers(isoc_stream_t *stream)
 {
     uint8_t depth = stream->config.buffer_depth;
-    uint8_t ring_size = RING_BUFFER_SIZE(depth);
 
-    /* Allocate TX buffer pool */
-    stream->tx_sdu_pool = (isoc_sdu_t*)malloc(sizeof(isoc_sdu_t) * ring_size);
-    if (stream->tx_sdu_pool == NULL) {
-        return ISOC_HANDLER_ERROR_NO_RESOURCES;
+    /* Find stream index from pointer offset in handler_ctx.streams array */
+    ptrdiff_t stream_idx = stream - handler_ctx.streams;
+    if (stream_idx < 0 || stream_idx >= ISOC_HANDLER_MAX_STREAMS) {
+        return ISOC_HANDLER_ERROR_INVALID_PARAM;
     }
-    memset(stream->tx_sdu_pool, 0, sizeof(isoc_sdu_t) * ring_size);
 
-    /* Allocate RX buffer pool */
-    stream->rx_sdu_pool = (isoc_sdu_t*)malloc(sizeof(isoc_sdu_t) * ring_size);
-    if (stream->rx_sdu_pool == NULL) {
-        free(stream->tx_sdu_pool);
+    /* Check if depth exceeds static pool size */
+    if (RING_BUFFER_SIZE(depth) > STATIC_RING_SIZE) {
+        return ISOC_HANDLER_ERROR_INVALID_PARAM;
+    }
+
+    /* Assign TX buffer from static pool */
+    if (g_tx_pool_used[stream_idx]) {
+        return ISOC_HANDLER_ERROR_NO_RESOURCES;  /* Already in use */
+    }
+    stream->tx_sdu_pool = g_tx_sdu_pools[stream_idx];
+    memset(stream->tx_sdu_pool, 0, sizeof(isoc_sdu_t) * STATIC_RING_SIZE);
+    g_tx_pool_used[stream_idx] = true;
+
+    /* Assign RX buffer from static pool */
+    if (g_rx_pool_used[stream_idx]) {
+        g_tx_pool_used[stream_idx] = false;
         stream->tx_sdu_pool = NULL;
-        return ISOC_HANDLER_ERROR_NO_RESOURCES;
+        return ISOC_HANDLER_ERROR_NO_RESOURCES;  /* Already in use */
     }
-    memset(stream->rx_sdu_pool, 0, sizeof(isoc_sdu_t) * ring_size);
+    stream->rx_sdu_pool = g_rx_sdu_pools[stream_idx];
+    memset(stream->rx_sdu_pool, 0, sizeof(isoc_sdu_t) * STATIC_RING_SIZE);
+    g_rx_pool_used[stream_idx] = true;
 
     /* Initialize ring buffers */
     ring_buffer_init(&stream->tx_buffer, stream->tx_sdu_pool, depth);
@@ -1257,12 +1298,22 @@ static int init_buffers(isoc_stream_t *stream)
 
 static void deinit_buffers(isoc_stream_t *stream)
 {
+    /* Find stream index from pointer offset in handler_ctx.streams array */
+    ptrdiff_t stream_idx = stream - handler_ctx.streams;
+
+    /* Release TX pool back to static pool */
     if (stream->tx_sdu_pool != NULL) {
-        free(stream->tx_sdu_pool);
+        if (stream_idx >= 0 && stream_idx < ISOC_HANDLER_MAX_STREAMS) {
+            g_tx_pool_used[stream_idx] = false;
+        }
         stream->tx_sdu_pool = NULL;
     }
+
+    /* Release RX pool back to static pool */
     if (stream->rx_sdu_pool != NULL) {
-        free(stream->rx_sdu_pool);
+        if (stream_idx >= 0 && stream_idx < ISOC_HANDLER_MAX_STREAMS) {
+            g_rx_pool_used[stream_idx] = false;
+        }
         stream->rx_sdu_pool = NULL;
     }
 }

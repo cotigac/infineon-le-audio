@@ -1,7 +1,7 @@
 #-------------------------------------------------------------------------------
-# CMakeLists.txt - PSoC Edge E81 LE Audio Demo
+# CMakeLists.txt - PSoC Edge E82 LE Audio Demo
 #
-# Build system for the Infineon PSoC Edge E81 + CYW55511 LE Audio project.
+# Build system for the Infineon PSoC Edge E82 + CYW55512 LE Audio project.
 #
 # Prerequisites:
 #   - ARM GNU Toolchain (arm-none-eabi-gcc)
@@ -30,7 +30,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(infineon_le_audio
     VERSION 1.0.0
-    DESCRIPTION "PSoC Edge E81 + CYW55511 LE Audio Musical Instrument Demo"
+    DESCRIPTION "PSoC Edge E82 + CYW55512 LE Audio Musical Instrument Demo"
     LANGUAGES C ASM
 )
 
@@ -52,8 +52,8 @@ option(BUILD_TESTS "Build unit tests" OFF)
 # Target Configuration
 #-------------------------------------------------------------------------------
 
-# PSoC Edge E81 - Cortex-M55
-set(MCU_FAMILY "PSE81" CACHE STRING "MCU family")
+# PSoC Edge E82 - Cortex-M55
+set(MCU_FAMILY "PSE82" CACHE STRING "MCU family")
 set(MCU_CORE "cortex-m55" CACHE STRING "CPU core")
 set(MCU_FPU "hard" CACHE STRING "FPU type (soft/hard)")
 set(MCU_FLOAT_ABI "hard" CACHE STRING "Float ABI")
@@ -134,7 +134,7 @@ add_link_options(
 
 add_compile_definitions(
     # Target
-    CY_MCU_PSE81
+    CY_MCU_PSE82
     __CORTEX_M55
     ARM_MATH_CM55
 
