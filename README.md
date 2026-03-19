@@ -352,22 +352,23 @@ A successful build produces firmware for all three cores (CM33 Secure, CM33 Non-
 
 | Core | Region | Used | Available | Utilization |
 |------|--------|------|-----------|-------------|
-| **CM33 Secure** | SRAM (code) | 1.5 KB | 212 KB | 1% |
-| **CM33 Secure** | SRAM (data) | 130 KB | 132 KB | 98% |
-| **CM33 Non-Secure** | SRAM (code) | 13.3 KB | 404 KB | 3% |
-| **CM33 Non-Secure** | SRAM (data) | 252 KB | 256 KB | 98% |
-| **CM55** | ITCM (code) | 11.7 KB | 256 KB | 5% |
-| **CM55** | DTCM (data) | 27.2 KB | 256 KB | 11% |
-| **CM55** | SOCMEM (heap) | 2.73 MB | 2.73 MB | 100% |
+| **CM33 Secure** | SRAM (code) | 1.5 KB | 217 KB | 1% |
+| **CM33 Secure** | SRAM (data) | 133 KB | 135 KB | 98% |
+| **CM33 Non-Secure** | SRAM (code) | 13.4 KB | 414 KB | 3% |
+| **CM33 Non-Secure** | SRAM (data) | 258 KB | 262 KB | 98% |
+| **CM55** | ITCM (code) | 12 KB | 256 KB | 5% |
+| **CM55** | DTCM (data) | 32 KB | 256 KB | 12% |
+| **CM55** | SOCMEM (heap) | 2.87 MB | 2.87 MB | 100% |
+| **Shared** | m33_m55_shared | 256 KB | 256 KB | 100% |
 
 **Flash Usage (SMIF0MEM1 External QSPI):**
 
 | Image | Size | Description |
 |-------|------|-------------|
 | CM33 Secure | 27 KB | Secure services, TrustZone config |
-| CM33 Non-Secure | 295 KB | BLE stack, USB, Wi-Fi, MIDI |
-| CM55 | 136 KB | LC3 codec, I2S streaming, audio DSP |
-| **Total** | **458 KB** | Combined firmware (16 MB available) |
+| CM33 Non-Secure | 369 KB | BLE stack, USB, Wi-Fi, MIDI, AT commands |
+| CM55 | 143 KB | LC3 codec, I2S streaming, audio DSP |
+| **Total** | **539 KB** | Combined firmware (16 MB available) |
 
 **Output Files (in `mtb/le-audio/`):**
 
@@ -500,47 +501,75 @@ le_audio_start_broadcast(&config);
 +─────────────────────────────────────────+
 ```
 
+## USB Composite Device Architecture
+
+The firmware implements a USB High-Speed (480 Mbps) composite device with four interfaces:
+
+### USB Endpoint Allocation
+
+| Interface | Class | Endpoints | Buffer Size | Purpose |
+|-----------|-------|-----------|-------------|---------|
+| **0: MIDI** | Audio/MIDI | EP 0x81 IN, EP 0x01 OUT | 512B (HS) | USB MIDI streaming |
+| **1: CDC Control** | CDC/ACM | EP 0x83 INT | 8B | CDC notifications |
+| **2: CDC Data** | CDC Data | EP 0x82 IN, EP 0x02 OUT | 64B | AT command interface |
+| **3: Wi-Fi Bridge** | Vendor (0xFF) | EP 0x84 IN, EP 0x04 OUT | 512B (HS) | USB-to-Wi-Fi data |
+
+### USB Initialization Order
+
+The USB composite device requires specific initialization order:
+
+```c
+// 1. Initialize USB stack and create all endpoints (BEFORE enumeration)
+usb_composite_init(NULL);    // Creates MIDI, CDC, Wi-Fi endpoints
+
+// 2. Initialize Wi-Fi bridge (WHD/SDIO only)
+wifi_bridge_init(NULL);
+
+// 3. Connect Wi-Fi bridge to USB endpoint handle
+wifi_bridge_set_handle(usb_composite_get_wifi_bridge_handle());
+
+// 4. Start USB enumeration (AFTER all endpoints configured)
+usb_composite_start();       // Calls USBD_Start()
+```
+
 ## FreeRTOS Task Architecture
 
 ### Dual-Core Task Distribution
 
-| Core | Task | Priority | Stack | Purpose |
-|------|------|----------|-------|---------|
+| Core | Task | Priority | Stack (words) | Purpose |
+|------|------|----------|---------------|---------|
 | **CM55** | I2S DMA | ISR | - | DMA half/complete callbacks |
 | **CM55** | Audio/LC3 | Highest | 4096 | LC3 encode/decode, frame sync |
 | **CM55** | IPC | High | 2048 | Inter-processor audio frame exchange |
+| **CM33** | ISOC | 6 | 2048 | Isochronous data path (CM33 ↔ CM55 IPC) |
 | **CM33** | BLE | 5 | 4096 | BTSTACK, LE Audio control plane |
-| **CM33** | USB | 4 | 2048 | USB enumeration, MIDI + CDC/ACM AT commands |
-| **CM33** | Wi-Fi | 3 | 4096 | WHD packet processing |
+| **CM33** | USB | 4 | 2048 | USB composite (MIDI + CDC/ACM AT commands) |
+| **CM33** | Wi-Fi | 3 | 4096 | WHD packet processing, USB-Wi-Fi bridge |
 | **CM33** | MIDI | 2 | 1024 | BLE/USB MIDI routing |
 
 ## Memory Requirements
 
-### RAM Usage (Estimated)
+### RAM Usage (Actual Build)
 
-| Component | Size | Notes |
-|-----------|------|-------|
-| FreeRTOS kernel | 10 KB | Tasks, queues, semaphores |
-| BTSTACK + profiles | 80 KB | LE Audio profiles |
-| liblc3 state | 40 KB | Encoder + decoder (stereo) |
-| Audio buffers | 20 KB | I2S + LC3 ring buffers |
-| USB middleware | 8 KB | MIDI + CDC classes |
-| CDC/AT buffers | 10 KB | Line buffer, TX/RX, URC queues |
-| Wi-Fi buffers | 16 KB | 16 x 1500 byte packets |
-| Application | 30 KB | Task stacks, variables |
-| **Total** | **~214 KB** | PSoC Edge E82 has 5 MB |
+| Region | Size | Notes |
+|--------|------|-------|
+| **CM33 Non-Secure SRAM** | 258 KB | BSS (168 KB) + heap (88 KB) + code (14 KB) |
+| **CM33 Secure SRAM** | 133 KB | Secure services, heap |
+| **CM55 DTCM** | 32 KB | Data, BSS, stack |
+| **CM55 ITCM** | 12 KB | Fast code (ISRs, critical functions) |
+| **CM55 SOCMEM** | 2.87 MB | Audio heap, LC3 buffers |
+| **Shared Memory** | 256 KB | IPC between CM33/CM55 |
+| **Total SRAM** | 418 KB | Of 1 MB available (40%) |
+| **Total SOCMEM** | 3.13 MB | Of 5 MB available (63%) |
 
-### Flash Usage (Estimated)
+### Flash Usage (Actual Build)
 
-| Component | Size |
-|-----------|------|
-| FreeRTOS | 20 KB |
-| BTSTACK + profiles | 200 KB |
-| liblc3 | 60 KB |
-| USB middleware | 30 KB |
-| WHD | 100 KB |
-| Application code | 120 KB |
-| **Total** | **~530 KB** |
+| Image | Size | Contents |
+|-------|------|----------|
+| **CM33 Secure** | 27 KB | TrustZone config, secure services |
+| **CM33 Non-Secure** | 369 KB | BTSTACK, USB, Wi-Fi, MIDI, AT commands |
+| **CM55** | 143 KB | liblc3, I2S streaming, audio DSP |
+| **Total** | **539 KB** | Of 16 MB QSPI flash (3%) |
 
 ## Documentation
 
