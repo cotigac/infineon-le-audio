@@ -39,13 +39,13 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
 
 | Feature | Core | Description | Status |
 |---------|------|-------------|--------|
-| **LE Audio Unicast** | CM33+CM55 | Full-duplex audio streaming via CIS | 🟡 Scaffolded |
-| **LE Audio Broadcast (Auracast)** | CM33+CM55 | One-to-many audio broadcast via BIS | 🟡 Scaffolded |
-| **LC3 Codec** | CM55 | Host-side implementation using Google liblc3 (Helium DSP) | 🟡 Scaffolded |
-| **BLE MIDI** | CM33 | MIDI over Bluetooth Low Energy GATT service | 🟡 Scaffolded |
-| **USB MIDI** | CM33 | USB High-Speed MIDI class device | 🟡 Scaffolded |
-| **I2S Streaming** | CM55 | DMA-based bidirectional audio | 🟡 Scaffolded |
-| **Wi-Fi Bridge** | CM33 | USB HS → SDIO → CYW55512 WLAN | 🟡 Scaffolded |
+| **LE Audio Unicast** | CM33+CM55 | Full-duplex audio streaming via CIS | ✅ Implemented |
+| **LE Audio Broadcast (Auracast)** | CM33+CM55 | One-to-many audio broadcast via BIS | ✅ Implemented |
+| **LC3 Codec** | CM55 | Host-side implementation using Google liblc3 (Helium DSP) | ✅ Implemented |
+| **BLE MIDI** | CM33 | MIDI over Bluetooth Low Energy GATT service | ✅ Implemented |
+| **USB MIDI** | CM33 | USB High-Speed MIDI class device | ✅ Implemented |
+| **I2S Streaming** | CM55 | DMA-based bidirectional audio | ✅ Implemented |
+| **Wi-Fi Bridge** | CM33 | USB HS → SDIO → CYW55512 WLAN | ✅ Implemented |
 | **USB CDC/ACM** | CM33 | AT command interface for BT/WiFi/LE Audio config | ✅ Complete |
 
 ---
@@ -540,10 +540,10 @@ uint16_t midi_usb_rx_available(void);           // Check queue level
 
 | Task | Core | File | Description | Status |
 |------|------|------|-------------|--------|
-| 4.1 | Both | shared memory | Define IPC queue structures | 🟡 Pending |
-| 4.2 | CM55 | `proj_cm55/main.c` | TX queue (LC3 frames → CM33) | 🟡 Pending |
-| 4.3 | CM33 | `isoc_handler.c` | RX queue (ISOC → CM55) | 🟡 Pending |
-| 4.4 | Both | IPC task | Polling/notification mechanism | 🟡 Pending |
+| 4.1 | Both | `source/ipc/audio_ipc.c` | Define IPC queue structures | ✅ Done |
+| 4.2 | CM55 | `proj_cm55/main.c` | TX queue (LC3 frames → CM33) | ✅ Done |
+| 4.3 | CM33 | `isoc_handler.c` | RX queue (ISOC → CM55) | ✅ Done |
+| 4.4 | Both | `proj_cm55/main.c` | IPC task with monitoring | ✅ Done |
 
 **Checkpoint**: CM55 can send test data to CM33 via IPC.
 
@@ -554,10 +554,10 @@ uint16_t midi_usb_rx_available(void);           // Check queue level
 | Task | Core | File | Description | Status |
 |------|------|------|-------------|--------|
 | 5.1 | CM33 | `hci_isoc.c` | CIG/CIS creation | ✅ Done |
-| 5.2 | CM33 | `isoc_handler.c` | ISOC TX from IPC queue | 🟡 Pending |
-| 5.3 | CM33 | `isoc_handler.c` | ISOC RX to IPC queue | 🟡 Pending |
-| 5.4 | CM55 | `audio_task.c` | Wire LC3 encode → IPC TX | 🟡 Pending |
-| 5.5 | CM55 | `audio_task.c` | Wire IPC RX → LC3 decode | 🟡 Pending |
+| 5.2 | CM33 | `isoc_handler.c` | ISOC TX from IPC queue | ✅ Done |
+| 5.3 | CM33 | `isoc_handler.c` | ISOC RX to IPC queue | ✅ Done |
+| 5.4 | CM55 | `audio_task.c` | Wire LC3 encode → IPC TX | ✅ Done |
+| 5.5 | CM55 | `audio_task.c` | Wire IPC RX → LC3 decode | ✅ Done |
 
 **Checkpoint**: LC3 frames flow I2S → LC3 → ISOC → BLE.
 
@@ -592,8 +592,8 @@ uint16_t midi_usb_rx_available(void);           // Check queue level
 | 1 | Dual-Core Foundation | CM33+CM55 | ✅ Complete |
 | 2 | Bluetooth Stack | CM33 | ✅ Complete |
 | 3 | Audio Initialization | CM55 | ✅ Complete |
-| 4 | IPC Queues | CM33+CM55 | 🟡 Pending |
-| 5 | LE Audio ISOC | CM33+CM55 | 🟡 Pending |
+| 4 | IPC Queues | CM33+CM55 | ✅ Complete |
+| 5 | LE Audio ISOC | CM33+CM55 | ✅ Complete |
 | 6 | MIDI Integration | CM33 | ✅ Complete |
 | 7 | Wi-Fi Bridge | CM33 | ✅ Complete |
 
