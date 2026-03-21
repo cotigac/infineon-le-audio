@@ -66,6 +66,15 @@ Argument | Description | Required/optional
 
 After the project has been created, you can open it in your preferred development environment.
 
+> **Note:** If the IDE-specific project files were not generated during project creation (e.g., when cloning directly from GitHub), you can generate them using the following commands from the project directory:
+>
+> | IDE | Command |
+> |-----|---------|
+> | VS Code | `make vscode` |
+> | Eclipse | `make eclipse` |
+> | Keil µVision | `make uvision5` |
+> | IAR Embedded Workbench | `make ewarm8` |
+
 
 <details><summary><b>Eclipse IDE</b></summary>
 
@@ -78,7 +87,9 @@ For more details, see the [Eclipse IDE for ModusToolbox&trade; user guide](https
 
 <details><summary><b>Visual Studio (VS) Code</b></summary>
 
-Launch VS Code manually, and then open the generated *{project-name}.code-workspace* file located in the project directory.
+1. If not already generated, run `make vscode` from the project directory to create the workspace file.
+
+2. Launch VS Code manually, and then open the generated *le-audio.code-workspace* file located in the project directory.
 
 For more details, see the [Visual Studio Code for ModusToolbox&trade; user guide](https://www.infineon.com/MTBVSCodeUserGuide) (locally available at *{ModusToolbox&trade; install directory}/docs_{version}/mt_vscode_user_guide.pdf*).
 

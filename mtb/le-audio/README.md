@@ -56,6 +56,54 @@ Install a terminal emulator if you do not have one. Instructions in this documen
 This example requires no additional software or tools.
 
 
+## Quick start (command line)
+
+For users who prefer building and programming from the command line without using an IDE:
+
+1. **Open a terminal**
+   - **Windows**: Open `modus-shell` from the Start menu (provides access to all ModusToolbox&trade; tools)
+   - **Linux/macOS**: Use any terminal application
+
+2. **Navigate to the project directory**
+   ```
+   cd <path-to-project>/mtb/le-audio
+   ```
+
+3. **Fetch dependencies** (first time only)
+   ```
+   make getlibs
+   ```
+
+4. **Build all three cores**
+   ```
+   make build
+   ```
+   This creates `build/app_combined.hex` containing CM33 Secure, CM33 Non-Secure, and CM55 firmware.
+
+5. **Program the board**
+
+   Connect the board via the KitProg3 USB connector, then:
+   ```
+   make program
+   ```
+
+6. **Open a terminal** at 115200 baud, 8N1 to view debug output from KitProg3 COM port.
+
+
+## IDE project generation
+
+To open this project in your preferred IDE, generate the IDE-specific project files:
+
+| IDE | Command | Then open... |
+|-----|---------|--------------|
+| **VS Code** | `make vscode` | `le-audio.code-workspace` |
+| **Eclipse** | `make eclipse` | Import existing project |
+| **Keil µVision** | `make uvision5` | `*.cprj` file |
+| **IAR Embedded Workbench** | `make ewarm8` | `*.ipcf` file |
+
+After generating, follow the IDE-specific instructions in [Using the code example](docs/using_the_code_example.md).
+
+
 ## Operation
 
 See [Using the code example](docs/using_the_code_example.md) for instructions on creating a project, opening it in various supported IDEs, and performing tasks, such as building, programming, and debugging the application within the respective IDEs.
