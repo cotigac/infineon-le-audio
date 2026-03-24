@@ -20,6 +20,10 @@
 #include <string.h>
 #include <stdio.h>
 
+/* BT Configurator generated headers for gatt_initialize() */
+#include "cycfg_gap.h"
+#include "cycfg_gatt_db.h"
+
 /*******************************************************************************
  * Private Definitions
  ******************************************************************************/
@@ -1678,4 +1682,16 @@ wiced_bt_gatt_status_t gatt_db_btstack_callback(wiced_bt_gatt_evt_t event,
     }
 
     return status;
+}
+/*******************************************************************************
+ * gatt_initialize() - Required by app_init()
+ ******************************************************************************/
+
+wiced_bt_gatt_status_t gatt_initialize(void)
+{
+    printf("[%s]\n", __FUNCTION__);
+    wiced_bt_ble_set_raw_advertisement_data(CY_BT_ADV_PACKET_DATA_SIZE,
+                                             cy_bt_adv_packet_data);
+    wiced_bt_gatt_register(gatt_db_btstack_callback);
+    return wiced_bt_gatt_db_init(gatt_database, gatt_database_len, NULL);
 }
