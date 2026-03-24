@@ -16,6 +16,8 @@
 #include "cy_ipc_drv.h"
 #include "cy_sysint.h"
 #include <string.h>
+#include <stdarg.h>
+#include <stdio.h>
 
 /* Include mtb-ipc if available, otherwise use PDL IPC directly */
 #if defined(COMPONENT_MTB_IPC)
@@ -56,6 +58,26 @@ typedef struct __attribute__((aligned(32))) {
 } audio_ipc_queue_t;
 
 /**
+ * @brief Debug message entry in shared memory
+ */
+typedef struct __attribute__((aligned(4))) {
+    char     msg[AUDIO_IPC_DEBUG_MSG_MAX_LEN];
+    uint8_t  length;
+    uint8_t  valid;
+    uint8_t  reserved[2];
+} audio_ipc_debug_msg_t;
+
+/**
+ * @brief Debug message queue in shared memory
+ */
+typedef struct __attribute__((aligned(32))) {
+    audio_ipc_debug_msg_t msgs[AUDIO_IPC_DEBUG_QUEUE_DEPTH];
+    volatile uint32_t head;        /* Write index (CM55) */
+    volatile uint32_t tail;        /* Read index (CM33) */
+    volatile uint32_t count;       /* Number of messages */
+} audio_ipc_debug_queue_t;
+
+/**
  * @brief Shared memory region for IPC
  */
 typedef struct __attribute__((aligned(32))) {
@@ -64,6 +86,7 @@ typedef struct __attribute__((aligned(32))) {
     volatile bool     cm33_ready;  /* CM33 has initialized */
     volatile bool     cm55_ready;  /* CM55 has initialized */
     uint32_t          magic;       /* Magic number for validation */
+    audio_ipc_debug_queue_t debug_queue;  /* CM55 -> CM33 debug messages */
 } audio_ipc_shared_t;
 
 #define AUDIO_IPC_MAGIC     (0x4C433341U)  /* "LC3A" */
@@ -457,6 +480,152 @@ void audio_ipc_deinit(void)
     g_ipc->cm55_ready = false;
     g_rx_callback = NULL;
     g_rx_callback_data = NULL;
+#endif
+}
+
+/*******************************************************************************
+ * API Functions - Debug Output
+ ******************************************************************************/
+
+/**
+ * @brief Write debug message to shared memory queue (CM55 side)
+ */
+void audio_ipc_debug_print(const char *msg)
+{
+    if (msg == NULL || g_ipc == NULL) {
+        return;
+    }
+
+    /* Check if CM33 has initialized (magic is set) */
+    if (g_ipc->magic != AUDIO_IPC_MAGIC) {
+        return;  /* CM33 hasn't initialized shared memory yet */
+    }
+
+    audio_ipc_debug_queue_t *q = &g_ipc->debug_queue;
+
+    /* Check if queue is full */
+    if (q->count >= AUDIO_IPC_DEBUG_QUEUE_DEPTH) {
+        return;  /* Drop message if queue full */
+    }
+
+    /* Copy message to queue */
+    uint32_t head = q->head;
+    audio_ipc_debug_msg_t *entry = &q->msgs[head];
+
+    /* Copy message, truncating if necessary */
+    size_t len = strlen(msg);
+    if (len >= AUDIO_IPC_DEBUG_MSG_MAX_LEN) {
+        len = AUDIO_IPC_DEBUG_MSG_MAX_LEN - 1;
+    }
+    memcpy(entry->msg, msg, len);
+    entry->msg[len] = ' ';
+    entry->length = (uint8_t)len;
+
+    /* Memory barrier before marking valid */
+    __DMB();
+    entry->valid = 1;
+
+    /* Update head and count */
+    q->head = (head + 1) % AUDIO_IPC_DEBUG_QUEUE_DEPTH;
+    q->count++;
+
+    __DMB();
+}
+
+/**
+ * @brief Formatted debug printf (CM55 side)
+ */
+void audio_ipc_debug_printf(const char *fmt, ...)
+{
+    char buf[AUDIO_IPC_DEBUG_MSG_MAX_LEN];
+    va_list args;
+
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+
+    audio_ipc_debug_print(buf);
+}
+
+/**
+ * @brief Check number of pending debug messages (CM33 side)
+ */
+uint32_t audio_ipc_debug_available(void)
+{
+    if (g_ipc == NULL || g_ipc->magic != AUDIO_IPC_MAGIC) {
+        return 0;
+    }
+    return g_ipc->debug_queue.count;
+}
+
+/**
+ * @brief Read debug message from queue (CM33 side)
+ */
+bool audio_ipc_debug_read(char *buf, uint32_t buf_size)
+{
+    if (buf == NULL || buf_size == 0 || g_ipc == NULL) {
+        return false;
+    }
+
+    if (g_ipc->magic != AUDIO_IPC_MAGIC) {
+        return false;
+    }
+
+    audio_ipc_debug_queue_t *q = &g_ipc->debug_queue;
+
+    if (q->count == 0) {
+        return false;
+    }
+
+    uint32_t tail = q->tail;
+    audio_ipc_debug_msg_t *entry = &q->msgs[tail];
+
+    if (!entry->valid) {
+        return false;
+    }
+
+    /* Copy message */
+    size_t copy_len = entry->length;
+    if (copy_len >= buf_size) {
+        copy_len = buf_size - 1;
+    }
+    memcpy(buf, entry->msg, copy_len);
+    buf[copy_len] = ' ';
+
+    /* Clear entry */
+    entry->valid = 0;
+
+    /* Memory barrier before updating indices */
+    __DMB();
+
+    /* Update tail and count */
+    q->tail = (tail + 1) % AUDIO_IPC_DEBUG_QUEUE_DEPTH;
+    q->count--;
+
+    return true;
+}
+
+/**
+ * @brief Process and print all pending debug messages (CM33 side)
+ */
+void audio_ipc_debug_process(void)
+{
+#if defined(CORE_CM33) || defined(COMPONENT_CM33)
+    char buf[AUDIO_IPC_DEBUG_MSG_MAX_LEN];
+
+    while (audio_ipc_debug_read(buf, sizeof(buf))) {
+        /* Print with [CM55] prefix - message may already have newline */
+        if (buf[0] != ' ') {
+            printf("[CM55] %s", buf);
+            /* Add newline if not present */
+            size_t len = strlen(buf);
+            if (len > 0 && buf[len-1] != '
+') {
+                printf("
+");
+            }
+        }
+    }
 #endif
 }
 

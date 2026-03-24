@@ -38,6 +38,12 @@ extern "C" {
 #define AUDIO_IPC_CHANNEL_LC3_TX        (0U)  /**< CM55 -> CM33 (encoded frames for ISOC TX) */
 #define AUDIO_IPC_CHANNEL_LC3_RX        (1U)  /**< CM33 -> CM55 (received frames for decode) */
 
+/** Debug message queue depth */
+#define AUDIO_IPC_DEBUG_QUEUE_DEPTH     (16U)
+
+/** Maximum debug message length */
+#define AUDIO_IPC_DEBUG_MSG_MAX_LEN     (128U)
+
 /*******************************************************************************
  * Data Types
  ******************************************************************************/
@@ -209,6 +215,52 @@ bool audio_ipc_is_ready(void);
  * Releases IPC resources. Should be called during shutdown.
  */
 void audio_ipc_deinit(void);
+
+/*******************************************************************************
+ * API Functions - Debug Output (CM55 -> CM33)
+ ******************************************************************************/
+
+/**
+ * @brief Send debug message from CM55 to CM33
+ *
+ * Can be called BEFORE audio_ipc_init_secondary() completes, as long as
+ * CM33 has called audio_ipc_init_primary() (which happens before CM55 boots).
+ *
+ * @param msg       Debug message string (null-terminated)
+ */
+void audio_ipc_debug_print(const char *msg);
+
+/**
+ * @brief Formatted debug printf from CM55 to CM33
+ *
+ * @param fmt       Printf-style format string
+ * @param ...       Format arguments
+ */
+void audio_ipc_debug_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
+/**
+ * @brief Check if debug messages are available (called by CM33)
+ *
+ * @return Number of pending debug messages
+ */
+uint32_t audio_ipc_debug_available(void);
+
+/**
+ * @brief Read debug message (called by CM33)
+ *
+ * @param buf       Buffer to receive message
+ * @param buf_size  Size of buffer
+ * @return true if message was read, false if queue empty
+ */
+bool audio_ipc_debug_read(char *buf, uint32_t buf_size);
+
+/**
+ * @brief Process and print all pending debug messages (called by CM33)
+ *
+ * Reads all pending messages from CM55 and prints them with [CM55] prefix.
+ * Should be called periodically from CM33 main loop or a task.
+ */
+void audio_ipc_debug_process(void);
 
 #ifdef __cplusplus
 }

@@ -42,6 +42,19 @@
 #include "ipc/audio_ipc.h"
 
 /*******************************************************************************
+ * Printf Redirect - Route CM55 output to CM33 via IPC
+ *
+ * Since CM55 doesn't have its own UART/retarget-io, we redirect all printf
+ * calls to go through IPC shared memory. CM33 polls and prints these messages.
+ * This works even BEFORE audio_ipc_init_secondary() because CM33 initializes
+ * the shared memory before booting CM55.
+ ******************************************************************************/
+#ifdef printf
+#undef printf
+#endif
+#define printf(...) audio_ipc_debug_printf(__VA_ARGS__)
+
+/*******************************************************************************
  * Macros
  ******************************************************************************/
 

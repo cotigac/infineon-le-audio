@@ -324,6 +324,9 @@ static void ble_task(void *pvParameters)
     g_app_running = true;
 
     while (g_app_running) {
+        /* Process CM55 debug messages */
+        audio_ipc_debug_process();
+
         /* Process LE Audio state machine */
         le_audio_process();
 
