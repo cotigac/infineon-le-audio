@@ -118,22 +118,7 @@ typedef struct {
 
 } gatt_db_context_t;
 
-/*******************************************************************************
- * Lookup Table Type (MTB Pattern)
- ******************************************************************************/
-
-/**
- * @brief GATT attribute lookup table entry
- *
- * This structure follows the MTB example pattern for efficient
- * attribute lookup by handle.
- */
-typedef struct {
-    uint16_t handle;            /**< Attribute handle */
-    uint16_t max_len;           /**< Maximum value length */
-    uint16_t cur_len;           /**< Current value length */
-    uint8_t *p_data;            /**< Pointer to attribute value */
-} gatt_db_lookup_table_t;
+/* Note: gatt_db_lookup_table_t is defined in cycfg_gatt_db.h (BT Configurator) */
 
 /*******************************************************************************
  * Private Data
