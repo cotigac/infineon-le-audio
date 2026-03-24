@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<launchConfiguration type="org.eclipse.ui.externaltools.ProgramLaunchConfigurationType">
+    <stringAttribute key="bad_container_name" value="${workspace_loc:/le-audio}/proj_cm33_s\.mtbLaunchConfigs"/>
+    <booleanAttribute key="com.cypress.studio.launch.hide" value="true"/>
+    <stringAttribute key="org.eclipse.debug.core.ATTR_REFRESH_SCOPE" value="${project}"/>
+    <listAttribute key="org.eclipse.debug.core.MAPPED_RESOURCE_PATHS">
+        <listEntry value="/proj_cm55"/>
+    </listAttribute>
+    <listAttribute key="org.eclipse.debug.core.MAPPED_RESOURCE_TYPES">
+        <listEntry value="4"/>
+    </listAttribute>
+    <mapAttribute key="org.eclipse.debug.core.environmentVariables">
+        <mapEntry key="CY_TOOLS_PATHS" value="${mtb_tools_path_buildvar__ce5e8a0f-acc0-4871-a93d-380604179fbf}"/>
+        <mapEntry key="PATH" value="${cy_tools_path:modus-shell}/bin:${env_var:PATH}"/>
+    </mapAttribute>
+    <stringAttribute key="org.eclipse.ui.externaltools.ATTR_LAUNCH_CONFIGURATION_BUILD_SCOPE" value="${none}"/>
+    <stringAttribute key="org.eclipse.ui.externaltools.ATTR_LOCATION" value="${cy_tools_path:modus-shell}/bin/make${cy_exe_platform_ext}"/>
+    <stringAttribute key="org.eclipse.ui.externaltools.ATTR_TOOL_ARGUMENTS" value="-j16 erase MTB_ERASE_EXT_MEM=1"/>
+    <stringAttribute key="org.eclipse.ui.externaltools.ATTR_WORKING_DIRECTORY" value="${workspace_loc:/le-audio}/proj_cm33_s"/>
+</launchConfiguration>

@@ -35,7 +35,7 @@ Release/
 .settings/
 .cproject
 .project
-.mtbLaunchConfigs/
+# .mtbLaunchConfigs/  # Tracked - contains portable workspace_loc paths
 makefile.init
 
 # Visual Studio Code
