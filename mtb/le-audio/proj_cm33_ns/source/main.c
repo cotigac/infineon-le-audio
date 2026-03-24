@@ -82,12 +82,14 @@
 #define USB_TASK_STACK_SIZE     (2048)
 #define WIFI_TASK_STACK_SIZE    (4096)
 #define MIDI_TASK_STACK_SIZE    (1024)
+#define IPC_DEBUG_TASK_STACK_SIZE (512)
 
 /* Task priorities (per architecture.md) */
 #define BLE_TASK_PRIORITY       (5)
 #define USB_TASK_PRIORITY       (4)
 #define WIFI_TASK_PRIORITY      (3)
 #define MIDI_TASK_PRIORITY      (2)
+#define IPC_DEBUG_TASK_PRIORITY (1)  /* Lowest priority - just processes debug messages */
 
 /*******************************************************************************
  * Global Variables
@@ -110,6 +112,7 @@ static TaskHandle_t g_ble_task_handle = NULL;
 static TaskHandle_t g_usb_task_handle = NULL;
 static TaskHandle_t g_midi_task_handle = NULL;
 static TaskHandle_t g_wifi_task_handle = NULL;
+static TaskHandle_t g_ipc_debug_task_handle = NULL;
 
 /*******************************************************************************
  * Function Prototypes
@@ -125,6 +128,7 @@ static void ble_task(void *pvParameters);
 static void usb_task(void *pvParameters);
 static void midi_task(void *pvParameters);
 static void wifi_task(void *pvParameters);
+static void ipc_debug_task(void *pvParameters);
 
 /* Module initialization */
 static int init_control_modules(void);
@@ -299,6 +303,29 @@ static int init_control_modules(void)
  ******************************************************************************/
 
 /**
+ * @brief IPC debug task - Process CM55 debug messages
+ *
+ * Priority 1 (lowest): Ensures CM55 debug output is always processed,
+ * regardless of BLE/audio task status. This fixes the issue where CM55
+ * messages were lost when BLE init failed.
+ */
+static void ipc_debug_task(void *pvParameters)
+{
+    (void)pvParameters;
+
+    printf("[IPC Debug] Task started - processing CM55 messages\n");
+
+    /* Continuous loop to process CM55 debug messages */
+    while (1) {
+        /* Process any pending CM55 debug messages */
+        audio_ipc_debug_process();
+
+        /* Small delay to prevent tight loop, but fast enough for debug output */
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+/**
  * @brief BLE task - BTSTACK and LE Audio profile processing
  *
  * Priority 5: Handles BT stack events, LE Audio state machine, ISOC control
@@ -324,8 +351,7 @@ static void ble_task(void *pvParameters)
     g_app_running = true;
 
     while (g_app_running) {
-        /* Process CM55 debug messages */
-        audio_ipc_debug_process();
+        /* Note: CM55 debug messages processed by ipc_debug_task */
 
         /* Process LE Audio state machine */
         le_audio_process();
@@ -502,6 +528,14 @@ int main(void)
      **************************************************************************/
 
     printf("Creating FreeRTOS tasks (CM33 control plane)...\n");
+
+    /* IPC debug task FIRST - ensures CM55 messages are always processed */
+    task_result = xTaskCreate(ipc_debug_task, "IPC_DBG", IPC_DEBUG_TASK_STACK_SIZE, NULL,
+                              IPC_DEBUG_TASK_PRIORITY, &g_ipc_debug_task_handle);
+    if (task_result != pdPASS) {
+        printf("ERROR: Failed to create IPC debug task\n");
+        handle_app_error();
+    }
 
     task_result = xTaskCreate(ble_task, "BLE", BLE_TASK_STACK_SIZE, NULL,
                               BLE_TASK_PRIORITY, &g_ble_task_handle);
