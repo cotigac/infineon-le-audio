@@ -48,6 +48,11 @@
 /* Application initialization (from example's app.c) */
 #include "app.h"
 
+/* Undefine conflicting macros from app_bt/bt.h */
+#ifdef bt_disconnect
+#undef bt_disconnect
+#endif
+
 /* Infineon BSP/PDL */
 #include "cybsp.h"
 
