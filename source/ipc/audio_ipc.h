@@ -39,10 +39,10 @@ extern "C" {
 #define AUDIO_IPC_CHANNEL_LC3_RX        (1U)  /**< CM33 -> CM55 (received frames for decode) */
 
 /** Debug message queue depth */
-#define AUDIO_IPC_DEBUG_QUEUE_DEPTH     (8U)
+#define AUDIO_IPC_DEBUG_QUEUE_DEPTH     (4U)
 
 /** Maximum debug message length */
-#define AUDIO_IPC_DEBUG_MSG_MAX_LEN     (80U)
+#define AUDIO_IPC_DEBUG_MSG_MAX_LEN     (64U)
 
 /*******************************************************************************
  * Data Types
