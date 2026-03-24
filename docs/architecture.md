@@ -319,6 +319,89 @@ AT-style command interface for configuring Bluetooth, Wi-Fi, and LE Audio via US
 
 ## Software Architecture
 
+### Initialization Architecture
+
+The firmware uses a coordinated initialization sequence between CM33 and CM55 cores,
+synchronized via FreeRTOS event groups. This architecture ensures:
+- No deadlocks if BT or CM55 initialization fails
+- Graceful degradation (system continues with reduced functionality)
+- Deterministic startup sequence
+
+#### Event Group Synchronization
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Event Group: g_system_events                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EVT_BT_READY     (bit 0)  │  BT stack initialized (BTM_ENABLED_EVT)        │
+│  EVT_CM55_READY   (bit 1)  │  CM55 IPC ready (audio_ipc_is_ready())         │
+│  EVT_SYSTEM_READY (bit 2)  │  All modules initialized, tasks may proceed    │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Initialization Sequence
+
+```
+CM33 main()                                    CM55 main()
+───────────                                    ───────────
+│ cybsp_init()                                 │ cybsp_init()
+│ setup_clib_support()                         │ setup_clib_support()
+│ setup_tickless_idle_timer()                  │ setup_tickless_idle_timer()
+│ app_kv_store_init()                          │ __enable_irq()
+│ button_lib_init()                            │
+│                                              │
+│ audio_ipc_init_primary() ◄─────────────────► │ (CM55 boots here)
+│   Sets magic, cm33_ready=true                │
+│                                              │ init_audio_system()
+│ Cy_SysEnableCM55() ──────────────────────────┤   audio_ipc_init_secondary()
+│                                              │     Waits for cm33_ready (5s)
+│ xEventGroupCreate()                          │     Sets cm55_ready=true
+│                                              │   audio_task_init()
+│ Create all FreeRTOS tasks:                   │   audio_task_start()
+│   main_task (pri 6)                          │
+│   ipc_debug_task (pri 1)                     │ xTaskCreate(ipc_task)
+│   ble_task (pri 5)                           │
+│   usb_task (pri 4)                           │
+│   midi_task (pri 2)                          │
+│   wifi_task (pri 3)                          │
+│                                              │
+│ application_start()                          │
+│   bt_init() - async BT stack init            │
+│                                              │
+│ vTaskStartScheduler() ◄───────────────────── │ vTaskStartScheduler()
+│         │                                    │         │
+│         ▼                                    │         ▼
+│   ┌─────────────┐                            │   ┌─────────────┐
+│   │ main_task   │ (highest priority)         │   │ audio_task  │ (running)
+│   │ Wait 15s    │                            │   │ ipc_task    │ (monitoring)
+│   │ EVT_BT_READY│                            │   └─────────────┘
+│   └─────────────┘                            │
+│         │                                    │
+│   BTM_ENABLED_EVT fires                      │
+│   app_le_audio_on_bt_ready()                 │
+│   xEventGroupSetBits(EVT_BT_READY)           │
+│         │                                    │
+│   main_task wakes:                           │
+│     Poll CM55 IPC ready (5s timeout)         │
+│     xEventGroupSetBits(EVT_CM55_READY)       │
+│     init_control_modules()                   │
+│     xEventGroupSetBits(EVT_SYSTEM_READY)     │
+│         │                                    │
+│   All tasks wake and proceed                 │
+│         ▼                                    │
+│   ble_task, usb_task, wifi_task, midi_task   │
+│   All were waiting on EVT_SYSTEM_READY       │
+└──────────────────────────────────────────────┘
+```
+
+#### Graceful Degradation
+
+| Failure Scenario | Timeout | System Behavior |
+|-----------------|---------|-----------------|
+| BT init fails | 15s | System continues without Bluetooth |
+| CM55 IPC fails | 5s | System continues without audio |
+| Both fail | 20s | USB/MIDI only mode |
+
 ### FreeRTOS Dual-Core Task Structure
 
 The firmware runs FreeRTOS on both cores with separate schedulers:
@@ -326,53 +409,66 @@ The firmware runs FreeRTOS on both cores with separate schedulers:
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────┐
 │                                  PSoC Edge E82/E84                                       │
-├─────────────────────────────────────────┬───────────────────────────────────────────────┤
-│           CM33 Core Scheduler           │             CM55 Core Scheduler               │
-│           (Control Plane)               │              (Audio DSP)                      │
-├─────────────┬───────────┬───────────────┼───────────────────┬───────────────────────────┤
-│ BLE Task    │ USB Task  │ Wi-Fi Task    │ Audio/LC3 Task    │ IPC Task                  │
-│ Priority: 5 │ Priority: │ Priority: 3   │ Priority: Highest │ Priority: High            │
-│             │ 4         │               │                   │                           │
-├─────────────┼───────────┼───────────────┼───────────────────┼───────────────────────────┤
-│ BTSTACK     │ USB HS    │ SDIO TX/RX    │ LC3 encode        │ TX Queue poll             │
-│ le_audio_   │ MIDI class│ WHD packets   │ LC3 decode        │ (CM55 → CM33)             │
-│ process()   │ Data      │ wifi_bridge_  │ I2S DMA ISR       │ RX Queue receive          │
-│ ISOC ctrl   │ bridge    │ process()     │ Frame sync        │ (CM33 → CM55)             │
-├─────────────┼───────────┼───────────────┼───────────────────┼───────────────────────────┤
-│ MIDI Task   │           │               │ I2S DMA (ISR)     │                           │
-│ Priority: 2 │           │               │ Highest priority  │                           │
-│ BLE/USB     │           │               │ DMA callbacks     │                           │
-│ routing     │           │               │                   │                           │
-└─────────────┴───────────┴───────────────┴───────────────────┴───────────────────────────┘
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│           CM33 Core Scheduler (configMAX_PRIORITIES = 7)                                 │
+├───────────────┬───────────┬───────────┬───────────┬───────────────┬─────────────────────┤
+│ main_task     │ BLE Task  │ USB Task  │ Wi-Fi Task│ MIDI Task     │ ipc_debug_task      │
+│ Priority: 6   │ Priority: │ Priority: │ Priority: │ Priority: 2   │ Priority: 1         │
+│ (highest)     │ 5         │ 4         │ 3         │               │ (lowest)            │
+├───────────────┼───────────┼───────────┼───────────┼───────────────┼─────────────────────┤
+│ System init   │ BTSTACK   │ USB HS    │ SDIO TX/RX│ BLE/USB/UART  │ CM55 debug printf   │
+│ Wait BT ready │ le_audio_ │ MIDI class│ WHD pkts  │ routing       │ (debug only)        │
+│ Wait CM55 IPC │ process() │ CDC/ACM   │ wifi_     │               │                     │
+│ init_control_ │ ISOC ctrl │ AT cmds   │ bridge_   │               │                     │
+│ modules()     │           │           │ process() │               │                     │
+│ Set SYS_READY │           │           │           │               │                     │
+└───────────────┴───────────┴───────────┴───────────┴───────────────┴─────────────────────┘
                           │                                   │
                           └─────────── IPC (Shared Memory) ───┘
+                          │                                   │
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│           CM55 Core Scheduler (configMAX_PRIORITIES = 7)                                 │
+├───────────────────────────────────────────┬─────────────────────────────────────────────┤
+│ Audio/LC3 Task                            │ IPC Task                                    │
+│ Priority: 6 (highest)                     │ Priority: 5                                 │
+├───────────────────────────────────────────┼─────────────────────────────────────────────┤
+│ LC3 encode/decode                         │ Health monitoring (debug only)              │
+│ I2S DMA coordination                      │ Stats logging every 10s                    │
+│ Frame sync, PLC                           │ Queue overflow/underflow warnings           │
+└───────────────────────────────────────────┴─────────────────────────────────────────────┘
 ```
 
 ### Task Distribution by Core
 
-| Core | Task | Priority | Stack | Purpose |
-|------|------|----------|-------|---------|
-| **CM55** | I2S DMA | ISR | - | DMA half/complete callbacks |
-| **CM55** | Audio/LC3 | Highest | 4096 | LC3 encode/decode, frame sync |
-| **CM55** | IPC | High | 2048 | Inter-processor queue management |
-| **CM33** | BLE | 5 | 4096 | BTSTACK, LE Audio control plane |
-| **CM33** | USB | 4 | 2048 | USB enumeration, MIDI + CDC/ACM |
-| **CM33** | Wi-Fi | 3 | 4096 | WHD packet processing |
-| **CM33** | MIDI | 2 | 1024 | BLE/USB routing |
+| Core | Task | Name | Priority | Stack | Purpose |
+|------|------|------|----------|-------|---------|
+| **CM33** | main_task | "MAIN" | 6 | 2048 | System init coordinator, then idle |
+| **CM33** | ble_task | "BLE" | 5 | 4096 | BTSTACK, LE Audio control plane |
+| **CM33** | usb_task | "USB" | 4 | 2048 | USB enumeration, MIDI + CDC/ACM |
+| **CM33** | wifi_task | "WiFi" | 3 | 4096 | WHD packet processing |
+| **CM33** | midi_task | "MIDI" | 2 | 1024 | BLE/USB/UART routing |
+| **CM33** | ipc_debug_task | "IPC_DBG" | 1 | 512 | CM55 debug printf relay (debug only) |
+| **CM55** | audio_task_main | "AudioDSP" | 6 | 4096 | LC3 encode/decode, I2S DMA |
+| **CM55** | ipc_task | "IPC" | 5 | 2048 | Health monitoring (debug only) |
 
-**Note:** CDC/ACM AT command processing is integrated into the USB task. The AT parser
-and command handlers run in the USB task context when processing CDC data.
+**Notes:**
+- CDC/ACM AT command processing is integrated into the USB task
+- `ipc_debug_task` (CM33) and `ipc_task` (CM55) are **debug/monitoring only**
+- Audio frame IPC transfer happens inside `audio_task_main` via `audio_ipc_send/receive`
+- Production builds can remove debug tasks to save ~10KB RAM
 
 ### Task Stack Sizes
 
 | Task | Core | Stack Size | Purpose |
 |------|------|------------|---------|
-| Audio | CM55 | 4096 bytes | LC3 codec requires significant stack (Helium DSP) |
-| IPC | CM55 | 2048 bytes | Queue management, shared memory access |
-| BLE | CM33 | 4096 bytes | BTSTACK callback processing |
-| USB | CM33 | 2048 bytes | USB enumeration and data |
-| Wi-Fi | CM33 | 4096 bytes | WHD packet processing |
-| MIDI | CM33 | 1024 bytes | Lightweight routing |
+| main_task | CM33 | 2048 words | System init, event group waits |
+| Audio | CM55 | 4096 words | LC3 codec requires significant stack (Helium DSP) |
+| IPC | CM55 | 2048 words | Queue monitoring (debug only) |
+| BLE | CM33 | 4096 words | BTSTACK callback processing |
+| USB | CM33 | 2048 words | USB enumeration and data |
+| Wi-Fi | CM33 | 4096 words | WHD packet processing |
+| MIDI | CM33 | 1024 words | Lightweight routing |
+| ipc_debug | CM33 | 512 words | Debug printf relay (debug only) |
 
 ### Inter-Task Communication
 
