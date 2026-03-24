@@ -466,6 +466,12 @@ static wiced_result_t bt_management_callback(wiced_bt_management_evt_t event,
                 /* Build default advertising data */
                 build_default_adv_data();
 
+                /* Restore bonding data from NVM */
+                app_bt_restore_bond_data();
+
+                /* Add bonded devices to address resolution database */
+                app_bt_add_devices_to_address_resolution_db();
+
                 /* Update state */
                 bt_ctx.initialized = true;
                 bt_ctx.power_mode = BT_POWER_ACTIVE;
@@ -810,28 +816,17 @@ int bt_init_with_config(const bt_config_t *config)
         return BT_ERROR_NO_MEMORY;
     }
 
-    /* Wait for BTM_ENABLED_EVT (signaled by init_semaphore) */
-    printf("BT Init: Waiting for BTM_ENABLED_EVT...\n");
-    if (xSemaphoreTake(bt_ctx.init_semaphore, pdMS_TO_TICKS(FW_DOWNLOAD_TIMEOUT_MS)) != pdTRUE) {
-        printf("BT Init: Timeout waiting for BTM_ENABLED_EVT\n");
-        bt_deinit();
-        return BT_ERROR_TIMEOUT;
-    }
-
-    /* Check if initialization was successful */
-    if (bt_ctx.state == BT_STATE_ERROR) {
-        printf("BT Init: Stack initialization failed\n");
-        bt_deinit();
-        return BT_ERROR_CONTROLLER_INIT;
-    }
-
-    /* Restore bonding data from NVM */
-    app_bt_restore_bond_data();
-
-    /* Add bonded devices to address resolution database */
-    app_bt_add_devices_to_address_resolution_db();
-
-    printf("BT Init: Bluetooth stack initialized successfully\n");
+    /*
+     * BTM_ENABLED_EVT will be delivered via bt_management_callback()
+     * AFTER vTaskStartScheduler() starts the BTSTACK tasks.
+     *
+     * DO NOT block here - the FreeRTOS scheduler hasn't started yet!
+     * Bond restoration and state updates happen in the callback.
+     *
+     * Tasks that need to wait for BT ready should use bt_ctx.init_semaphore
+     * which is signaled by the callback when BTM_ENABLED_EVT is received.
+     */
+    printf("BT Init: Stack init requested, BTM_ENABLED_EVT will arrive asynchronously\n");
 
     return BT_OK;
 }
