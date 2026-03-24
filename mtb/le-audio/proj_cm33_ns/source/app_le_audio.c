@@ -14,7 +14,7 @@
 
 #include "app_le_audio.h"
 #include "FreeRTOS.h"
-#include "semphr.h"
+#include "event_groups.h"
 #include "task.h"
 
 /* LE Audio Manager from user source */
@@ -31,8 +31,11 @@
  * External Variables
  ******************************************************************************/
 
-/* BT ready semaphore - declared in main_merged.c */
-extern SemaphoreHandle_t g_bt_ready_sem;
+/* System event group - declared in main.c */
+extern EventGroupHandle_t g_system_events;
+
+/* Event bit for BT ready */
+#define EVT_BT_READY      (1 << 0)
 
 /*******************************************************************************
  * Private Variables
@@ -76,9 +79,9 @@ void app_le_audio_on_bt_ready(void)
 {
     printf("LE Audio: BT stack ready, signaling tasks\r\n");
 
-    /* Signal waiting tasks */
-    if (g_bt_ready_sem != NULL) {
-        xSemaphoreGive(g_bt_ready_sem);
+    /* Signal BT ready event to all waiting tasks */
+    if (g_system_events != NULL) {
+        xEventGroupSetBits(g_system_events, EVT_BT_READY);
     }
 }
 

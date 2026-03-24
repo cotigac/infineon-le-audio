@@ -27,6 +27,7 @@
 #include "task.h"
 #include "queue.h"
 #include "semphr.h"
+#include "event_groups.h"
 
 /* Infineon Platform */
 #include "cybsp.h"
@@ -83,13 +84,20 @@
 #define WIFI_TASK_STACK_SIZE    (4096)
 #define MIDI_TASK_STACK_SIZE    (1024)
 #define IPC_DEBUG_TASK_STACK_SIZE (512)
+#define MAIN_TASK_STACK_SIZE    (2048)
 
 /* Task priorities (per architecture.md) */
+#define MAIN_TASK_PRIORITY      (6)  /* Highest - system init then idle */
 #define BLE_TASK_PRIORITY       (5)
 #define USB_TASK_PRIORITY       (4)
 #define WIFI_TASK_PRIORITY      (3)
 #define MIDI_TASK_PRIORITY      (2)
 #define IPC_DEBUG_TASK_PRIORITY (1)  /* Lowest priority - just processes debug messages */
+
+/* System event bits for task synchronization */
+#define EVT_BT_READY      (1 << 0)  /* BT stack initialized */
+#define EVT_CM55_READY    (1 << 1)  /* CM55 IPC ready */
+#define EVT_SYSTEM_READY  (1 << 2)  /* All modules initialized */
 
 /*******************************************************************************
  * Global Variables
@@ -101,8 +109,8 @@ static mtb_hal_lptimer_t lptimer_obj;
 /* RTC HAL object (for CLIB time support) */
 static mtb_hal_rtc_t rtc_obj;
 
-/* BT ready semaphore - signaled when BTSTACK is initialized */
-SemaphoreHandle_t g_bt_ready_sem = NULL;
+/* System event group for task synchronization */
+EventGroupHandle_t g_system_events = NULL;
 
 /* Application state */
 static volatile bool g_app_running = false;
@@ -113,6 +121,7 @@ static TaskHandle_t g_usb_task_handle = NULL;
 static TaskHandle_t g_midi_task_handle = NULL;
 static TaskHandle_t g_wifi_task_handle = NULL;
 static TaskHandle_t g_ipc_debug_task_handle = NULL;
+static TaskHandle_t g_main_task_handle = NULL;
 
 /*******************************************************************************
  * Function Prototypes
@@ -129,6 +138,7 @@ static void usb_task(void *pvParameters);
 static void midi_task(void *pvParameters);
 static void wifi_task(void *pvParameters);
 static void ipc_debug_task(void *pvParameters);
+static void main_task(void *pvParameters);
 
 /* Module initialization */
 static int init_control_modules(void);
@@ -303,6 +313,59 @@ static int init_control_modules(void)
  ******************************************************************************/
 
 /**
+ * @brief Main task - System initialization and monitoring
+ *
+ * Priority 6 (highest): Initializes all control modules after BT and CM55
+ * are ready, then signals other tasks to proceed. Provides centralized
+ * initialization with proper synchronization and error handling.
+ */
+static void main_task(void *pvParameters)
+{
+    (void)pvParameters;
+    EventBits_t bits;
+
+    printf("[MAIN] System initialization task started\n");
+
+    /* Step 1: Wait for BT stack ready (15 second timeout) */
+    printf("[MAIN] Waiting for BT stack...\n");
+    bits = xEventGroupWaitBits(g_system_events, EVT_BT_READY,
+                                pdFALSE, pdTRUE, pdMS_TO_TICKS(15000));
+    if (!(bits & EVT_BT_READY)) {
+        printf("[MAIN] WARNING: BT stack timeout - continuing without BT\n");
+    } else {
+        printf("[MAIN] BT stack ready\n");
+    }
+
+    /* Step 2: Wait for CM55 IPC ready (5 second timeout) */
+    printf("[MAIN] Waiting for CM55 IPC...\n");
+    uint32_t cm55_timeout = 500;  /* 5 seconds (500 * 10ms) */
+    while (!audio_ipc_is_ready() && cm55_timeout > 0) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        cm55_timeout--;
+    }
+    if (audio_ipc_is_ready()) {
+        printf("[MAIN] CM55 IPC ready\n");
+        xEventGroupSetBits(g_system_events, EVT_CM55_READY);
+    } else {
+        printf("[MAIN] WARNING: CM55 IPC timeout - continuing without audio\n");
+    }
+
+    /* Step 3: Initialize control modules */
+    init_control_modules();
+
+    /* Step 4: Signal system ready - releases all waiting tasks */
+    g_app_running = true;
+    xEventGroupSetBits(g_system_events, EVT_SYSTEM_READY);
+    printf("[MAIN] System initialization complete!\n\n");
+
+    /* Main task now monitors system health */
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        /* Could add health monitoring here */
+    }
+}
+
+/**
  * @brief IPC debug task - Process CM55 debug messages
  *
  * Priority 1 (lowest): Ensures CM55 debug output is always processed,
@@ -333,26 +396,29 @@ static void ipc_debug_task(void *pvParameters)
 static void ble_task(void *pvParameters)
 {
     (void)pvParameters;
+    EventBits_t bits;
 
     printf("[BLE] Task started, waiting for BT stack...\n");
 
-    /* Wait for BT stack to be ready (signaled from app_init via app_le_audio) */
-    if (xSemaphoreTake(g_bt_ready_sem, pdMS_TO_TICKS(10000)) != pdTRUE) {
-        printf("[BLE] ERROR: BT stack init timeout!\n");
-        vTaskDelete(NULL);
-        return;
+    /* Wait for BT ready - graceful degradation on timeout */
+    bits = xEventGroupWaitBits(g_system_events, EVT_BT_READY,
+                                pdFALSE, pdTRUE, pdMS_TO_TICKS(15000));
+    if (!(bits & EVT_BT_READY)) {
+        printf("[BLE] WARNING: BT stack timeout - task will idle\n");
+        while (1) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
     }
-    xSemaphoreGive(g_bt_ready_sem);  /* Allow other tasks to proceed */
 
-    printf("[BLE] BT stack ready, initializing control modules\n");
-    init_control_modules();
+    printf("[BLE] BT stack ready, waiting for system init...\n");
+
+    /* Wait for system ready (main_task completes initialization) */
+    xEventGroupWaitBits(g_system_events, EVT_SYSTEM_READY,
+                        pdFALSE, pdTRUE, portMAX_DELAY);
 
     printf("[BLE] Starting main loop\n");
-    g_app_running = true;
 
     while (g_app_running) {
-        /* Note: CM55 debug messages processed by ipc_debug_task */
-
         /* Process LE Audio state machine */
         le_audio_process();
 
@@ -373,10 +439,11 @@ static void usb_task(void *pvParameters)
 {
     (void)pvParameters;
 
-    printf("[USB] Task started, waiting for BT ready...\n");
+    printf("[USB] Task started, waiting for system ready...\n");
 
-    xSemaphoreTake(g_bt_ready_sem, portMAX_DELAY);
-    xSemaphoreGive(g_bt_ready_sem);
+    /* Wait for system ready (main_task completes initialization) */
+    xEventGroupWaitBits(g_system_events, EVT_SYSTEM_READY,
+                        pdFALSE, pdTRUE, portMAX_DELAY);
 
     printf("[USB] Starting USB composite processing (MIDI + CDC/AT)\n");
 
@@ -409,10 +476,11 @@ static void midi_task(void *pvParameters)
 {
     (void)pvParameters;
 
-    printf("[MIDI] Task started, waiting for BT ready...\n");
+    printf("[MIDI] Task started, waiting for system ready...\n");
 
-    xSemaphoreTake(g_bt_ready_sem, portMAX_DELAY);
-    xSemaphoreGive(g_bt_ready_sem);
+    /* Wait for system ready (main_task completes initialization) */
+    xEventGroupWaitBits(g_system_events, EVT_SYSTEM_READY,
+                        pdFALSE, pdTRUE, portMAX_DELAY);
 
     printf("[MIDI] Starting MIDI routing\n");
 
@@ -432,10 +500,11 @@ static void wifi_task(void *pvParameters)
     (void)pvParameters;
     int result;
 
-    printf("[WiFi] Task started, waiting for BT ready...\n");
+    printf("[WiFi] Task started, waiting for system ready...\n");
 
-    xSemaphoreTake(g_bt_ready_sem, portMAX_DELAY);
-    xSemaphoreGive(g_bt_ready_sem);
+    /* Wait for system ready (main_task completes initialization) */
+    xEventGroupWaitBits(g_system_events, EVT_SYSTEM_READY,
+                        pdFALSE, pdTRUE, portMAX_DELAY);
 
     printf("[WiFi] Starting Wi-Fi bridge\n");
     result = wifi_bridge_start();
@@ -517,9 +586,9 @@ int main(void)
      * Phase 3: Create Synchronization Primitives
      **************************************************************************/
 
-    g_bt_ready_sem = xSemaphoreCreateBinary();
-    if (g_bt_ready_sem == NULL) {
-        printf("ERROR: Failed to create BT ready semaphore\n");
+    g_system_events = xEventGroupCreate();
+    if (g_system_events == NULL) {
+        printf("ERROR: Failed to create system event group\n");
         handle_app_error();
     }
 
@@ -529,7 +598,15 @@ int main(void)
 
     printf("Creating FreeRTOS tasks (CM33 control plane)...\n");
 
-    /* IPC debug task FIRST - ensures CM55 messages are always processed */
+    /* Main task FIRST - handles system initialization */
+    task_result = xTaskCreate(main_task, "MAIN", MAIN_TASK_STACK_SIZE, NULL,
+                              MAIN_TASK_PRIORITY, &g_main_task_handle);
+    if (task_result != pdPASS) {
+        printf("ERROR: Failed to create main task\n");
+        handle_app_error();
+    }
+
+    /* IPC debug task - ensures CM55 messages are always processed */
     task_result = xTaskCreate(ipc_debug_task, "IPC_DBG", IPC_DEBUG_TASK_STACK_SIZE, NULL,
                               IPC_DEBUG_TASK_PRIORITY, &g_ipc_debug_task_handle);
     if (task_result != pdPASS) {

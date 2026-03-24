@@ -346,21 +346,30 @@ uint32_t audio_ipc_encoder_frames_available(void)
 
 cy_rslt_t audio_ipc_init_secondary(void)
 {
-    uint32_t timeout = 1000000U;  /* Timeout for CM33 ready */
+    uint32_t timeout_ms = 5000U;  /* 5 second timeout - real time based */
 
     if (g_ipc_initialized) {
         return CY_RSLT_SUCCESS;
     }
 
-    /* Wait for CM33 to initialize shared memory */
-    while (!g_ipc->cm33_ready && timeout > 0) {
-        __NOP();
-        timeout--;
+    /* Memory barrier before checking shared memory */
+    __DMB();
+
+    /* Wait for CM33 to initialize shared memory - time-based delay */
+    printf("[CM55 IPC] Waiting for CM33...\n");
+    while (!g_ipc->cm33_ready && timeout_ms > 0) {
+        Cy_SysLib_DelayUs(1000);  /* 1ms delay */
+        timeout_ms--;
+        __DMB();  /* Refresh view of shared memory each iteration */
     }
 
-    if (timeout == 0 || g_ipc->magic != AUDIO_IPC_MAGIC) {
+    if (timeout_ms == 0 || g_ipc->magic != AUDIO_IPC_MAGIC) {
+        printf("[CM55 IPC] ERROR: CM33 not ready (timeout=%lu, magic=0x%08lX)\n",
+               (unsigned long)timeout_ms, (unsigned long)g_ipc->magic);
         return CY_RSLT_TYPE_ERROR;
     }
+
+    printf("[CM55 IPC] CM33 ready after %lu ms\n", (unsigned long)(5000U - timeout_ms));
 
     /* Memory barrier to ensure we see CM33's writes */
     __DMB();
