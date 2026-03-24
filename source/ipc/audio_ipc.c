@@ -518,7 +518,7 @@ void audio_ipc_debug_print(const char *msg)
         len = AUDIO_IPC_DEBUG_MSG_MAX_LEN - 1;
     }
     memcpy(entry->msg, msg, len);
-    entry->msg[len] = ' ';
+    entry->msg[len] = '\0';
     entry->length = (uint8_t)len;
 
     /* Memory barrier before marking valid */
@@ -590,7 +590,7 @@ bool audio_ipc_debug_read(char *buf, uint32_t buf_size)
         copy_len = buf_size - 1;
     }
     memcpy(buf, entry->msg, copy_len);
-    buf[copy_len] = ' ';
+    buf[copy_len] = '\0';
 
     /* Clear entry */
     entry->valid = 0;
@@ -615,14 +615,12 @@ void audio_ipc_debug_process(void)
 
     while (audio_ipc_debug_read(buf, sizeof(buf))) {
         /* Print with [CM55] prefix - message may already have newline */
-        if (buf[0] != ' ') {
+        if (buf[0] != '\0') {
             printf("[CM55] %s", buf);
             /* Add newline if not present */
             size_t len = strlen(buf);
-            if (len > 0 && buf[len-1] != '
-') {
-                printf("
-");
+            if (len > 0 && buf[len-1] != '\n') {
+                printf("\n");
             }
         }
     }
