@@ -194,6 +194,14 @@ static int init_control_modules(void)
 
     printf("\n[CM33] Initializing control modules...\n");
 
+    /* Check IPC with CM55 */
+    printf("  Checking IPC with CM55...\n");
+    if (audio_ipc_is_ready()) {
+        printf("  IPC: CM33 <-> CM55 connection established!\n");
+    } else {
+        printf("  IPC: WARNING - CM55 not ready yet (may initialize later)\n");
+    }
+
     /* Initialize LE Audio manager (control plane only) */
     printf("  LE Audio manager...\n");
     le_audio_codec_config_t le_codec_config = LE_AUDIO_CODEC_CONFIG_DEFAULT;
@@ -447,13 +455,17 @@ int main(void)
     button_lib_init();
 
     /* Initialize IPC for audio frames (must be before CM55 boot) */
+    printf("Initializing IPC for CM55 audio...\n");
     if (CY_RSLT_SUCCESS != audio_ipc_init_primary()) {
         printf("ERROR: Failed to initialize audio IPC\n");
         handle_app_error();
     }
+    printf("IPC primary initialized, shared memory ready\n");
 
     /* Boot CM55 core (audio DSP runs there) */
+    printf("Booting CM55 core (audio DSP)...\n");
     Cy_SysEnableCM55(MXCM55, CM55_APP_BOOT_ADDR, CM55_BOOT_WAIT_TIME_USEC);
+    printf("CM55 boot initiated\n");
 
     /* Enable global interrupts */
     __enable_irq();
