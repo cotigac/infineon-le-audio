@@ -45,6 +45,9 @@
 #include "cycfg_gap.h"
 #endif
 
+/* Application initialization (from example's app.c) */
+#include "app.h"
+
 /* Infineon BSP/PDL */
 #include "cybsp.h"
 
@@ -487,6 +490,9 @@ static wiced_result_t bt_management_callback(wiced_bt_management_evt_t event,
                     .type = BT_EVENT_INITIALIZED
                 };
                 dispatch_event(&bt_event);
+
+                /* Call app_init() to initialize GATT, ISOC, LEDs, and signal tasks */
+                app_init();
             } else {
                 printf("BT Mgmt: Stack enable failed: %d\n", p_event_data->enabled.status);
                 set_state(BT_STATE_ERROR);
