@@ -231,15 +231,31 @@ typedef struct {
  ******************************************************************************/
 
 /**
- * @brief Initialize the Bluetooth stack
+ * @brief Initialize the Bluetooth stack with configuration
  *
- * Initializes BTSTACK, HCI transport, and the CYW55511 controller.
+ * Initializes BTSTACK, HCI transport, and the CYW55512 controller.
  * Downloads firmware if configured and enables requested LE features.
+ *
+ * Note: For compatibility with app_bt/bt.h, use bt_init() which calls
+ * this function with NULL configuration (uses defaults).
  *
  * @param config Pointer to configuration (NULL for defaults)
  * @return BT_OK on success, negative error code on failure
  */
-int bt_init(const bt_config_t *config);
+int bt_init_with_config(const bt_config_t *config);
+
+/**
+ * @brief Initialize the Bluetooth stack (compatibility wrapper)
+ *
+ * This function matches the signature expected by app_bt/bt.h:
+ *   wiced_result_t bt_init(void);
+ *
+ * It calls bt_init_with_config(NULL) to use default configuration.
+ *
+ * Note: The actual declaration is in app_bt/bt.h to avoid conflicts.
+ * This comment documents that bt_init() is implemented in bt_init.c.
+ */
+/* wiced_result_t bt_init(void); -- declared in app_bt/bt.h */
 
 /**
  * @brief Deinitialize the Bluetooth stack

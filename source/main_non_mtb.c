@@ -329,7 +329,7 @@ static int app_init(void)
 
     /* Initialize Bluetooth stack */
     printf("Initializing Bluetooth stack...\n");
-    result = bt_init(NULL);
+    result = bt_init_with_config(NULL);
     if (result != 0) {
         printf("WARNING: Bluetooth initialization failed: %d (continuing anyway)\n", result);
         /* Don't return error - allow system to boot for debugging */

@@ -725,7 +725,7 @@ static int build_default_adv_data(void)
  * Public API - Initialization
  ******************************************************************************/
 
-int bt_init(const bt_config_t *config)
+int bt_init_with_config(const bt_config_t *config)
 {
     wiced_result_t wiced_result;
 
@@ -1543,4 +1543,40 @@ void bt_enter_pairing(void)
 {
     printf("BT: Entering pairing mode\n");
     bt_start_advertising(true, 0);  /* Connectable, default interval */
+}
+
+
+/*******************************************************************************
+ * Compatibility Wrapper for app_bt/bt.h Interface
+ *
+ * The app_bt/bt.h header declares: wiced_result_t bt_init(void);
+ * This wrapper provides that interface and calls our implementation.
+ ******************************************************************************/
+
+/**
+ * @brief Initialize Bluetooth stack (compatibility wrapper)
+ *
+ * This function matches the signature expected by app_bt/bt.h:
+ *   wiced_result_t bt_init(void);
+ *
+ * It calls bt_init_with_config(NULL) to use default configuration.
+ *
+ * @return WICED_BT_SUCCESS on success, error code otherwise
+ */
+wiced_result_t bt_init(void)
+{
+    int result = bt_init_with_config(NULL);
+
+    switch (result) {
+        case BT_OK:
+            return WICED_BT_SUCCESS;
+        case BT_ERROR_ALREADY_INITIALIZED:
+            return WICED_BT_SUCCESS;  /* Already initialized is not an error */
+        case BT_ERROR_NO_MEMORY:
+            return WICED_BT_NO_RESOURCES;
+        case BT_ERROR_TIMEOUT:
+            return WICED_BT_TIMEOUT;
+        default:
+            return WICED_BT_ERROR;
+    }
 }

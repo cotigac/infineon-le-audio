@@ -310,7 +310,7 @@ static int cmd_btinit_exec(int argc, const char *argv[])
     bt_config_t config = BT_CONFIG_DEFAULT;
     strncpy(config.device_name, g_device_name, sizeof(config.device_name) - 1);
 
-    int result = bt_init(&config);
+    int result = bt_init_with_config(&config);
     if (result != BT_OK) {
         return CME_BT_HCI_ERROR;
     }
