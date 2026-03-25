@@ -333,8 +333,9 @@ cy_rslt_t audio_ipc_init_secondary(void)
     mtb_ipc_queue_enable_event(&g_rx_queue, MTB_IPC_QUEUE_WRITE, true);
 
     /* Get handle to CM55 ready semaphore and give it to signal CM33 */
+    /* Use short timeout since CM33 must have initialized this before mtb_ipc_get_handle succeeded */
     result = mtb_ipc_semaphore_get_handle(&g_ipc_instance, &g_cm55_ready_sema,
-                                           AUDIO_IPC_SEMA_CM55_READY, 1000000); /* 1s timeout */
+                                           AUDIO_IPC_SEMA_CM55_READY, 100000); /* 100ms timeout */
     if (result != CY_RSLT_SUCCESS) {
         printf("[IPC] ERROR: CM55 ready semaphore get_handle failed: 0x%08lX\n", (unsigned long)result);
         return result;
