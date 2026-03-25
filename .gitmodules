@@ -34,3 +34,36 @@
 [submodule "libs/TARGET_CYW955513EVK-01"]
 	path = libs/TARGET_CYW955513EVK-01
 	url = https://github.com/Infineon/TARGET_CYW955513EVK-01.git
+[submodule "libs/mtb-ipc"]
+	path = libs/mtb-ipc
+	url = https://github.com/Infineon/mtb-ipc.git
+[submodule "libs/cmsis"]
+	path = libs/cmsis
+	url = https://github.com/Infineon/cmsis.git
+[submodule "libs/mtb-dsl-pse8xxgp"]
+	path = libs/mtb-dsl-pse8xxgp
+	url = https://github.com/Infineon/mtb-dsl-pse8xxgp.git
+[submodule "libs/clib-support"]
+	path = libs/clib-support
+	url = https://github.com/Infineon/clib-support.git
+[submodule "libs/retarget-io"]
+	path = libs/retarget-io
+	url = https://github.com/Infineon/retarget-io.git
+[submodule "libs/kv-store"]
+	path = libs/kv-store
+	url = https://github.com/Infineon/kv-store.git
+[submodule "libs/bt-fw-ifx-cyw55500a1"]
+	path = libs/bt-fw-ifx-cyw55500a1
+	url = https://github.com/Infineon/bt-fw-ifx-cyw55500a1.git
+[submodule "libs/block-storage"]
+	path = libs/block-storage
+	url = https://github.com/Infineon/block-storage.git
+[submodule "libs/async-transfer"]
+	path = libs/async-transfer
+	url = https://github.com/Infineon/async-transfer.git
+[submodule "libs/mtb-srf"]
+	path = libs/mtb-srf
+	url = https://github.com/Infineon/mtb-srf.git
+[submodule "libs/se-rt-services-utils"]
+	path = libs/se-rt-services-utils
+	url = https://github.com/Infineon/se-rt-services-utils.git
