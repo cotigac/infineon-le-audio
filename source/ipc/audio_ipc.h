@@ -3,12 +3,12 @@
  * @brief Inter-Processor Communication for LC3 Audio Frames
  *
  * This module provides IPC between CM33 and CM55 cores for transferring
- * LC3 encoded audio frames:
+ * LC3 encoded audio frames using Infineon's mtb-ipc library:
  *   - TX Path: CM55 (LC3 encode) -> CM33 (ISOC TX)
  *   - RX Path: CM33 (ISOC RX) -> CM55 (LC3 decode)
  *
- * Uses Infineon's mtb-ipc library for thread-safe, interrupt-safe
- * communication between cores.
+ * Uses mtb-ipc library for hardware-backed, thread-safe communication
+ * with proper synchronization between cores.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -32,17 +32,10 @@ extern "C" {
 #define AUDIO_IPC_MAX_LC3_FRAME_SIZE    (155U)
 
 /** Number of frames in each IPC queue */
-#define AUDIO_IPC_QUEUE_DEPTH           (6U)
+#define AUDIO_IPC_QUEUE_DEPTH           (4U)
 
-/** IPC channel identifiers */
-#define AUDIO_IPC_CHANNEL_LC3_TX        (0U)  /**< CM55 -> CM33 (encoded frames for ISOC TX) */
-#define AUDIO_IPC_CHANNEL_LC3_RX        (1U)  /**< CM33 -> CM55 (received frames for decode) */
-
-/** Debug message queue depth */
-#define AUDIO_IPC_DEBUG_QUEUE_DEPTH     (16U)
-
-/** Maximum debug message length */
-#define AUDIO_IPC_DEBUG_MSG_MAX_LEN     (128U)
+/** IPC timeout for secondary core waiting for primary (ms) */
+#define AUDIO_IPC_INIT_TIMEOUT_MS       (5000U)
 
 /*******************************************************************************
  * Data Types
@@ -51,7 +44,7 @@ extern "C" {
 /**
  * @brief LC3 audio frame for IPC transfer
  *
- * This structure is placed in shared memory and transferred between cores.
+ * This structure is transferred between cores via mtb-ipc queues.
  * Must be cache-aligned on systems with data cache.
  */
 typedef struct __attribute__((aligned(32))) {
@@ -95,7 +88,7 @@ typedef void (*audio_ipc_rx_callback_t)(const audio_ipc_frame_t *frame, void *us
  * @brief Initialize IPC on CM33 (primary core)
  *
  * Must be called before CM55 boots or calls audio_ipc_init_secondary().
- * Creates and initializes IPC queues for LC3 frame transfer.
+ * Initializes mtb-ipc library and creates queues for LC3 frame transfer.
  *
  * @return CY_RSLT_SUCCESS on success
  */
@@ -137,8 +130,8 @@ uint32_t audio_ipc_encoder_frames_available(void);
 /**
  * @brief Initialize IPC on CM55 (secondary core)
  *
- * Must be called after CM33 has called audio_ipc_init_primary().
- * Gets handles to existing IPC queues.
+ * Waits for CM33 to complete mtb_ipc_init() using hardware-backed
+ * synchronization (mtb_ipc_get_handle with timeout).
  *
  * @return CY_RSLT_SUCCESS on success
  */
@@ -205,7 +198,7 @@ void audio_ipc_reset_stats(void);
 /**
  * @brief Check if IPC is initialized and ready
  *
- * @return true if IPC is initialized
+ * @return true if IPC is initialized on this core
  */
 bool audio_ipc_is_ready(void);
 
@@ -223,8 +216,8 @@ void audio_ipc_deinit(void);
 /**
  * @brief Send debug message from CM55 to CM33
  *
- * Can be called BEFORE audio_ipc_init_secondary() completes, as long as
- * CM33 has called audio_ipc_init_primary() (which happens before CM55 boots).
+ * Uses a simple shared memory buffer for debug output.
+ * Can be called before audio_ipc_init_secondary() completes.
  *
  * @param msg       Debug message string (null-terminated)
  */

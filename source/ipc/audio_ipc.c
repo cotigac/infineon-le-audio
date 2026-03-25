@@ -2,8 +2,8 @@
  * @file audio_ipc.c
  * @brief Inter-Processor Communication for LC3 Audio Frames
  *
- * Implementation of IPC between CM33 and CM55 cores using Infineon's
- * mtb-ipc library for LC3 audio frame transfer.
+ * Implementation using Infineon's mtb-ipc library for hardware-backed
+ * IPC between CM33 and CM55 cores.
  *
  * Build Configuration:
  *   - CM33: Define CORE_CM33 or COMPONENT_CM33
@@ -13,97 +13,81 @@
  */
 
 #include "audio_ipc.h"
-#include "cy_ipc_drv.h"
-#include "cy_sysint.h"
-#include "cy_syslib.h"
+#include "mtb_ipc.h"
 #include <string.h>
 #include <stdarg.h>
 #include <stdio.h>
-
-/* Include mtb-ipc if available, otherwise use PDL IPC directly */
-#if defined(COMPONENT_MTB_IPC)
-#include "mtb_ipc.h"
-#define USE_MTB_IPC 1
-#else
-#define USE_MTB_IPC 0
-#endif
 
 /*******************************************************************************
  * Constants
  ******************************************************************************/
 
-/* IPC channel assignments for PSoC Edge */
-#define IPC_CHANNEL_LC3_TX          (8U)   /* CM55 -> CM33 encoded frames */
-#define IPC_CHANNEL_LC3_RX          (9U)   /* CM33 -> CM55 frames to decode */
+/* IPC channel for audio queues (must be same on both cores) */
+#define AUDIO_IPC_CHANNEL           MTB_IPC_CHAN_0
 
-/* IPC interrupt configuration */
-#define IPC_INTR_STRUCT_TX          (8U)
-#define IPC_INTR_STRUCT_RX          (9U)
+/* Queue numbers */
+#define AUDIO_IPC_QUEUE_TX          (0U)  /* CM55 -> CM33 (encoded frames) */
+#define AUDIO_IPC_QUEUE_RX          (1U)  /* CM33 -> CM55 (frames to decode) */
 
-/* Shared memory section (in SOCMEM, accessible by both cores) */
-#define AUDIO_IPC_SHARED_MEM_ATTR   __attribute__((section(".cy_sharedmem"), aligned(32)))
+/* Semaphore numbers (16+ are user-available per mtb-ipc docs) */
+#define AUDIO_IPC_SEMA_INTERNAL     (16U)  /* Internal IPC protection */
+#define AUDIO_IPC_SEMA_TX_QUEUE     (17U)  /* TX queue semaphore */
+#define AUDIO_IPC_SEMA_RX_QUEUE     (18U)  /* RX queue semaphore */
+
+/* IRQ assignments (must be different per core) */
+#if defined(CORE_CM33) || defined(COMPONENT_CM33)
+#define AUDIO_IPC_SEMA_IRQ          (0U)
+#define AUDIO_IPC_QUEUE_IRQ         (1U)
+#else /* CM55 */
+#define AUDIO_IPC_SEMA_IRQ          (2U)
+#define AUDIO_IPC_QUEUE_IRQ         (3U)
+#endif
+
+/* Debug message queue (simple shared memory, separate from mtb-ipc) */
+#define DEBUG_QUEUE_DEPTH           (8U)
+#define DEBUG_MSG_MAX_LEN           (128U)
+#define DEBUG_MAGIC                 (0x44424730U)  /* "DBG0" */
 
 /*******************************************************************************
- * Shared Memory Structures
+ * Debug Queue Structure (simple shared memory)
  ******************************************************************************/
 
-/**
- * @brief Circular buffer for LC3 frames in shared memory
- */
-typedef struct __attribute__((aligned(32))) {
-    audio_ipc_frame_t frames[AUDIO_IPC_QUEUE_DEPTH];
-    volatile uint32_t head;        /* Write index (producer) */
-    volatile uint32_t tail;        /* Read index (consumer) */
-    volatile uint32_t count;       /* Number of frames in queue */
-    volatile bool     initialized; /* Queue is ready */
-} audio_ipc_queue_t;
-
-/**
- * @brief Debug message entry in shared memory
- */
-typedef struct __attribute__((aligned(4))) {
-    char     msg[AUDIO_IPC_DEBUG_MSG_MAX_LEN];
+typedef struct {
+    char     msg[DEBUG_MSG_MAX_LEN];
     uint8_t  length;
     uint8_t  valid;
-    uint8_t  reserved[2];
-} audio_ipc_debug_msg_t;
+} debug_msg_t;
 
-/**
- * @brief Debug message queue in shared memory
- */
 typedef struct __attribute__((aligned(32))) {
-    audio_ipc_debug_msg_t msgs[AUDIO_IPC_DEBUG_QUEUE_DEPTH];
-    volatile uint32_t head;        /* Write index (CM55) */
-    volatile uint32_t tail;        /* Read index (CM33) */
-    volatile uint32_t count;       /* Number of messages */
-} audio_ipc_debug_queue_t;
+    uint32_t    magic;
+    volatile bool cm55_connected;   /* Set by CM55 after mtb_ipc_get_handle succeeds */
+    debug_msg_t msgs[DEBUG_QUEUE_DEPTH];
+    volatile uint32_t head;
+    volatile uint32_t tail;
+    volatile uint32_t count;
+} debug_queue_t;
 
-/**
- * @brief Shared memory region for IPC
- */
-typedef struct __attribute__((aligned(32))) {
-    audio_ipc_queue_t tx_queue;    /* CM55 -> CM33 (encoded frames) */
-    audio_ipc_queue_t rx_queue;    /* CM33 -> CM55 (frames to decode) */
-    volatile bool     cm33_ready;  /* CM33 has initialized */
-    volatile bool     cm55_ready;  /* CM55 has initialized */
-    uint32_t          magic;       /* Magic number for validation */
-    audio_ipc_debug_queue_t debug_queue;  /* CM55 -> CM33 debug messages */
-} audio_ipc_shared_t;
-
-#define AUDIO_IPC_MAGIC     (0x4C433341U)  /* "LC3A" */
+/* Debug queue at fixed address in shared memory */
+#define DEBUG_QUEUE_ADDR    (0x262FF000UL)
+static debug_queue_t *g_debug = (debug_queue_t *)DEBUG_QUEUE_ADDR;
 
 /*******************************************************************************
  * Private Variables
  ******************************************************************************/
 
-/* Shared memory at FIXED ADDRESS - must match m33_m55_shared region in linker scripts
- * CM33 linker: m33_m55_shared at 0x262FC000 (or 0x062FC000 cached)
- * CM55 linker: m33_m55_shared at 0x262FC000
- * Using non-cached address for reliable cross-core visibility */
-#define AUDIO_IPC_SHARED_ADDR   (0x262FC000UL)
+/* mtb-ipc objects */
+static mtb_ipc_t g_ipc_instance;
+static mtb_ipc_queue_t g_tx_queue;  /* CM55 -> CM33 */
+static mtb_ipc_queue_t g_rx_queue;  /* CM33 -> CM55 */
 
-/* Pointer to shared memory (same fixed address on both cores) */
-static audio_ipc_shared_t *g_ipc = (audio_ipc_shared_t *)AUDIO_IPC_SHARED_ADDR;
+/* Shared memory for mtb-ipc (allocated by CM33, used by both) */
+#if defined(CORE_CM33) || defined(COMPONENT_CM33)
+CY_SECTION_SHAREDMEM static mtb_ipc_shared_t g_ipc_shared __attribute__((aligned(32)));
+CY_SECTION_SHAREDMEM static mtb_ipc_queue_data_t g_tx_queue_data __attribute__((aligned(32)));
+CY_SECTION_SHAREDMEM static mtb_ipc_queue_data_t g_rx_queue_data __attribute__((aligned(32)));
+CY_SECTION_SHAREDMEM static uint8_t g_tx_queue_pool[AUDIO_IPC_QUEUE_DEPTH * sizeof(audio_ipc_frame_t)] __attribute__((aligned(32)));
+CY_SECTION_SHAREDMEM static uint8_t g_rx_queue_pool[AUDIO_IPC_QUEUE_DEPTH * sizeof(audio_ipc_frame_t)] __attribute__((aligned(32)));
+#endif
 
 /* Local state */
 static bool g_ipc_initialized = false;
@@ -114,147 +98,27 @@ static audio_ipc_rx_callback_t g_rx_callback = NULL;
 static void *g_rx_callback_data = NULL;
 
 /*******************************************************************************
- * Private Functions - Queue Operations
+ * Private Functions
  ******************************************************************************/
-
-/**
- * @brief Initialize a queue
- */
-static void queue_init(audio_ipc_queue_t *queue)
-{
-    queue->head = 0;
-    queue->tail = 0;
-    queue->count = 0;
-    queue->initialized = true;
-
-    /* Clear all frames */
-    memset(queue->frames, 0, sizeof(queue->frames));
-}
-
-/**
- * @brief Check if queue is full
- */
-static inline bool queue_is_full(const audio_ipc_queue_t *queue)
-{
-    return queue->count >= AUDIO_IPC_QUEUE_DEPTH;
-}
-
-/**
- * @brief Check if queue is empty
- */
-static inline bool queue_is_empty(const audio_ipc_queue_t *queue)
-{
-    return queue->count == 0;
-}
-
-/**
- * @brief Put frame into queue (non-blocking)
- */
-static cy_rslt_t queue_put(audio_ipc_queue_t *queue, const audio_ipc_frame_t *frame)
-{
-    if (queue_is_full(queue)) {
-        return CY_RSLT_TYPE_ERROR;
-    }
-
-    /* Copy frame to queue */
-    uint32_t head = queue->head;
-    memcpy(&queue->frames[head], frame, sizeof(audio_ipc_frame_t));
-
-    /* Memory barrier to ensure data is written before index update */
-    __DMB();
-
-    /* Update head index */
-    queue->head = (head + 1) % AUDIO_IPC_QUEUE_DEPTH;
-    queue->count++;
-
-    return CY_RSLT_SUCCESS;
-}
-
-/**
- * @brief Get frame from queue (non-blocking)
- */
-static cy_rslt_t queue_get(audio_ipc_queue_t *queue, audio_ipc_frame_t *frame)
-{
-    if (queue_is_empty(queue)) {
-        return CY_RSLT_TYPE_ERROR;
-    }
-
-    /* Copy frame from queue */
-    uint32_t tail = queue->tail;
-    memcpy(frame, &queue->frames[tail], sizeof(audio_ipc_frame_t));
-
-    /* Memory barrier to ensure data is read before index update */
-    __DMB();
-
-    /* Update tail index */
-    queue->tail = (tail + 1) % AUDIO_IPC_QUEUE_DEPTH;
-    queue->count--;
-
-    return CY_RSLT_SUCCESS;
-}
-
-/*******************************************************************************
- * Private Functions - IPC Notifications
- ******************************************************************************/
-
-#if defined(CORE_CM33) || defined(COMPONENT_CM33)
-
-/**
- * @brief Notify CM55 that new frame is available for decode
- */
-static void notify_cm55_rx_available(void)
-{
-    /* Use IPC channel to signal CM55 */
-    IPC_STRUCT_Type *ipc_struct = Cy_IPC_Drv_GetIpcBaseAddress(IPC_CHANNEL_LC3_RX);
-
-    /* Acquire lock, set notify, release */
-    if (Cy_IPC_Drv_LockAcquire(ipc_struct) == CY_IPC_DRV_SUCCESS) {
-        Cy_IPC_Drv_AcquireNotify(ipc_struct, (1UL << IPC_INTR_STRUCT_RX));
-        Cy_IPC_Drv_LockRelease(ipc_struct, CY_IPC_NO_NOTIFICATION);
-    }
-}
-
-#endif /* CORE_CM33 */
 
 #if defined(CORE_CM55) || defined(COMPONENT_CM55)
-
 /**
- * @brief Notify CM33 that encoded frame is available
+ * @brief Queue event callback for RX frames (CM55 side)
  */
-static void notify_cm33_tx_available(void)
+static void rx_queue_callback(void *callback_arg, mtb_ipc_queue_event_t event)
 {
-    /* Use IPC channel to signal CM33 */
-    IPC_STRUCT_Type *ipc_struct = Cy_IPC_Drv_GetIpcBaseAddress(IPC_CHANNEL_LC3_TX);
+    (void)callback_arg;
 
-    /* Acquire lock, set notify, release */
-    if (Cy_IPC_Drv_LockAcquire(ipc_struct) == CY_IPC_DRV_SUCCESS) {
-        Cy_IPC_Drv_AcquireNotify(ipc_struct, (1UL << IPC_INTR_STRUCT_TX));
-        Cy_IPC_Drv_LockRelease(ipc_struct, CY_IPC_NO_NOTIFICATION);
-    }
-}
-
-/**
- * @brief IPC interrupt handler for CM55 (frames from CM33)
- */
-static void ipc_rx_interrupt_handler(void)
-{
-    IPC_INTR_STRUCT_Type *ipc_intr = Cy_IPC_Drv_GetIntrBaseAddr(IPC_INTR_STRUCT_RX);
-
-    /* Clear interrupt */
-    Cy_IPC_Drv_ClearInterrupt(ipc_intr, CY_IPC_NO_NOTIFICATION,
-                               (1UL << IPC_CHANNEL_LC3_RX));
-
-    /* If callback registered, invoke it for each available frame */
-    if (g_rx_callback != NULL) {
+    if ((event & MTB_IPC_QUEUE_WRITE) && g_rx_callback != NULL) {
+        /* New frame available - invoke user callback */
         audio_ipc_frame_t frame;
-        while (queue_get(&g_ipc->rx_queue, &frame) == CY_RSLT_SUCCESS) {
+        while (mtb_ipc_queue_get(&g_rx_queue, &frame, 0) == CY_RSLT_SUCCESS) {
             g_rx_callback(&frame, g_rx_callback_data);
             g_ipc_stats.rx_frames++;
         }
     }
 }
-
-#endif /* CORE_CM55 */
+#endif
 
 /*******************************************************************************
  * API Functions - CM33 (Primary Core)
@@ -264,29 +128,74 @@ static void ipc_rx_interrupt_handler(void)
 
 cy_rslt_t audio_ipc_init_primary(void)
 {
+    cy_rslt_t result;
+
     if (g_ipc_initialized) {
         return CY_RSLT_SUCCESS;
     }
 
-    /* Initialize shared memory region */
-    memset(g_ipc, 0, sizeof(audio_ipc_shared_t));
+    printf("[IPC] Initializing mtb-ipc on CM33 (primary)...\n");
 
-    /* Initialize queues */
-    queue_init(&g_ipc->tx_queue);
-    queue_init(&g_ipc->rx_queue);
-
-    /* Set magic and ready flag */
-    g_ipc->magic = AUDIO_IPC_MAGIC;
-    g_ipc->cm33_ready = true;
-
-    /* Memory barrier to ensure all writes are visible */
+    /* Initialize debug queue first (simple shared memory) */
+    memset(g_debug, 0, sizeof(debug_queue_t));
+    g_debug->magic = DEBUG_MAGIC;
     __DMB();
-    __DSB();
+
+    /* Configure mtb-ipc */
+    mtb_ipc_config_t ipc_config = {
+        .internal_channel_index = AUDIO_IPC_CHANNEL,
+        .semaphore_irq = AUDIO_IPC_SEMA_IRQ,
+        .queue_irq = AUDIO_IPC_QUEUE_IRQ,
+        .semaphore_num = AUDIO_IPC_SEMA_INTERNAL
+    };
+
+    /* Initialize mtb-ipc (must be called by first core to boot) */
+    result = mtb_ipc_init(&g_ipc_instance, &g_ipc_shared, &ipc_config);
+    if (result != CY_RSLT_SUCCESS) {
+        printf("[IPC] ERROR: mtb_ipc_init failed: 0x%08lX\n", (unsigned long)result);
+        return result;
+    }
+    printf("[IPC] mtb_ipc_init: OK\n");
+
+    /* Initialize TX queue (CM55 -> CM33) */
+    mtb_ipc_queue_config_t tx_config = {
+        .channel_num = AUDIO_IPC_CHANNEL,
+        .queue_num = AUDIO_IPC_QUEUE_TX,
+        .max_num_items = AUDIO_IPC_QUEUE_DEPTH,
+        .item_size = sizeof(audio_ipc_frame_t),
+        .queue_pool = g_tx_queue_pool,
+        .semaphore_num = AUDIO_IPC_SEMA_TX_QUEUE
+    };
+
+    result = mtb_ipc_queue_init(&g_ipc_instance, &g_tx_queue, &g_tx_queue_data, &tx_config);
+    if (result != CY_RSLT_SUCCESS) {
+        printf("[IPC] ERROR: TX queue init failed: 0x%08lX\n", (unsigned long)result);
+        return result;
+    }
+    printf("[IPC] TX queue (CM55->CM33): OK\n");
+
+    /* Initialize RX queue (CM33 -> CM55) */
+    mtb_ipc_queue_config_t rx_config = {
+        .channel_num = AUDIO_IPC_CHANNEL,
+        .queue_num = AUDIO_IPC_QUEUE_RX,
+        .max_num_items = AUDIO_IPC_QUEUE_DEPTH,
+        .item_size = sizeof(audio_ipc_frame_t),
+        .queue_pool = g_rx_queue_pool,
+        .semaphore_num = AUDIO_IPC_SEMA_RX_QUEUE
+    };
+
+    result = mtb_ipc_queue_init(&g_ipc_instance, &g_rx_queue, &g_rx_queue_data, &rx_config);
+    if (result != CY_RSLT_SUCCESS) {
+        printf("[IPC] ERROR: RX queue init failed: 0x%08lX\n", (unsigned long)result);
+        return result;
+    }
+    printf("[IPC] RX queue (CM33->CM55): OK\n");
 
     /* Reset statistics */
     memset(&g_ipc_stats, 0, sizeof(g_ipc_stats));
 
     g_ipc_initialized = true;
+    printf("[IPC] CM33 initialization complete\n");
 
     return CY_RSLT_SUCCESS;
 }
@@ -297,17 +206,11 @@ cy_rslt_t audio_ipc_send_to_decoder(const audio_ipc_frame_t *frame)
         return CY_RSLT_TYPE_ERROR;
     }
 
-    if (!g_ipc->cm55_ready) {
-        /* CM55 not ready yet */
-        return CY_RSLT_TYPE_ERROR;
-    }
-
-    cy_rslt_t result = queue_put(&g_ipc->rx_queue, frame);
+    /* Put frame in RX queue (CM33 -> CM55), non-blocking */
+    cy_rslt_t result = mtb_ipc_queue_put(&g_rx_queue, (void *)frame, 0);
 
     if (result == CY_RSLT_SUCCESS) {
         g_ipc_stats.tx_frames++;
-        /* Notify CM55 */
-        notify_cm55_rx_available();
     } else {
         g_ipc_stats.tx_queue_full++;
     }
@@ -321,7 +224,8 @@ cy_rslt_t audio_ipc_receive_from_encoder(audio_ipc_frame_t *frame)
         return CY_RSLT_TYPE_ERROR;
     }
 
-    cy_rslt_t result = queue_get(&g_ipc->tx_queue, frame);
+    /* Get frame from TX queue (CM55 -> CM33), non-blocking */
+    cy_rslt_t result = mtb_ipc_queue_get(&g_tx_queue, frame, 0);
 
     if (result == CY_RSLT_SUCCESS) {
         g_ipc_stats.rx_frames++;
@@ -337,7 +241,7 @@ uint32_t audio_ipc_encoder_frames_available(void)
     if (!g_ipc_initialized) {
         return 0;
     }
-    return g_ipc->tx_queue.count;
+    return mtb_ipc_queue_count(&g_tx_queue);
 }
 
 #endif /* CORE_CM33 */
@@ -350,73 +254,67 @@ uint32_t audio_ipc_encoder_frames_available(void)
 
 cy_rslt_t audio_ipc_init_secondary(void)
 {
-    uint32_t timeout_ms = 5000U;  /* 5 second timeout */
-    volatile bool cm33_ready_val;
+    cy_rslt_t result;
 
     if (g_ipc_initialized) {
         return CY_RSLT_SUCCESS;
     }
 
-    /* Data synchronization barrier to ensure we see CM33's writes */
-    __DSB();
-    __DMB();
+    printf("[IPC] Initializing mtb-ipc on CM55 (secondary)...\n");
 
-    printf("[CM55 IPC] Shared memory at 0x%08lX\n", (unsigned long)(uintptr_t)g_ipc);
-    printf("[CM55 IPC] magic=0x%08lX, cm33_ready=%d\n",
-           (unsigned long)g_ipc->magic, (int)g_ipc->cm33_ready);
-
-    /* Wait for CM33 to initialize shared memory */
-    printf("[CM55 IPC] Waiting for CM33...\n");
-    while (timeout_ms > 0) {
-        /* Force fresh read from memory */
-        __DSB();
-        __DMB();
-        cm33_ready_val = g_ipc->cm33_ready;
-
-        if (cm33_ready_val && g_ipc->magic == AUDIO_IPC_MAGIC) {
-            break;  /* CM33 is ready */
-        }
-
-        /* Use Cy_SysLib_Delay (ms) instead of DelayUs - more reliable pre-scheduler */
-        Cy_SysLib_Delay(1);
-        timeout_ms--;
-    }
-
-    if (timeout_ms == 0) {
-        printf("[CM55 IPC] ERROR: CM33 not ready (timeout)\n");
-        printf("[CM55 IPC]   magic=0x%08lX (expected 0x%08lX)\n",
-               (unsigned long)g_ipc->magic, (unsigned long)AUDIO_IPC_MAGIC);
-        printf("[CM55 IPC]   cm33_ready=%d\n", (int)g_ipc->cm33_ready);
-        return CY_RSLT_TYPE_ERROR;
-    }
-
-    printf("[CM55 IPC] CM33 ready after %lu ms\n", (unsigned long)(5000U - timeout_ms));
-
-    /* Memory barrier to ensure we see CM33's writes */
-    __DMB();
-
-    /* Setup IPC interrupt for receiving frames from CM33 */
-    cy_stc_sysint_t ipc_intr_config = {
-        .intrSrc = (IRQn_Type)(cpuss_interrupts_ipc_0_IRQn + IPC_INTR_STRUCT_RX),
-        .intrPriority = 3U
+    /* Configure mtb-ipc (must match CM33 config) */
+    mtb_ipc_config_t ipc_config = {
+        .internal_channel_index = AUDIO_IPC_CHANNEL,
+        .semaphore_irq = AUDIO_IPC_SEMA_IRQ,
+        .queue_irq = AUDIO_IPC_QUEUE_IRQ,
+        .semaphore_num = AUDIO_IPC_SEMA_INTERNAL
     };
 
-    Cy_SysInt_Init(&ipc_intr_config, ipc_rx_interrupt_handler);
-    NVIC_EnableIRQ(ipc_intr_config.intrSrc);
+    /* Get handle from CM33's initialized IPC (blocks until CM33 is ready) */
+    printf("[IPC] Waiting for CM33 (timeout: %lu ms)...\n",
+           (unsigned long)AUDIO_IPC_INIT_TIMEOUT_MS);
 
-    /* Enable interrupt for the RX channel */
-    IPC_INTR_STRUCT_Type *ipc_intr = Cy_IPC_Drv_GetIntrBaseAddr(IPC_INTR_STRUCT_RX);
-    Cy_IPC_Drv_SetInterruptMask(ipc_intr, CY_IPC_NO_NOTIFICATION,
-                                 (1UL << IPC_CHANNEL_LC3_RX));
+    result = mtb_ipc_get_handle(&g_ipc_instance, &ipc_config, AUDIO_IPC_INIT_TIMEOUT_MS);
+    if (result != CY_RSLT_SUCCESS) {
+        printf("[IPC] ERROR: mtb_ipc_get_handle failed: 0x%08lX\n", (unsigned long)result);
+        return result;
+    }
+    printf("[IPC] Connected to CM33\n");
+
+    /* Get handle to TX queue (CM55 -> CM33) */
+    result = mtb_ipc_queue_get_handle(&g_ipc_instance, &g_tx_queue,
+                                       AUDIO_IPC_CHANNEL, AUDIO_IPC_QUEUE_TX);
+    if (result != CY_RSLT_SUCCESS) {
+        printf("[IPC] ERROR: TX queue get_handle failed: 0x%08lX\n", (unsigned long)result);
+        return result;
+    }
+    printf("[IPC] TX queue handle: OK\n");
+
+    /* Get handle to RX queue (CM33 -> CM55) */
+    result = mtb_ipc_queue_get_handle(&g_ipc_instance, &g_rx_queue,
+                                       AUDIO_IPC_CHANNEL, AUDIO_IPC_QUEUE_RX);
+    if (result != CY_RSLT_SUCCESS) {
+        printf("[IPC] ERROR: RX queue get_handle failed: 0x%08lX\n", (unsigned long)result);
+        return result;
+    }
+    printf("[IPC] RX queue handle: OK\n");
+
+    /* Register callback for incoming frames */
+    mtb_ipc_queue_register_callback(&g_rx_queue, rx_queue_callback, NULL);
+    mtb_ipc_queue_enable_event(&g_rx_queue, MTB_IPC_QUEUE_WRITE, true);
 
     /* Reset statistics */
     memset(&g_ipc_stats, 0, sizeof(g_ipc_stats));
 
-    /* Signal that CM55 is ready */
-    g_ipc->cm55_ready = true;
-    __DMB();
-
     g_ipc_initialized = true;
+
+    /* Signal to CM33 that CM55 is connected */
+    if (g_debug != NULL && g_debug->magic == DEBUG_MAGIC) {
+        g_debug->cm55_connected = true;
+        __DMB();
+    }
+
+    printf("[IPC] CM55 initialization complete\n");
 
     return CY_RSLT_SUCCESS;
 }
@@ -427,12 +325,11 @@ cy_rslt_t audio_ipc_send_encoded_frame(const audio_ipc_frame_t *frame)
         return CY_RSLT_TYPE_ERROR;
     }
 
-    cy_rslt_t result = queue_put(&g_ipc->tx_queue, frame);
+    /* Put frame in TX queue (CM55 -> CM33), non-blocking */
+    cy_rslt_t result = mtb_ipc_queue_put(&g_tx_queue, (void *)frame, 0);
 
     if (result == CY_RSLT_SUCCESS) {
         g_ipc_stats.tx_frames++;
-        /* Notify CM33 */
-        notify_cm33_tx_available();
     } else {
         g_ipc_stats.tx_queue_full++;
     }
@@ -446,7 +343,8 @@ cy_rslt_t audio_ipc_receive_for_decode(audio_ipc_frame_t *frame)
         return CY_RSLT_TYPE_ERROR;
     }
 
-    cy_rslt_t result = queue_get(&g_ipc->rx_queue, frame);
+    /* Get frame from RX queue (CM33 -> CM55), non-blocking */
+    cy_rslt_t result = mtb_ipc_queue_get(&g_rx_queue, frame, 0);
 
     if (result == CY_RSLT_SUCCESS) {
         g_ipc_stats.rx_frames++;
@@ -462,7 +360,7 @@ uint32_t audio_ipc_decoder_frames_available(void)
     if (!g_ipc_initialized) {
         return 0;
     }
-    return g_ipc->rx_queue.count;
+    return mtb_ipc_queue_count(&g_rx_queue);
 }
 
 cy_rslt_t audio_ipc_register_rx_callback(audio_ipc_rx_callback_t callback, void *user_data)
@@ -495,79 +393,83 @@ void audio_ipc_reset_stats(void)
 
 bool audio_ipc_is_ready(void)
 {
-    return g_ipc_initialized && g_ipc->cm33_ready && g_ipc->cm55_ready;
+#if defined(CORE_CM33) || defined(COMPONENT_CM33)
+    /* On CM33: check if both CM33 is initialized AND CM55 has connected */
+    if (!g_ipc_initialized) {
+        return false;
+    }
+    if (g_debug == NULL || g_debug->magic != DEBUG_MAGIC) {
+        return false;
+    }
+    return g_debug->cm55_connected;
+#else
+    /* On CM55: just check local initialization */
+    return g_ipc_initialized;
+#endif
 }
 
 void audio_ipc_deinit(void)
 {
+    if (!g_ipc_initialized) {
+        return;
+    }
+
+    /* Free queues */
+    mtb_ipc_queue_free(&g_tx_queue);
+    mtb_ipc_queue_free(&g_rx_queue);
+
     g_ipc_initialized = false;
 
-#if defined(CORE_CM33) || defined(COMPONENT_CM33)
-    g_ipc->cm33_ready = false;
-#endif
-
 #if defined(CORE_CM55) || defined(COMPONENT_CM55)
-    g_ipc->cm55_ready = false;
     g_rx_callback = NULL;
     g_rx_callback_data = NULL;
 #endif
 }
 
 /*******************************************************************************
- * API Functions - Debug Output
+ * API Functions - Debug Output (simple shared memory, works before mtb-ipc init)
  ******************************************************************************/
 
-/**
- * @brief Write debug message to shared memory queue (CM55 side)
- */
 void audio_ipc_debug_print(const char *msg)
 {
-    if (msg == NULL || g_ipc == NULL) {
+    if (msg == NULL || g_debug == NULL) {
         return;
     }
 
-    /* Check if CM33 has initialized (magic is set) */
-    if (g_ipc->magic != AUDIO_IPC_MAGIC) {
-        return;  /* CM33 hasn't initialized shared memory yet */
+    /* Check if CM33 has initialized the debug queue */
+    if (g_debug->magic != DEBUG_MAGIC) {
+        return;
     }
 
-    audio_ipc_debug_queue_t *q = &g_ipc->debug_queue;
-
     /* Check if queue is full */
-    if (q->count >= AUDIO_IPC_DEBUG_QUEUE_DEPTH) {
-        return;  /* Drop message if queue full */
+    if (g_debug->count >= DEBUG_QUEUE_DEPTH) {
+        return;
     }
 
     /* Copy message to queue */
-    uint32_t head = q->head;
-    audio_ipc_debug_msg_t *entry = &q->msgs[head];
+    uint32_t head = g_debug->head;
+    debug_msg_t *entry = &g_debug->msgs[head];
 
-    /* Copy message, truncating if necessary */
     size_t len = strlen(msg);
-    if (len >= AUDIO_IPC_DEBUG_MSG_MAX_LEN) {
-        len = AUDIO_IPC_DEBUG_MSG_MAX_LEN - 1;
+    if (len >= DEBUG_MSG_MAX_LEN) {
+        len = DEBUG_MSG_MAX_LEN - 1;
     }
     memcpy(entry->msg, msg, len);
     entry->msg[len] = '\0';
     entry->length = (uint8_t)len;
 
-    /* Memory barrier before marking valid */
     __DMB();
     entry->valid = 1;
 
-    /* Update head and count */
-    q->head = (head + 1) % AUDIO_IPC_DEBUG_QUEUE_DEPTH;
-    q->count++;
-
+    /* Update indices */
+    g_debug->head = (head + 1) % DEBUG_QUEUE_DEPTH;
+    g_debug->count++;
     __DMB();
 }
 
-/**
- * @brief Formatted debug printf (CM55 side)
- */
 void audio_ipc_debug_printf(const char *fmt, ...)
 {
-    char buf[AUDIO_IPC_DEBUG_MSG_MAX_LEN];
+    char buf[DEBUG_MSG_MAX_LEN];
     va_list args;
 
     va_start(args, fmt);
@@ -577,38 +479,26 @@ void audio_ipc_debug_printf(const char *fmt, ...)
     audio_ipc_debug_print(buf);
 }
 
-/**
- * @brief Check number of pending debug messages (CM33 side)
- */
 uint32_t audio_ipc_debug_available(void)
 {
-    if (g_ipc == NULL || g_ipc->magic != AUDIO_IPC_MAGIC) {
+    if (g_debug == NULL || g_debug->magic != DEBUG_MAGIC) {
         return 0;
     }
-    return g_ipc->debug_queue.count;
+    return g_debug->count;
 }
 
-/**
- * @brief Read debug message from queue (CM33 side)
- */
 bool audio_ipc_debug_read(char *buf, uint32_t buf_size)
 {
-    if (buf == NULL || buf_size == 0 || g_ipc == NULL) {
+    if (buf == NULL || buf_size == 0 || g_debug == NULL) {
         return false;
     }
 
-    if (g_ipc->magic != AUDIO_IPC_MAGIC) {
+    if (g_debug->magic != DEBUG_MAGIC || g_debug->count == 0) {
         return false;
     }
 
-    audio_ipc_debug_queue_t *q = &g_ipc->debug_queue;
-
-    if (q->count == 0) {
-        return false;
-    }
-
-    uint32_t tail = q->tail;
-    audio_ipc_debug_msg_t *entry = &q->msgs[tail];
+    uint32_t tail = g_debug->tail;
+    debug_msg_t *entry = &g_debug->msgs[tail];
 
     if (!entry->valid) {
         return false;
@@ -624,30 +514,23 @@ bool audio_ipc_debug_read(char *buf, uint32_t buf_size)
 
     /* Clear entry */
     entry->valid = 0;
-
-    /* Memory barrier before updating indices */
     __DMB();
 
-    /* Update tail and count */
-    q->tail = (tail + 1) % AUDIO_IPC_DEBUG_QUEUE_DEPTH;
-    q->count--;
+    /* Update indices */
+    g_debug->tail = (tail + 1) % DEBUG_QUEUE_DEPTH;
+    g_debug->count--;
 
     return true;
 }
 
-/**
- * @brief Process and print all pending debug messages (CM33 side)
- */
 void audio_ipc_debug_process(void)
 {
 #if defined(CORE_CM33) || defined(COMPONENT_CM33)
-    char buf[AUDIO_IPC_DEBUG_MSG_MAX_LEN];
+    char buf[DEBUG_MSG_MAX_LEN];
 
     while (audio_ipc_debug_read(buf, sizeof(buf))) {
-        /* Print with [CM55] prefix - message may already have newline */
         if (buf[0] != '\0') {
             printf("[CM55] %s", buf);
-            /* Add newline if not present */
             size_t len = strlen(buf);
             if (len > 0 && buf[len-1] != '\n') {
                 printf("\n");
