@@ -15,6 +15,7 @@
 #include "audio_ipc.h"
 #include "cy_ipc_drv.h"
 #include "cy_sysint.h"
+#include "cy_syslib.h"
 #include <string.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -349,26 +350,43 @@ uint32_t audio_ipc_encoder_frames_available(void)
 
 cy_rslt_t audio_ipc_init_secondary(void)
 {
-    uint32_t timeout_ms = 5000U;  /* 5 second timeout - real time based */
+    uint32_t timeout_ms = 5000U;  /* 5 second timeout */
+    volatile bool cm33_ready_val;
 
     if (g_ipc_initialized) {
         return CY_RSLT_SUCCESS;
     }
 
-    /* Memory barrier before checking shared memory */
+    /* Data synchronization barrier to ensure we see CM33's writes */
+    __DSB();
     __DMB();
 
-    /* Wait for CM33 to initialize shared memory - time-based delay */
+    printf("[CM55 IPC] Shared memory at 0x%08lX\n", (unsigned long)(uintptr_t)g_ipc);
+    printf("[CM55 IPC] magic=0x%08lX, cm33_ready=%d\n",
+           (unsigned long)g_ipc->magic, (int)g_ipc->cm33_ready);
+
+    /* Wait for CM33 to initialize shared memory */
     printf("[CM55 IPC] Waiting for CM33...\n");
-    while (!g_ipc->cm33_ready && timeout_ms > 0) {
-        Cy_SysLib_DelayUs(1000);  /* 1ms delay */
+    while (timeout_ms > 0) {
+        /* Force fresh read from memory */
+        __DSB();
+        __DMB();
+        cm33_ready_val = g_ipc->cm33_ready;
+
+        if (cm33_ready_val && g_ipc->magic == AUDIO_IPC_MAGIC) {
+            break;  /* CM33 is ready */
+        }
+
+        /* Use Cy_SysLib_Delay (ms) instead of DelayUs - more reliable pre-scheduler */
+        Cy_SysLib_Delay(1);
         timeout_ms--;
-        __DMB();  /* Refresh view of shared memory each iteration */
     }
 
-    if (timeout_ms == 0 || g_ipc->magic != AUDIO_IPC_MAGIC) {
-        printf("[CM55 IPC] ERROR: CM33 not ready (timeout=%lu, magic=0x%08lX)\n",
-               (unsigned long)timeout_ms, (unsigned long)g_ipc->magic);
+    if (timeout_ms == 0) {
+        printf("[CM55 IPC] ERROR: CM33 not ready (timeout)\n");
+        printf("[CM55 IPC]   magic=0x%08lX (expected 0x%08lX)\n",
+               (unsigned long)g_ipc->magic, (unsigned long)AUDIO_IPC_MAGIC);
+        printf("[CM55 IPC]   cm33_ready=%d\n", (int)g_ipc->cm33_ready);
         return CY_RSLT_TYPE_ERROR;
     }
 
