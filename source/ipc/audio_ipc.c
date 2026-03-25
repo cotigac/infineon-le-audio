@@ -22,10 +22,15 @@
  * Constants
  ******************************************************************************/
 
-/* IPC channel for audio queues (must be same on both cores) */
-#define AUDIO_IPC_CHANNEL           MTB_IPC_CHAN_0
+/*
+ * IPC Channel Assignment (per mtb-ipc documentation):
+ * - internal_channel_index (for semaphores) must be DIFFERENT from queue channels
+ * - Each queue channel can have multiple queues
+ */
+#define AUDIO_IPC_INTERNAL_CHANNEL  MTB_IPC_CHAN_0  /* For mtb_ipc_init internal use */
+#define AUDIO_IPC_QUEUE_CHANNEL     MTB_IPC_CHAN_1  /* For audio frame queues */
 
-/* Queue numbers */
+/* Queue numbers (within AUDIO_IPC_QUEUE_CHANNEL) */
 #define AUDIO_IPC_QUEUE_TX          (0U)  /* CM55 -> CM33 (encoded frames) */
 #define AUDIO_IPC_QUEUE_RX          (1U)  /* CM33 -> CM55 (frames to decode) */
 
@@ -148,7 +153,7 @@ cy_rslt_t audio_ipc_init_primary(void)
 
     /* Configure mtb-ipc */
     mtb_ipc_config_t ipc_config = {
-        .internal_channel_index = AUDIO_IPC_CHANNEL,
+        .internal_channel_index = AUDIO_IPC_INTERNAL_CHANNEL,
         .semaphore_irq = AUDIO_IPC_SEMA_IRQ,
         .queue_irq = AUDIO_IPC_QUEUE_IRQ,
         .semaphore_num = AUDIO_IPC_SEMA_INTERNAL
@@ -182,7 +187,7 @@ cy_rslt_t audio_ipc_init_primary(void)
 
     /* Initialize TX queue (CM55 -> CM33) */
     mtb_ipc_queue_config_t tx_config = {
-        .channel_num = AUDIO_IPC_CHANNEL,
+        .channel_num = AUDIO_IPC_QUEUE_CHANNEL,
         .queue_num = AUDIO_IPC_QUEUE_TX,
         .max_num_items = AUDIO_IPC_QUEUE_DEPTH,
         .item_size = sizeof(audio_ipc_frame_t),
@@ -199,7 +204,7 @@ cy_rslt_t audio_ipc_init_primary(void)
 
     /* Initialize RX queue (CM33 -> CM55) */
     mtb_ipc_queue_config_t rx_config = {
-        .channel_num = AUDIO_IPC_CHANNEL,
+        .channel_num = AUDIO_IPC_QUEUE_CHANNEL,
         .queue_num = AUDIO_IPC_QUEUE_RX,
         .max_num_items = AUDIO_IPC_QUEUE_DEPTH,
         .item_size = sizeof(audio_ipc_frame_t),
@@ -288,7 +293,7 @@ cy_rslt_t audio_ipc_init_secondary(void)
 
     /* Configure mtb-ipc (must match CM33 config for channel and internal semaphore) */
     mtb_ipc_config_t ipc_config = {
-        .internal_channel_index = AUDIO_IPC_CHANNEL,
+        .internal_channel_index = AUDIO_IPC_INTERNAL_CHANNEL,
         .semaphore_irq = AUDIO_IPC_SEMA_IRQ,
         .queue_irq = AUDIO_IPC_QUEUE_IRQ,
         .semaphore_num = AUDIO_IPC_SEMA_INTERNAL
@@ -307,7 +312,7 @@ cy_rslt_t audio_ipc_init_secondary(void)
 
     /* Get handle to TX queue (CM55 -> CM33) */
     result = mtb_ipc_queue_get_handle(&g_ipc_instance, &g_tx_queue,
-                                       AUDIO_IPC_CHANNEL, AUDIO_IPC_QUEUE_TX);
+                                       AUDIO_IPC_QUEUE_CHANNEL, AUDIO_IPC_QUEUE_TX);
     if (result != CY_RSLT_SUCCESS) {
         printf("[IPC] ERROR: TX queue get_handle failed: 0x%08lX\n", (unsigned long)result);
         return result;
@@ -316,7 +321,7 @@ cy_rslt_t audio_ipc_init_secondary(void)
 
     /* Get handle to RX queue (CM33 -> CM55) */
     result = mtb_ipc_queue_get_handle(&g_ipc_instance, &g_rx_queue,
-                                       AUDIO_IPC_CHANNEL, AUDIO_IPC_QUEUE_RX);
+                                       AUDIO_IPC_QUEUE_CHANNEL, AUDIO_IPC_QUEUE_RX);
     if (result != CY_RSLT_SUCCESS) {
         printf("[IPC] ERROR: RX queue get_handle failed: 0x%08lX\n", (unsigned long)result);
         return result;
