@@ -95,11 +95,14 @@ typedef struct __attribute__((aligned(32))) {
  * Private Variables
  ******************************************************************************/
 
-/* Shared memory region - placed in SOCMEM */
-AUDIO_IPC_SHARED_MEM_ATTR static audio_ipc_shared_t g_ipc_shared;
+/* Shared memory at FIXED ADDRESS - must match m33_m55_shared region in linker scripts
+ * CM33 linker: m33_m55_shared at 0x262FC000 (or 0x062FC000 cached)
+ * CM55 linker: m33_m55_shared at 0x262FC000
+ * Using non-cached address for reliable cross-core visibility */
+#define AUDIO_IPC_SHARED_ADDR   (0x262FC000UL)
 
-/* Pointer to shared memory (same address on both cores) */
-static audio_ipc_shared_t *g_ipc = &g_ipc_shared;
+/* Pointer to shared memory (same fixed address on both cores) */
+static audio_ipc_shared_t *g_ipc = (audio_ipc_shared_t *)AUDIO_IPC_SHARED_ADDR;
 
 /* Local state */
 static bool g_ipc_initialized = false;
