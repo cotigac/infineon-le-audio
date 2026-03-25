@@ -18,6 +18,7 @@
 #include "../ipc/audio_ipc.h"
 #include "../config/lc3_config.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -183,8 +184,8 @@ typedef struct {
     uint32_t decode_errors;
 
     /* Synchronization (FreeRTOS) */
-    QueueHandle_t tx_queue_handle;
-    QueueHandle_t rx_queue_handle;
+    SemaphoreHandle_t tx_sem;  /* Counting semaphore for TX signaling */
+    SemaphoreHandle_t rx_sem;  /* Counting semaphore for RX signaling */
     SemaphoreHandle_t state_mutex;
 
 } le_audio_ctx_t;
@@ -1004,18 +1005,17 @@ static void isoc_rx_callback(uint16_t handle, const uint8_t *data,
         frame.timestamp = timestamp;
     }
 
-    /* Push to RX queue */
-    if (frame_queue_push(&g_le_audio_ctx.rx_queue, &frame) != 0) {
+    /* Push to RX queue and signal via semaphore */
+    if (frame_queue_push(&g_le_audio_ctx.rx_queue, &frame) == 0) {
+        g_le_audio_ctx.frames_received++;
+        /* Signal task that new frame is available */
+        if (g_le_audio_ctx.rx_sem != NULL) {
+            xSemaphoreGiveFromISR(g_le_audio_ctx.rx_sem, &xHigherPriorityTaskWoken);
+            portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+        }
+    } else {
         /* Queue full - frame dropped */
         g_le_audio_ctx.decode_errors++;
-    } else {
-        g_le_audio_ctx.frames_received++;
-    }
-
-    /* Signal FreeRTOS task that new frame is available via queue */
-    if (g_le_audio_ctx.rx_queue_handle != NULL) {
-        xQueueSendFromISR(g_le_audio_ctx.rx_queue_handle, &frame, &xHigherPriorityTaskWoken);
-        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
     }
 }
 
@@ -1092,6 +1092,8 @@ int le_audio_init(const le_audio_codec_config_t *codec_config)
 {
     int result;
 
+    printf("    le_audio_init: start\n");
+
     if (codec_config == NULL) {
         return -1;
     }
@@ -1101,6 +1103,7 @@ int le_audio_init(const le_audio_codec_config_t *codec_config)
     }
 
     /* Clear context */
+    printf("    le_audio_init: memset ctx (%u bytes)\n", (unsigned)sizeof(g_le_audio_ctx));
     memset(&g_le_audio_ctx, 0, sizeof(g_le_audio_ctx));
 
     /* Store codec configuration */
@@ -1115,7 +1118,8 @@ int le_audio_init(const le_audio_codec_config_t *codec_config)
         g_le_audio_ctx.samples_per_frame = codec_config->sample_rate / 100;
     }
 
-    /* Initialize TX queue (PCM buffers) */
+    /* Initialize TX queue (PCM buffers) - uses static storage */
+    printf("    le_audio_init: frame_queue_init TX\n");
     result = frame_queue_init(&g_le_audio_ctx.tx_queue,
                               g_le_audio_ctx.tx_buffers,
                               sizeof(pcm_buffer_t),
@@ -1124,7 +1128,8 @@ int le_audio_init(const le_audio_codec_config_t *codec_config)
         return -4;
     }
 
-    /* Initialize RX queue (LC3 frames) */
+    /* Initialize RX queue (LC3 frames) - uses static storage */
+    printf("    le_audio_init: frame_queue_init RX\n");
     result = frame_queue_init(&g_le_audio_ctx.rx_queue,
                               g_le_audio_ctx.rx_frames,
                               sizeof(lc3_frame_t),
@@ -1133,23 +1138,28 @@ int le_audio_init(const le_audio_codec_config_t *codec_config)
         return -5;
     }
 
-    /* Initialize FreeRTOS synchronization */
-    g_le_audio_ctx.tx_queue_handle = xQueueCreate(LE_AUDIO_FRAME_QUEUE_DEPTH,
-                                                  sizeof(pcm_buffer_t));
-    g_le_audio_ctx.rx_queue_handle = xQueueCreate(LE_AUDIO_FRAME_QUEUE_DEPTH,
-                                                  sizeof(lc3_frame_t));
+    /* Initialize FreeRTOS synchronization
+     * Using counting semaphores for signaling (tiny heap footprint).
+     * Actual buffer storage is in static frame_queue_t structures above. */
+    printf("    le_audio_init: creating counting semaphores\n");
+    g_le_audio_ctx.tx_sem = xSemaphoreCreateCounting(LE_AUDIO_FRAME_QUEUE_DEPTH, 0);
+    g_le_audio_ctx.rx_sem = xSemaphoreCreateCounting(LE_AUDIO_FRAME_QUEUE_DEPTH, 0);
     g_le_audio_ctx.state_mutex = xSemaphoreCreateMutex();
-    if (g_le_audio_ctx.tx_queue_handle == NULL ||
-        g_le_audio_ctx.rx_queue_handle == NULL ||
+
+    if (g_le_audio_ctx.tx_sem == NULL ||
+        g_le_audio_ctx.rx_sem == NULL ||
         g_le_audio_ctx.state_mutex == NULL) {
+        printf("    le_audio_init: FreeRTOS alloc FAILED\n");
         return -6;  /* FreeRTOS resource allocation failed */
     }
+    printf("    le_audio_init: FreeRTOS sync OK\n");
 
     /* Initialize HCI ISOC module */
+    printf("    le_audio_init: hci_isoc_init\n");
     result = hci_isoc_init();
     if (result != HCI_ISOC_OK) {
-        vQueueDelete(g_le_audio_ctx.tx_queue_handle);
-        vQueueDelete(g_le_audio_ctx.rx_queue_handle);
+        vSemaphoreDelete(g_le_audio_ctx.tx_sem);
+        vSemaphoreDelete(g_le_audio_ctx.rx_sem);
         vSemaphoreDelete(g_le_audio_ctx.state_mutex);
         return -7;
     }
@@ -1161,8 +1171,8 @@ int le_audio_init(const le_audio_codec_config_t *codec_config)
     result = bap_unicast_init();
     if (result != BAP_UNICAST_OK) {
         hci_isoc_deinit();
-        vQueueDelete(g_le_audio_ctx.tx_queue_handle);
-        vQueueDelete(g_le_audio_ctx.rx_queue_handle);
+        vSemaphoreDelete(g_le_audio_ctx.tx_sem);
+        vSemaphoreDelete(g_le_audio_ctx.rx_sem);
         vSemaphoreDelete(g_le_audio_ctx.state_mutex);
         return -8;
     }
@@ -1172,8 +1182,8 @@ int le_audio_init(const le_audio_codec_config_t *codec_config)
     if (result != BAP_BROADCAST_OK) {
         bap_unicast_deinit();
         hci_isoc_deinit();
-        vQueueDelete(g_le_audio_ctx.tx_queue_handle);
-        vQueueDelete(g_le_audio_ctx.rx_queue_handle);
+        vSemaphoreDelete(g_le_audio_ctx.tx_sem);
+        vSemaphoreDelete(g_le_audio_ctx.rx_sem);
         vSemaphoreDelete(g_le_audio_ctx.state_mutex);
         return -9;
     }
@@ -1217,13 +1227,13 @@ void le_audio_deinit(void)
     /* LC3 codec runs on CM55 - no cleanup needed here */
 
     /* Delete FreeRTOS synchronization */
-    if (g_le_audio_ctx.tx_queue_handle != NULL) {
-        vQueueDelete(g_le_audio_ctx.tx_queue_handle);
-        g_le_audio_ctx.tx_queue_handle = NULL;
+    if (g_le_audio_ctx.tx_sem != NULL) {
+        vSemaphoreDelete(g_le_audio_ctx.tx_sem);
+        g_le_audio_ctx.tx_sem = NULL;
     }
-    if (g_le_audio_ctx.rx_queue_handle != NULL) {
-        vQueueDelete(g_le_audio_ctx.rx_queue_handle);
-        g_le_audio_ctx.rx_queue_handle = NULL;
+    if (g_le_audio_ctx.rx_sem != NULL) {
+        vSemaphoreDelete(g_le_audio_ctx.rx_sem);
+        g_le_audio_ctx.rx_sem = NULL;
     }
     if (g_le_audio_ctx.state_mutex != NULL) {
         vSemaphoreDelete(g_le_audio_ctx.state_mutex);
@@ -1635,7 +1645,10 @@ void le_audio_process(void)
 
         case LE_AUDIO_STATE_STREAMING:
             /* Process TX queue - encode and send pending PCM frames */
-            while (xQueueReceive(g_le_audio_ctx.tx_queue_handle, &pcm_buffer, 0) == pdTRUE) {
+            while (xSemaphoreTake(g_le_audio_ctx.tx_sem, 0) == pdTRUE) {
+                if (frame_queue_pop(&g_le_audio_ctx.tx_queue, &pcm_buffer) != 0) {
+                    break;  /* Queue empty despite semaphore - shouldn't happen */
+                }
                 /* Encode PCM to LC3 */
                 result = encode_audio_frame(pcm_buffer.samples, encoded_frame, &encoded_len);
                 if (result == 0) {
@@ -1664,7 +1677,10 @@ void le_audio_process(void)
             }
 
             /* Process RX queue - decode received LC3 frames */
-            while (xQueueReceive(g_le_audio_ctx.rx_queue_handle, &lc3_frame, 0) == pdTRUE) {
+            while (xSemaphoreTake(g_le_audio_ctx.rx_sem, 0) == pdTRUE) {
+                if (frame_queue_pop(&g_le_audio_ctx.rx_queue, &lc3_frame) != 0) {
+                    break;  /* Queue empty despite semaphore - shouldn't happen */
+                }
                 if (lc3_frame.length > 0) {
                     /* Normal decode */
                     result = decode_audio_frame(lc3_frame.data, lc3_frame.length, decoded_samples);
