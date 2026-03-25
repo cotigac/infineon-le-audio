@@ -33,14 +33,15 @@
 #define AUDIO_IPC_SEMA_INTERNAL     (16U)  /* Internal IPC protection */
 #define AUDIO_IPC_SEMA_TX_QUEUE     (17U)  /* TX queue semaphore */
 #define AUDIO_IPC_SEMA_RX_QUEUE     (18U)  /* RX queue semaphore */
+#define AUDIO_IPC_SEMA_CM55_READY   (19U)  /* CM55 ready signaling */
 
-/* IRQ assignments (must be different per core) */
+/* IRQ assignments (must be different per core, starting from MTB_IPC_IRQ_USER) */
 #if defined(CORE_CM33) || defined(COMPONENT_CM33)
-#define AUDIO_IPC_SEMA_IRQ          (0U)
-#define AUDIO_IPC_QUEUE_IRQ         (1U)
+#define AUDIO_IPC_SEMA_IRQ          (MTB_IPC_IRQ_USER + 0U)
+#define AUDIO_IPC_QUEUE_IRQ         (MTB_IPC_IRQ_USER + 1U)
 #else /* CM55 */
-#define AUDIO_IPC_SEMA_IRQ          (2U)
-#define AUDIO_IPC_QUEUE_IRQ         (3U)
+#define AUDIO_IPC_SEMA_IRQ          (MTB_IPC_IRQ_USER + 2U)
+#define AUDIO_IPC_QUEUE_IRQ         (MTB_IPC_IRQ_USER + 3U)
 #endif
 
 /* Debug message queue (simple shared memory, separate from mtb-ipc) */
@@ -49,7 +50,7 @@
 #define DEBUG_MAGIC                 (0x44424730U)  /* "DBG0" */
 
 /*******************************************************************************
- * Debug Queue Structure (simple shared memory)
+ * Debug Queue Structure (simple shared memory for early boot debug)
  ******************************************************************************/
 
 typedef struct {
@@ -60,7 +61,6 @@ typedef struct {
 
 typedef struct __attribute__((aligned(32))) {
     uint32_t    magic;
-    volatile bool cm55_connected;   /* Set by CM55 after mtb_ipc_get_handle succeeds */
     debug_msg_t msgs[DEBUG_QUEUE_DEPTH];
     volatile uint32_t head;
     volatile uint32_t tail;
@@ -80,6 +80,9 @@ static mtb_ipc_t g_ipc_instance;
 static mtb_ipc_queue_t g_tx_queue;  /* CM55 -> CM33 */
 static mtb_ipc_queue_t g_rx_queue;  /* CM33 -> CM55 */
 
+/* CM55 ready semaphore (for cross-core synchronization) */
+static mtb_ipc_semaphore_t g_cm55_ready_sema;
+
 /* Shared memory for mtb-ipc (allocated by CM33, used by both) */
 #if defined(CORE_CM33) || defined(COMPONENT_CM33)
 CY_SECTION_SHAREDMEM static mtb_ipc_shared_t g_ipc_shared __attribute__((aligned(32)));
@@ -87,10 +90,12 @@ CY_SECTION_SHAREDMEM static mtb_ipc_queue_data_t g_tx_queue_data __attribute__((
 CY_SECTION_SHAREDMEM static mtb_ipc_queue_data_t g_rx_queue_data __attribute__((aligned(32)));
 CY_SECTION_SHAREDMEM static uint8_t g_tx_queue_pool[AUDIO_IPC_QUEUE_DEPTH * sizeof(audio_ipc_frame_t)] __attribute__((aligned(32)));
 CY_SECTION_SHAREDMEM static uint8_t g_rx_queue_pool[AUDIO_IPC_QUEUE_DEPTH * sizeof(audio_ipc_frame_t)] __attribute__((aligned(32)));
+CY_SECTION_SHAREDMEM static mtb_ipc_semaphore_data_t g_cm55_ready_sema_data __attribute__((aligned(32)));
 #endif
 
 /* Local state */
 static bool g_ipc_initialized = false;
+static bool g_cm55_signaled_ready = false;  /* Cached state for CM33 */
 static audio_ipc_stats_t g_ipc_stats = {0};
 
 /* Callback for CM55 */
@@ -136,7 +141,7 @@ cy_rslt_t audio_ipc_init_primary(void)
 
     printf("[IPC] Initializing mtb-ipc on CM33 (primary)...\n");
 
-    /* Initialize debug queue first (simple shared memory) */
+    /* Initialize debug queue first (simple shared memory for early boot) */
     memset(g_debug, 0, sizeof(debug_queue_t));
     g_debug->magic = DEBUG_MAGIC;
     __DMB();
@@ -156,6 +161,24 @@ cy_rslt_t audio_ipc_init_primary(void)
         return result;
     }
     printf("[IPC] mtb_ipc_init: OK\n");
+
+    /* Initialize CM55 ready semaphore (CM55 will give this when ready) */
+    mtb_ipc_semaphore_config_t sema_config = {
+        .preemptable = false,
+        .semaphore_num = AUDIO_IPC_SEMA_CM55_READY
+    };
+    result = mtb_ipc_semaphore_init(&g_ipc_instance, &g_cm55_ready_sema,
+                                     &g_cm55_ready_sema_data, &sema_config);
+    if (result != CY_RSLT_SUCCESS) {
+        printf("[IPC] ERROR: CM55 ready semaphore init failed: 0x%08lX\n", (unsigned long)result);
+        return result;
+    }
+    /* Take the semaphore immediately - CM55 will give it to signal readiness */
+    result = mtb_ipc_semaphore_take(&g_cm55_ready_sema, 0);
+    if (result != CY_RSLT_SUCCESS) {
+        printf("[IPC] WARNING: Could not take CM55 ready semaphore: 0x%08lX\n", (unsigned long)result);
+    }
+    printf("[IPC] CM55 ready semaphore: OK\n");
 
     /* Initialize TX queue (CM55 -> CM33) */
     mtb_ipc_queue_config_t tx_config = {
@@ -195,6 +218,7 @@ cy_rslt_t audio_ipc_init_primary(void)
     memset(&g_ipc_stats, 0, sizeof(g_ipc_stats));
 
     g_ipc_initialized = true;
+    g_cm55_signaled_ready = false;
     printf("[IPC] CM33 initialization complete\n");
 
     return CY_RSLT_SUCCESS;
@@ -262,7 +286,7 @@ cy_rslt_t audio_ipc_init_secondary(void)
 
     printf("[IPC] Initializing mtb-ipc on CM55 (secondary)...\n");
 
-    /* Configure mtb-ipc (must match CM33 config) */
+    /* Configure mtb-ipc (must match CM33 config for channel and internal semaphore) */
     mtb_ipc_config_t ipc_config = {
         .internal_channel_index = AUDIO_IPC_CHANNEL,
         .semaphore_irq = AUDIO_IPC_SEMA_IRQ,
@@ -303,17 +327,26 @@ cy_rslt_t audio_ipc_init_secondary(void)
     mtb_ipc_queue_register_callback(&g_rx_queue, rx_queue_callback, NULL);
     mtb_ipc_queue_enable_event(&g_rx_queue, MTB_IPC_QUEUE_WRITE, true);
 
+    /* Get handle to CM55 ready semaphore and give it to signal CM33 */
+    result = mtb_ipc_semaphore_get_handle(&g_ipc_instance, &g_cm55_ready_sema,
+                                           AUDIO_IPC_SEMA_CM55_READY, 1000000); /* 1s timeout */
+    if (result != CY_RSLT_SUCCESS) {
+        printf("[IPC] ERROR: CM55 ready semaphore get_handle failed: 0x%08lX\n", (unsigned long)result);
+        return result;
+    }
+
+    /* Give the semaphore to signal CM33 that CM55 is ready */
+    result = mtb_ipc_semaphore_give(&g_cm55_ready_sema);
+    if (result != CY_RSLT_SUCCESS) {
+        printf("[IPC] WARNING: Could not give CM55 ready semaphore: 0x%08lX\n", (unsigned long)result);
+    } else {
+        printf("[IPC] CM55 ready semaphore given\n");
+    }
+
     /* Reset statistics */
     memset(&g_ipc_stats, 0, sizeof(g_ipc_stats));
 
     g_ipc_initialized = true;
-
-    /* Signal to CM33 that CM55 is connected */
-    if (g_debug != NULL && g_debug->magic == DEBUG_MAGIC) {
-        g_debug->cm55_connected = true;
-        __DMB();
-    }
-
     printf("[IPC] CM55 initialization complete\n");
 
     return CY_RSLT_SUCCESS;
@@ -394,14 +427,25 @@ void audio_ipc_reset_stats(void)
 bool audio_ipc_is_ready(void)
 {
 #if defined(CORE_CM33) || defined(COMPONENT_CM33)
-    /* On CM33: check if both CM33 is initialized AND CM55 has connected */
+    /* On CM33: check if both CM33 is initialized AND CM55 has signaled ready */
     if (!g_ipc_initialized) {
         return false;
     }
-    if (g_debug == NULL || g_debug->magic != DEBUG_MAGIC) {
-        return false;
+
+    /* If already confirmed ready, return cached value */
+    if (g_cm55_signaled_ready) {
+        return true;
     }
-    return g_debug->cm55_connected;
+
+    /* Try to take the semaphore with 0 timeout (non-blocking check) */
+    /* If we can take it, CM55 has given it (signaling ready) */
+    cy_rslt_t result = mtb_ipc_semaphore_take(&g_cm55_ready_sema, 0);
+    if (result == CY_RSLT_SUCCESS) {
+        g_cm55_signaled_ready = true;
+        return true;
+    }
+
+    return false;
 #else
     /* On CM55: just check local initialization */
     return g_ipc_initialized;
@@ -418,7 +462,14 @@ void audio_ipc_deinit(void)
     mtb_ipc_queue_free(&g_tx_queue);
     mtb_ipc_queue_free(&g_rx_queue);
 
+    /* Free semaphore */
+    mtb_ipc_semaphore_free(&g_cm55_ready_sema);
+
     g_ipc_initialized = false;
+
+#if defined(CORE_CM33) || defined(COMPONENT_CM33)
+    g_cm55_signaled_ready = false;
+#endif
 
 #if defined(CORE_CM55) || defined(COMPONENT_CM55)
     g_rx_callback = NULL;
