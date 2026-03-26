@@ -187,11 +187,13 @@ The project has **complete implementation** of all Bluetooth, LE Audio, MIDI, an
 
 ### Path 1: LE Audio TX (I2S RX → LC3 Encode → HCI ISOC TX) ✅ COMPLETE
 
+Supports both Unicast (CIS) and Broadcast Source (BIS/Auracast TX).
+
 **Dual-Core Data Flow:**
 ```
 Main Controller → I2S RX → LC3 Encode → IPC Queue → ISOC Handler → HCI → CYW55512
      PCM          [CM55]     [CM55]       TX        [CM33]       UART    Radio
-                   DMA      Helium DSP   Shared Mem  HCI ISOC
+                   DMA      Helium DSP   Shared Mem  HCI ISOC   CIS/BIS
 ```
 
 | Step | Core | File | TODOs | Status |
@@ -200,7 +202,9 @@ Main Controller → I2S RX → LC3 Encode → IPC Queue → ISOC Handler → HCI
 | LC3 Encode | CM55 | `audio_task.c` | 0 | ✅ Helium DSP, posts to IPC queue |
 | IPC TX | Both | shared memory | 0 | ✅ Queue CM55 → CM33 |
 | ISOC TX | CM33 | `isoc_handler.c` | 0 | ✅ `isoc_handler_tx_frame()` with stream lookup |
-| HCI Send | CM33 | `hci_isoc.c` | 0 | ✅ `wiced_bt_isoc_write()` integration |
+| HCI Send | CM33 | `hci_isoc.c` | 0 | ✅ `wiced_bt_isoc_write()` integration (CIS + BIS) |
+| CIG/CIS Create | CM33 | `bap_unicast.c` | 0 | ✅ Unicast: ASE config, CIG/CIS setup |
+| BIG Create | CM33 | `bap_broadcast.c` | 0 | ✅ Auracast TX: ext adv, PA, BASE, BIG |
 
 **Data Path Wiring (Dual-Core):**
 ```c
@@ -212,6 +216,15 @@ xQueueSend(g_lc3_tx_queue, &lc3_frame, portMAX_DELAY);  // CM55 → CM33
 // CM33: isoc_handler.c - polls IPC queue
 xQueueReceive(g_lc3_tx_queue, &lc3_frame, 0);
 isoc_handler_tx_frame(stream_id, lc3_frame.data, lc3_frame.len, timestamp);
+```
+
+**Broadcast Source (Auracast TX) Flow:**
+```c
+// bap_broadcast.c - configure → ext adv → periodic adv → BIG create → streaming
+bap_broadcast_configure(&config);     // Set codec params, build BASE
+bap_broadcast_start();                // Start extended + periodic advertising
+// BIG is created automatically, LC3 frames sent on BIS
+bap_broadcast_stop();                 // Terminate BIG, stop advertising
 ```
 
 ### Path 2: LE Audio RX (HCI ISOC RX → LC3 Decode → I2S TX) ✅ COMPLETE
@@ -369,8 +382,8 @@ Terminal   emUSB-Device   Tokenizer    at_*_cmds.c       BTSTACK/WHD/etc.
 
 | Path | Description | TODOs | Status |
 |------|-------------|-------|--------|
-| 1 | LE Audio TX | 0 | ✅ Complete |
-| 2 | LE Audio RX | 0 | ✅ Complete |
+| 1 | LE Audio TX (Unicast CIS + Broadcast Source/Auracast TX) | 0 | ✅ Complete |
+| 2 | LE Audio RX (Unicast CIS + Broadcast Sink/Auracast RX) | 0 | ✅ Complete |
 | 3 | BLE MIDI | 0 | ✅ Complete |
 | 4 | Wi-Fi Bridge | 0 | ✅ Complete |
 | 5 | Bluetooth HCI | 0 | ✅ Complete |

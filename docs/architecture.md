@@ -139,6 +139,7 @@ The firmware uses a **dual-core architecture** to maximize performance:
 ### Path 1: LE Audio TX (I2S → LC3 → ISOC) - Dual-Core
 
 PCM audio from main controller is encoded to LC3 on CM55 and transmitted via CM33.
+Supports both Unicast (CIS) and Broadcast Source (BIS/Auracast TX).
 
 ```
 ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
@@ -151,7 +152,7 @@ PCM audio from main controller is encoded to LC3 on CM55 and transmitted via CM3
        │            i2s_stream.c  lc3_wrapper.c                   │      isoc_handler.c                  │
 ```
 
-**Implementation Status:**
+**Implementation Status (Common):**
 - [x] I2S DMA buffer structure (ping-pong) - CM55
 - [x] Audio ring buffers with metadata - CM55
 - [x] LC3 wrapper calling liblc3 (Helium DSP) - CM55
@@ -160,6 +161,19 @@ PCM audio from main controller is encoded to LC3 on CM55 and transmitted via CM3
 - [x] `cyhal_i2s_init()` - HAL integration on CM55
 - [x] `isoc_handler_tx_frame()` - Wired to IPC queue on CM33
 - [x] `hci_isoc_send_data()` - Wired to BTSTACK via `wiced_bt_isoc_write()`
+
+**Unicast TX (CIS) - `bap_unicast.c`:**
+- [x] PACS discovery and capability exchange
+- [x] ASE (Audio Stream Endpoint) configuration
+- [x] CIG/CIS creation via `hci_isoc_create_cig()` / `hci_isoc_create_cis()`
+- [x] Codec configuration and QoS negotiation
+
+**Broadcast Source (Auracast TX) - `bap_broadcast.c`:**
+- [x] Extended advertising with broadcast name
+- [x] Periodic advertising with BASE (Broadcast Audio Source Endpoint)
+- [x] BASE structure builder (subgroups, BIS configs, codec parameters)
+- [x] BIG creation via `hci_isoc_create_big()`
+- [x] Broadcast ID generation and announcement
 
 ### Path 2: LE Audio RX (ISOC → LC3 → I2S) - Dual-Core
 
