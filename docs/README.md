@@ -200,22 +200,22 @@ Main Controller → I2S RX → LC3 Encode → IPC Queue → ISOC Handler → HCI
 |------|------|------|-------|--------|
 | I2S RX DMA | CM55 | `i2s_stream.c` | 0 | ✅ Ring buffer with critical sections |
 | LC3 Encode | CM55 | `audio_task.c` | 0 | ✅ Helium DSP, posts to IPC queue |
-| IPC TX | Both | shared memory | 0 | ✅ Queue CM55 → CM33 |
+| IPC TX | Both | `audio_ipc.c` | 0 | ✅ mtb-ipc queue CM55 → CM33 |
 | ISOC TX | CM33 | `isoc_handler.c` | 0 | ✅ `isoc_handler_tx_frame()` with stream lookup |
 | HCI Send | CM33 | `hci_isoc.c` | 0 | ✅ `wiced_bt_isoc_write()` integration (CIS + BIS) |
 | CIG/CIS Create | CM33 | `bap_unicast.c` | 0 | ✅ Unicast: ASE config, CIG/CIS setup |
 | BIG Create | CM33 | `bap_broadcast.c` | 0 | ✅ Auracast TX: ext adv, PA, BASE, BIG |
 
-**Data Path Wiring (Dual-Core):**
+**Data Path Wiring (Dual-Core via mtb-ipc):**
 ```c
 // CM55: audio_task.c - process_tx_path()
-// Encode PCM to LC3, post to IPC queue for CM33
-lc3_encode(pcm_buffer, lc3_buffer, &lc3_len);
-xQueueSend(g_lc3_tx_queue, &lc3_frame, portMAX_DELAY);  // CM55 → CM33
+// Encode PCM to LC3, send to CM33 via mtb-ipc
+lc3_encode(pcm_buffer, lc3_frame.data, &lc3_frame.length);
+audio_ipc_send_encoded_frame(&lc3_frame);  // CM55 → CM33
 
-// CM33: isoc_handler.c - polls IPC queue
-xQueueReceive(g_lc3_tx_queue, &lc3_frame, 0);
-isoc_handler_tx_frame(stream_id, lc3_frame.data, lc3_frame.len, timestamp);
+// CM33: isoc_handler.c - polls mtb-ipc queue
+audio_ipc_receive_from_encoder(&lc3_frame);
+isoc_handler_tx_frame(stream_id, lc3_frame.data, lc3_frame.length, timestamp);
 ```
 
 **Broadcast Source (Auracast TX) Flow:**
@@ -243,18 +243,18 @@ CYW55512 → HCI → ISOC Handler → IPC Queue → LC3 Decode → I2S TX → Ma
 | HCI RX | CM33 | `hci_isoc.c` | 0 | ✅ BTSTACK ISOC data callback registered (CIS + BIS) |
 | ISOC RX | CM33 | `isoc_handler.c` | 0 | ✅ Posts to IPC queue (multi-callback registry) |
 | BIG Sync | CM33 | `bap_broadcast_sink.c` | 0 | ✅ Auracast RX: scan, PA sync, BIG sync |
-| IPC RX | Both | shared memory | 0 | ✅ Queue CM33 → CM55 |
+| IPC RX | Both | `audio_ipc.c` | 0 | ✅ mtb-ipc queue CM33 → CM55 |
 | LC3 Decode | CM55 | `audio_task.c` | 0 | ✅ Helium DSP, PLC for packet loss |
 | I2S TX DMA | CM55 | `i2s_stream.c` | 0 | ✅ Thread-safe ring buffer writes |
 
-**Data Path Wiring (Dual-Core):**
+**Data Path Wiring (Dual-Core via mtb-ipc):**
 ```c
 // CM33: isoc_handler.c - on ISOC RX callback (CIS or BIS)
-xQueueSend(g_lc3_rx_queue, &lc3_frame, 0);  // CM33 → CM55
+audio_ipc_send_to_decoder(&lc3_frame);  // CM33 → CM55
 
 // CM55: audio_task.c - process_rx_path()
-xQueueReceive(g_lc3_rx_queue, &lc3_frame, portMAX_DELAY);
-lc3_decode(lc3_frame.data, lc3_frame.len, pcm_buffer);
+audio_ipc_receive_for_decode(&lc3_frame);
+lc3_decode(lc3_frame.data, lc3_frame.length, pcm_buffer);
 i2s_stream_write(pcm_buffer, pcm_len);
 ```
 

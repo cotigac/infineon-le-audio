@@ -53,9 +53,9 @@ The firmware uses a **dual-core architecture** to maximize performance:
 ├─────────────────────────────────┼───────────────────────────────────────────┤
 │                        IPC (Inter-Processor Communication)                   │
 │  ┌───────────────────────────────────────────────────────────────────────┐ │
-│  │ Shared Memory + FreeRTOS Queues                                       │ │
-│  │ - LC3 TX Queue: CM55 encoded frames → CM33 ISOC TX                    │ │
-│  │ - LC3 RX Queue: CM33 ISOC RX → CM55 decode                            │ │
+│  │ mtb-ipc Library (Hardware-Backed IPC)                                 │ │
+│  │ - TX Queue: CM55 encoded frames → CM33 ISOC TX                        │ │
+│  │ - RX Queue: CM33 ISOC RX → CM55 decode                                │ │
 │  └───────────────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -156,7 +156,7 @@ Supports both Unicast (CIS) and Broadcast Source (BIS/Auracast TX).
 - [x] I2S DMA buffer structure (ping-pong) - CM55
 - [x] Audio ring buffers with metadata - CM55
 - [x] LC3 wrapper calling liblc3 (Helium DSP) - CM55
-- [x] IPC queue for LC3 frames (CM55 → CM33)
+- [x] mtb-ipc queue for LC3 frames (CM55 → CM33) via `audio_ipc.c`
 - [x] ISOC handler state machine - CM33
 - [x] `cyhal_i2s_init()` - HAL integration on CM55
 - [x] `isoc_handler_tx_frame()` - Wired to IPC queue on CM33
@@ -193,7 +193,7 @@ Supports both Unicast (CIS) and Broadcast Sink (BIS/Auracast RX).
 
 **Implementation Status:**
 - [x] ISOC RX buffer structure - CM33
-- [x] IPC queue for LC3 frames (CM33 → CM55)
+- [x] mtb-ipc queue for LC3 frames (CM33 → CM55) via `audio_ipc.c`
 - [x] LC3 decode with PLC (packet loss concealment) - CM55
 - [x] I2S TX buffer management - CM55
 - [x] BTSTACK ISOC data callback registration - CM33
@@ -495,25 +495,30 @@ The firmware runs FreeRTOS on both cores with separate schedulers:
 
 #### Inter-Processor Communication (IPC) - CM33 ↔ CM55
 
+Uses **Infineon mtb-ipc library** for hardware-backed IPC with proper cache management.
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    IPC Architecture (Shared Memory)                          │
+│                    IPC Architecture (mtb-ipc Library)                        │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │  LC3 TX Path (Audio Encode - CM55 → CM33):                                  │
-│    CM55 Audio Task → [g_lc3_tx_queue] → CM33 ISOC Handler                   │
+│    CM55 Audio Task → [mtb_ipc_queue TX] → CM33 ISOC Handler                 │
+│    - audio_ipc_send_encoded_frame() on CM55                                 │
+│    - audio_ipc_receive_from_encoder() on CM33                               │
 │    - Queue holds encoded LC3 frames (max 155 bytes each)                    │
-│    - CM55 posts after encode, CM33 polls for ISOC TX                        │
 │                                                                              │
 │  LC3 RX Path (Audio Decode - CM33 → CM55):                                  │
-│    CM33 ISOC Handler → [g_lc3_rx_queue] → CM55 Audio Task                   │
-│    - Queue holds received LC3 frames from BTSTACK                           │
-│    - CM33 posts on ISOC RX callback, CM55 polls for decode                  │
+│    CM33 ISOC Handler → [mtb_ipc_queue RX] → CM55 Audio Task                 │
+│    - audio_ipc_send_to_decoder() on CM33                                    │
+│    - audio_ipc_receive_for_decode() on CM55                                 │
+│    - Optional IRQ callback on CM55 for low-latency                          │
 │                                                                              │
-│  Shared Memory Region:                                                       │
-│    - Located in SOCMEM (accessible by both cores)                           │
-│    - Queue structures use atomic operations                                  │
-│    - No mutex needed (single producer, single consumer)                     │
+│  Implementation (source/ipc/audio_ipc.c):                                   │
+│    - mtb_ipc_queue_init/get_handle for queue setup                          │
+│    - mtb_ipc_semaphore for CM55 ready signaling                             │
+│    - CY_SECTION_SHAREDMEM for shared memory placement                       │
+│    - Hardware semaphores for thread-safe access                             │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
