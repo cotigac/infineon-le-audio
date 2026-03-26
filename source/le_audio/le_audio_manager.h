@@ -224,6 +224,54 @@ int le_audio_broadcast_stop(void);
 int le_audio_broadcast_update_metadata(const char *name, uint16_t context);
 
 /*******************************************************************************
+ * Broadcast Sink (Auracast RX) API
+ ******************************************************************************/
+
+/**
+ * @brief Start scanning for Auracast broadcasts
+ *
+ * Discovered broadcasts will be reported via LE_AUDIO_EVENT_BROADCAST_FOUND.
+ *
+ * @return 0 on success, negative error code on failure
+ */
+int le_audio_broadcast_sink_start_scan(void);
+
+/**
+ * @brief Stop scanning for broadcasts
+ *
+ * @return 0 on success, negative error code on failure
+ */
+int le_audio_broadcast_sink_stop_scan(void);
+
+/**
+ * @brief Sync to a discovered broadcast and start receiving audio
+ *
+ * @param broadcast_id 3-byte Broadcast_ID of the source
+ * @param broadcast_code 16-byte decryption key (NULL if unencrypted)
+ * @return 0 on success, negative error code on failure
+ */
+int le_audio_broadcast_sink_sync(const uint8_t *broadcast_id,
+                                  const uint8_t *broadcast_code);
+
+/**
+ * @brief Stop receiving broadcast audio
+ *
+ * @return 0 on success, negative error code on failure
+ */
+int le_audio_broadcast_sink_stop(void);
+
+/**
+ * @brief Demo: Auto-sync to first discovered broadcast
+ *
+ * Convenience function that starts scanning and automatically syncs
+ * to the first Auracast broadcast found. Useful for quick testing.
+ *
+ * @param broadcast_code 16-byte key for encrypted broadcasts (NULL if unencrypted)
+ * @return 0 on success, negative error code on failure
+ */
+int le_audio_broadcast_sink_demo_auto_sync(const uint8_t *broadcast_code);
+
+/*******************************************************************************
  * Audio Data API
  ******************************************************************************/
 

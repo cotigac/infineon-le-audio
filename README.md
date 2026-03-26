@@ -24,7 +24,8 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
 | Feature | Core | Description | Status |
 |---------|------|-------------|--------|
 | **LE Audio Unicast** | CM33+CM55 | Full-duplex audio streaming via CIS (Connected Isochronous Stream) | Implemented |
-| **LE Audio Broadcast (Auracast)** | CM33+CM55 | One-to-many audio broadcast via BIS (Broadcast Isochronous Stream) | Implemented |
+| **LE Audio Broadcast Source** | CM33+CM55 | One-to-many audio broadcast via BIS (Auracast TX) | Implemented |
+| **LE Audio Broadcast Sink** | CM33+CM55 | Receive Auracast broadcasts (Auracast RX) | Implemented |
 | **LC3 Codec** | CM55 | Host-side LC3 encode/decode using Google liblc3 (Helium DSP) | Implemented |
 | **BLE MIDI** | CM33 | MIDI over Bluetooth Low Energy GATT service | Implemented |
 | **USB MIDI** | CM33 | USB High-Speed MIDI class device (480 Mbps) | Implemented |
@@ -231,7 +232,8 @@ infineon-le-audio/
 │   ├── le_audio/                   # LE Audio profiles
 │   │   ├── le_audio_manager.c/h    # Top-level LE Audio control
 │   │   ├── bap_unicast.c/h         # BAP Unicast Client/Server (CIS)
-│   │   ├── bap_broadcast.c/h       # BAP Broadcast Source (Auracast/BIS)
+│   │   ├── bap_broadcast.c/h       # BAP Broadcast Source (Auracast TX)
+│   │   ├── bap_broadcast_sink.c/h  # BAP Broadcast Sink (Auracast RX)
 │   │   ├── pacs.c/h                # Published Audio Capabilities Service
 │   │   └── isoc_handler.c/h        # HCI ISOC data path handling
 │   │
@@ -464,7 +466,7 @@ Edit `config/lc3_config.h`:
 #define LC3_CFG_CHANNELS            1       // 1=mono, 2=stereo
 ```
 
-### Auracast Broadcast Settings
+### Auracast Broadcast Source Settings
 
 ```c
 le_audio_broadcast_config_t config = {
@@ -479,22 +481,43 @@ le_audio_broadcast_config_t config = {
 le_audio_start_broadcast(&config);
 ```
 
+### Auracast Broadcast Sink (Receive)
+
+```c
+#include "le_audio/le_audio_manager.h"
+
+// Start scanning for Auracast broadcasts
+le_audio_broadcast_sink_start_scan();
+
+// Sync to a discovered broadcast (after receiving discovery event)
+// broadcast_code is NULL for unencrypted, or 16-byte key for encrypted
+le_audio_broadcast_sink_sync(broadcast_id, broadcast_code);
+
+// Or use demo function to auto-sync to first discovered broadcast
+le_audio_broadcast_sink_demo_auto_sync(NULL);  // NULL = unencrypted
+
+// Stop receiving
+le_audio_broadcast_sink_stop();
+```
+
 ## LE Audio Profile Stack
 
 ```
 +─────────────────────────────────────────+
 │          CAP (Common Audio Profile)     │
 +─────────────────────────────────────────+
-│  BAP (Basic Audio Profile)              │  bap_unicast.c, bap_broadcast.c
-│  ├── Unicast Client/Server (CIS)        │
-│  └── Broadcast Source/Sink (BIS)        │  Auracast
+│  BAP (Basic Audio Profile)              │
+│  ├── Unicast Client/Server (CIS)        │  bap_unicast.c
+│  ├── Broadcast Source (BIS TX)          │  bap_broadcast.c
+│  └── Broadcast Sink (BIS RX)            │  bap_broadcast_sink.c
 +─────────────────────────────────────────+
 │  PACS (Published Audio Capabilities)    │  pacs.c
 │  ASCS (Audio Stream Control Service)    │  le_audio_manager.c
 +─────────────────────────────────────────+
 │  HCI ISOC (Isochronous Channels)        │  hci_isoc.c, isoc_handler.c
 │  ├── CIS (Connected Isochronous Stream) │  Unicast
-│  └── BIS (Broadcast Isochronous Stream) │  Auracast
+│  ├── BIG Create (Broadcast TX)          │  Auracast Source
+│  └── BIG Sync (Broadcast RX)            │  Auracast Sink
 +─────────────────────────────────────────+
 │  liblc3 (Host-Side Codec)               │  lc3_wrapper.c
 │  Google LC3 - Apache 2.0 License        │
@@ -634,7 +657,10 @@ AT+GAPADVSTART  → OK
 
 # LE Audio commands
 AT+LEAINIT      → +LEAINIT: OK,48000,10000
-AT+LEABROADCAST=1 → OK
+AT+LEABROADCAST=1 → OK                    # Start broadcast source
+AT+LEASCAN=1    → OK                      # Start scanning for broadcasts
+AT+LEASYNC=<broadcast_id> → OK            # Sync to broadcast (sink)
+AT+LEADEMO      → OK                      # Auto-sync to first broadcast
 AT+LEASTATE?    → +LEASTATE: STREAMING
 
 # Wi-Fi commands

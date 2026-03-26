@@ -73,6 +73,9 @@ extern "C" {
 #define HCI_ISOC_ENCRYPT_DISABLED   0x00
 #define HCI_ISOC_ENCRYPT_ENABLED    0x01
 
+/** Maximum number of registered callbacks (supports multiple modules) */
+#define HCI_ISOC_MAX_CALLBACKS      4
+
 /*******************************************************************************
  * Error Codes
  ******************************************************************************/
@@ -91,7 +94,8 @@ typedef enum {
     HCI_ISOC_ERROR_BIS_NOT_FOUND = -10,
     HCI_ISOC_ERROR_COMMAND_FAILED = -11,
     HCI_ISOC_ERROR_TIMEOUT = -12,
-    HCI_ISOC_ERROR_NOT_SUPPORTED = -13
+    HCI_ISOC_ERROR_NOT_SUPPORTED = -13,
+    HCI_ISOC_ERROR_CALLBACK_NOT_FOUND = -14
 } hci_isoc_error_t;
 
 /*******************************************************************************
@@ -361,6 +365,28 @@ void hci_isoc_deinit(void);
  * @param user_data User data passed to callback
  */
 void hci_isoc_register_callback(hci_isoc_callback_t callback, void *user_data);
+
+/**
+ * @brief Register event callback (multi-callback version)
+ *
+ * Allows multiple modules to register callbacks for ISOC events.
+ * Up to HCI_ISOC_MAX_CALLBACKS can be registered simultaneously.
+ *
+ * @param callback Function to call on events
+ * @param user_data User data passed to callback
+ * @return HCI_ISOC_OK on success, HCI_ISOC_ERROR_NO_RESOURCES if full
+ */
+int hci_isoc_register_callback_ex(hci_isoc_callback_t callback, void *user_data);
+
+/**
+ * @brief Unregister event callback
+ *
+ * Removes a previously registered callback.
+ *
+ * @param callback The callback function to unregister
+ * @return HCI_ISOC_OK on success, HCI_ISOC_ERROR_CALLBACK_NOT_FOUND if not found
+ */
+int hci_isoc_unregister_callback(hci_isoc_callback_t callback);
 
 /*******************************************************************************
  * API Functions - CIG Management (Unicast)

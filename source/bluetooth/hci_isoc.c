@@ -111,13 +111,19 @@ typedef struct {
     bool is_source;  /* true = source, false = sink */
 } big_state_struct_t;
 
+/** Callback registry entry */
+typedef struct {
+    hci_isoc_callback_t callback;
+    void *user_data;
+    bool in_use;
+} hci_isoc_callback_entry_t;
+
 /** Module context */
 typedef struct {
     bool initialized;
 
-    /* Callback */
-    hci_isoc_callback_t callback;
-    void *callback_user_data;
+    /* Callback registry (supports multiple callbacks) */
+    hci_isoc_callback_entry_t callbacks[HCI_ISOC_MAX_CALLBACKS];
 
     /* CIG/CIS state */
     cig_state_t cig[HCI_ISOC_MAX_CIG];
@@ -264,8 +270,11 @@ static int hci_wait_command_complete(uint32_t timeout_ms)
  */
 static void dispatch_event(const hci_isoc_event_t *event)
 {
-    if (isoc_ctx.callback != NULL) {
-        isoc_ctx.callback(event, isoc_ctx.callback_user_data);
+    /* Dispatch to all registered callbacks */
+    for (int i = 0; i < HCI_ISOC_MAX_CALLBACKS; i++) {
+        if (isoc_ctx.callbacks[i].in_use && isoc_ctx.callbacks[i].callback != NULL) {
+            isoc_ctx.callbacks[i].callback(event, isoc_ctx.callbacks[i].user_data);
+        }
     }
 }
 
@@ -702,6 +711,174 @@ static big_state_struct_t* find_big(uint8_t big_handle)
  * Public API - Initialization
  ******************************************************************************/
 
+/*******************************************************************************
+ * WICED ISOC Callback Handler
+ ******************************************************************************/
+
+/**
+ * @brief Handle WICED ISOC events and translate to internal events
+ */
+static void wiced_isoc_callback(wiced_ble_isoc_event_t event_id, wiced_ble_isoc_event_data_t *p_event_data)
+{
+    hci_isoc_event_t event;
+    memset(&event, 0, sizeof(event));
+
+    printf("ISOC: WICED event %d\n", event_id);
+
+    switch (event_id) {
+        case WICED_BLE_ISOC_CIS_REQUEST_EVT:
+            event.type = HCI_ISOC_EVENT_CIS_REQUEST;
+            event.data.cis_request.acl_handle = p_event_data->cis_request.acl_conn_handle;
+            event.data.cis_request.cig_id = p_event_data->cis_request.cig_id;
+            event.data.cis_request.cis_id = p_event_data->cis_request.cis_id;
+            event.data.cis_request.cis_handle = p_event_data->cis_request.cis_conn_handle;
+            dispatch_event(&event);
+            break;
+
+        case WICED_BLE_ISOC_CIS_ESTABLISHED_EVT:
+            handle_cis_established((const uint8_t*)p_event_data, sizeof(*p_event_data));
+            break;
+
+        case WICED_BLE_ISOC_CIS_DISCONNECTED_EVT:
+            {
+                cis_info_t *cis = find_cis(p_event_data->cis_disconnect.cis.cis_conn_handle);
+                if (cis != NULL) {
+                    cis->state = CIS_STATE_IDLE;
+                    event.type = HCI_ISOC_EVENT_CIS_DISCONNECTED;
+                    event.data.cis_info = *cis;
+                    dispatch_event(&event);
+                    isoc_ctx.stats.cis_disconnected++;
+                }
+            }
+            break;
+
+        case WICED_BLE_ISOC_BIG_CREATED_EVT:
+            handle_create_big_complete((const uint8_t*)p_event_data, sizeof(*p_event_data));
+            break;
+
+        case WICED_BLE_ISOC_BIG_TERMINATED_EVT:
+            handle_terminate_big_complete((const uint8_t*)p_event_data, sizeof(*p_event_data));
+            break;
+
+        case WICED_BLE_ISOC_BIG_SYNC_ESTABLISHED_EVT:
+            {
+                /* BIG Sync established (broadcast sink) */
+                wiced_ble_isoc_big_sync_established_evt_t *p = &p_event_data->big_sync_established;
+                
+                big_state_struct_t *big = find_big(p->big_handle);
+                if (big == NULL) {
+                    /* Allocate new BIG for sink */
+                    for (int i = 0; i < HCI_ISOC_MAX_BIG; i++) {
+                        if (!isoc_ctx.big[i].in_use) {
+                            big = &isoc_ctx.big[i];
+                            big->in_use = true;
+                            big->is_source = false;  /* Sink */
+                            isoc_ctx.num_active_big++;
+                            break;
+                        }
+                    }
+                }
+                
+                if (big != NULL) {
+                    big->info.big_handle = p->big_handle;
+                    big->info.state = BIG_STATE_ACTIVE;
+                    big->info.num_bis = p->num_bis;
+                    big->info.transport_latency = p->trans_latency;
+                    /* nse, bn, pto, irc not available in BTSTACK 4.x BIG sync event */
+                    big->info.nse = 0;
+                    big->info.bn = 0;
+                    big->info.pto = 0;
+                    big->info.irc = 0;
+                    big->info.max_pdu = p->max_pdu;
+                    big->info.iso_interval = p->iso_interval;
+
+                    /* Copy BIS handles */
+                    for (int i = 0; i < p->num_bis && i < HCI_ISOC_MAX_BIS_PER_BIG; i++) {
+                        big->info.bis_handles[i] = p->bis_conn_hdl_list[i];
+                    }
+                    
+                    event.type = HCI_ISOC_EVENT_BIG_SYNC_ESTABLISHED;
+                    event.data.big_info = big->info;
+                    dispatch_event(&event);
+                }
+            }
+            break;
+
+        case WICED_BLE_ISOC_BIG_SYNC_LOST_EVT:
+            {
+                big_state_struct_t *big = find_big(p_event_data->big_sync_lost.big_handle);
+                if (big != NULL) {
+                    event.type = HCI_ISOC_EVENT_BIG_SYNC_LOST;
+                    event.data.big_info = big->info;
+                    dispatch_event(&event);
+
+                    /* Mark as inactive */
+                    big->in_use = false;
+                    big->info.state = BIG_STATE_IDLE;
+                    isoc_ctx.num_active_big--;
+                }
+            }
+            break;
+
+        case WICED_BLE_ISOC_DATA_PATH_SETUP_EVT:
+            event.type = HCI_ISOC_EVENT_DATA_PATH_SETUP;
+            event.data.handle = 0;  /* Handle not provided in this event */
+            dispatch_event(&event);
+            break;
+
+        default:
+            printf("ISOC: Unhandled WICED event %d\n", event_id);
+            break;
+    }
+}
+
+/**
+ * @brief Handle WICED ISOC RX data
+ */
+static void wiced_isoc_rx_callback(uint8_t *p_data, uint32_t length)
+{
+    /* Parse ISO data header and dispatch */
+    if (p_data != NULL && length >= 4) {
+        uint16_t handle = p_data[0] | ((p_data[1] & 0x0F) << 8);
+        uint8_t pb_flag = (p_data[1] >> 4) & 0x03;
+        uint8_t ts_flag = (p_data[1] >> 6) & 0x01;
+        
+        uint16_t offset = 4;
+        uint32_t timestamp = 0;
+        uint16_t seq_num = 0;
+        
+        if (ts_flag) {
+            timestamp = p_data[4] | (p_data[5] << 8) | (p_data[6] << 16) | (p_data[7] << 24);
+            offset += 4;
+        }
+        
+        seq_num = p_data[offset] | (p_data[offset+1] << 8);
+        offset += 2;
+        
+        uint16_t sdu_len = p_data[offset] | ((p_data[offset+1] & 0x0F) << 8);
+        offset += 2;
+        
+        hci_isoc_process_rx_data(handle, pb_flag, ts_flag, timestamp, seq_num,
+                                  &p_data[offset], sdu_len);
+    }
+}
+
+/**
+ * @brief Handle WICED ISOC TX complete
+ * @param p_buf Pointer to transmitted buffer
+ * @return Number of completed packets (always 1)
+ */
+static unsigned int wiced_isoc_num_complete_callback(uint8_t *p_buf)
+{
+    (void)p_buf;
+    isoc_ctx.stats.iso_tx_packets++;
+    return 1;
+}
+
+/*******************************************************************************
+ * API Implementation
+ ******************************************************************************/
+
 int hci_isoc_init(void)
 {
     if (isoc_ctx.initialized) {
@@ -718,11 +895,15 @@ int hci_isoc_init(void)
     }
 
     /* Initialize ISOC with BTSTACK 4.x API
-     * Note: wiced_ble_isoc_init() takes config and callback parameters.
-     * We use NULL callback since we handle events via LE meta events directly.
-     * Data callbacks can be registered separately via wiced_ble_isoc_register_data_cb()
+     * Register our callback to receive ISOC events from the stack.
      */
-    (void)0;  /* ISOC initialization is handled by the stack based on wiced_bt_cfg_settings_t.p_isoc_cfg */
+    static wiced_ble_isoc_cfg_t isoc_cfg = {
+        .max_bis = HCI_ISOC_MAX_BIS_PER_BIG * HCI_ISOC_MAX_BIG
+    };
+    wiced_ble_isoc_init(&isoc_cfg, wiced_isoc_callback);
+    
+    /* Register ISO data callbacks for RX and TX complete */
+    wiced_ble_isoc_register_data_cb(wiced_isoc_rx_callback, wiced_isoc_num_complete_callback);
 
     printf("ISOC: Initialized\n");
     isoc_ctx.initialized = true;
@@ -767,8 +948,48 @@ void hci_isoc_deinit(void)
 
 void hci_isoc_register_callback(hci_isoc_callback_t callback, void *user_data)
 {
-    isoc_ctx.callback = callback;
-    isoc_ctx.callback_user_data = user_data;
+    /* Backward compatibility: register in first slot */
+    isoc_ctx.callbacks[0].callback = callback;
+    isoc_ctx.callbacks[0].user_data = user_data;
+    isoc_ctx.callbacks[0].in_use = (callback != NULL);
+}
+
+int hci_isoc_register_callback_ex(hci_isoc_callback_t callback, void *user_data)
+{
+    if (callback == NULL) {
+        return HCI_ISOC_ERROR_INVALID_PARAM;
+    }
+
+    /* Find a free slot */
+    for (int i = 0; i < HCI_ISOC_MAX_CALLBACKS; i++) {
+        if (!isoc_ctx.callbacks[i].in_use) {
+            isoc_ctx.callbacks[i].callback = callback;
+            isoc_ctx.callbacks[i].user_data = user_data;
+            isoc_ctx.callbacks[i].in_use = true;
+            return HCI_ISOC_OK;
+        }
+    }
+
+    return HCI_ISOC_ERROR_NO_RESOURCES;
+}
+
+int hci_isoc_unregister_callback(hci_isoc_callback_t callback)
+{
+    if (callback == NULL) {
+        return HCI_ISOC_ERROR_INVALID_PARAM;
+    }
+
+    /* Find and remove the callback */
+    for (int i = 0; i < HCI_ISOC_MAX_CALLBACKS; i++) {
+        if (isoc_ctx.callbacks[i].in_use && isoc_ctx.callbacks[i].callback == callback) {
+            isoc_ctx.callbacks[i].callback = NULL;
+            isoc_ctx.callbacks[i].user_data = NULL;
+            isoc_ctx.callbacks[i].in_use = false;
+            return HCI_ISOC_OK;
+        }
+    }
+
+    return HCI_ISOC_ERROR_CALLBACK_NOT_FOUND;
 }
 
 /*******************************************************************************

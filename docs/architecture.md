@@ -164,6 +164,7 @@ PCM audio from main controller is encoded to LC3 on CM55 and transmitted via CM3
 ### Path 2: LE Audio RX (ISOC → LC3 → I2S) - Dual-Core
 
 LC3 audio from Bluetooth is received on CM33 and decoded on CM55.
+Supports both Unicast (CIS) and Broadcast Sink (BIS/Auracast RX).
 
 ```
 ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
@@ -184,6 +185,12 @@ LC3 audio from Bluetooth is received on CM33 and decoded on CM55.
 - [x] BTSTACK ISOC data callback registration - CM33
 - [x] `isoc_handler_rx_frame()` - Posts to IPC queue on CM33
 - [x] `cyhal_i2s_write_async()` - HAL integration via `i2s_stream_write()` on CM55
+- [x] Broadcast Sink state machine (`bap_broadcast_sink.c`)
+- [x] Extended scanning for Auracast broadcasts
+- [x] Periodic advertising sync (PA sync)
+- [x] BASE parser (Broadcast Audio Source Endpoint)
+- [x] BIG sync for receiving BIS streams
+- [x] Multi-callback ISOC registry (supports multiple modules)
 
 ### Path 3: MIDI (USB ↔ BLE ↔ Controller)
 
@@ -554,9 +561,10 @@ The firmware runs FreeRTOS on both cores with separate schedulers:
 ┌─────────────────────────────────────────┐
 │          CAP (Common Audio Profile)     │  (Future)
 ├─────────────────────────────────────────┤
-│  BAP (Basic Audio Profile)              │  bap_unicast.c, bap_broadcast.c
-│  ├── Unicast Client/Server (CIS)        │
-│  └── Broadcast Source/Sink (BIS)        │  Auracast
+│  BAP (Basic Audio Profile)              │  bap_unicast.c, bap_broadcast.c,
+│  ├── Unicast Client/Server (CIS)        │  bap_broadcast_sink.c
+│  ├── Broadcast Source (BIS TX)          │  Auracast TX
+│  └── Broadcast Sink (BIS RX)            │  Auracast RX
 ├─────────────────────────────────────────┤
 │  PACS (Published Audio Capabilities)    │  pacs.c
 │  ASCS (Audio Stream Control Service)    │  (in le_audio_manager.c)
@@ -564,7 +572,8 @@ The firmware runs FreeRTOS on both cores with separate schedulers:
 ├─────────────────────────────────────────┤
 │  HCI ISOC (Isochronous Channels)        │  hci_isoc.c, isoc_handler.c
 │  ├── CIS (Connected Isochronous Stream) │  Unicast
-│  └── BIS (Broadcast Isochronous Stream) │  Auracast
+│  ├── BIG Create (Broadcast TX)          │  Auracast Source
+│  └── BIG Sync (Broadcast RX)            │  Auracast Sink
 ├─────────────────────────────────────────┤
 │  liblc3 (Host-Side Codec)               │  lc3_wrapper.c
 │  Google LC3 - Apache 2.0 License        │
@@ -604,7 +613,7 @@ The firmware runs FreeRTOS on both cores with separate schedulers:
         └─────────────┘
 ```
 
-### BAP State Machine (Broadcast/Auracast)
+### BAP State Machine (Broadcast Source/Auracast TX)
 
 ```
         ┌─────────────┐
@@ -624,6 +633,39 @@ The firmware runs FreeRTOS on both cores with separate schedulers:
                ▼
         ┌─────────────┐
         │  STREAMING  │ ◄── LC3 data on BIS
+        └─────────────┘
+```
+
+### BAP State Machine (Broadcast Sink/Auracast RX)
+
+```
+        ┌─────────────┐
+        │    IDLE     │
+        └──────┬──────┘
+               │ Start extended scanning
+               ▼
+        ┌─────────────┐
+        │  SCANNING   │ ◄── Look for broadcast SID
+        └──────┬──────┘
+               │ Found broadcast, sync to PA
+               ▼
+        ┌─────────────┐
+        │  PA_SYNCING │ ◄── Periodic ADV sync in progress
+        └──────┬──────┘
+               │ PA sync established, parse BASE
+               ▼
+        ┌─────────────┐
+        │  PA_SYNCED  │ ◄── BASE parsed, BIGInfo received
+        └──────┬──────┘
+               │ BIG sync (select BIS indices)
+               ▼
+        ┌─────────────┐
+        │ BIG_SYNCING │ ◄── Synchronizing to BIG
+        └──────┬──────┘
+               │ BIG sync established
+               ▼
+        ┌─────────────┐
+        │  STREAMING  │ ◄── Receiving LC3 data on BIS
         └─────────────┘
 ```
 
@@ -760,7 +802,8 @@ infineon-le-audio/
 │   ├── le_audio/                    # ══════ Built on CM33 ══════
 │   │   ├── le_audio_manager.c/h     # Top-level LE Audio control
 │   │   ├── bap_unicast.c/h          # BAP unicast client/server
-│   │   ├── bap_broadcast.c/h        # BAP broadcast source (Auracast)
+│   │   ├── bap_broadcast.c/h        # BAP broadcast source (Auracast TX)
+│   │   ├── bap_broadcast_sink.c/h   # BAP broadcast sink (Auracast RX)
 │   │   ├── pacs.c/h                 # Published Audio Capabilities
 │   │   └── isoc_handler.c/h         # HCI ISOC data path
 │   │
@@ -838,7 +881,8 @@ infineon-le-audio/
 | **CM55** | `audio/lc3_wrapper.c` | liblc3 encode/decode |
 | **CM33** | `le_audio/le_audio_manager.c` | LE Audio state machine |
 | **CM33** | `le_audio/bap_unicast.c` | BAP Unicast Client/Server |
-| **CM33** | `le_audio/bap_broadcast.c` | BAP Broadcast (Auracast) |
+| **CM33** | `le_audio/bap_broadcast.c` | BAP Broadcast Source (Auracast TX) |
+| **CM33** | `le_audio/bap_broadcast_sink.c` | BAP Broadcast Sink (Auracast RX) |
 | **CM33** | `le_audio/pacs.c` | Published Audio Capabilities |
 | **CM33** | `le_audio/isoc_handler.c` | HCI ISOC data path |
 | **CM33** | `bluetooth/bt_platform_config.c` | HCI UART configuration |

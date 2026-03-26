@@ -803,8 +803,10 @@ int bap_unicast_init(void)
         return BAP_UNICAST_ERROR_NO_RESOURCES;
     }
 
-    /* Register for HCI ISOC events */
-    hci_isoc_register_callback(hci_isoc_event_handler, NULL);
+    /* Register for HCI ISOC events (use _ex to avoid overwriting other callbacks) */
+    if (hci_isoc_register_callback_ex(hci_isoc_event_handler, NULL) != HCI_ISOC_OK) {
+        return BAP_UNICAST_ERROR_NO_RESOURCES;
+    }
 
 #ifdef FREERTOS
     unicast_ctx.op_semaphore = xSemaphoreCreateBinary();
@@ -837,6 +839,9 @@ void bap_unicast_deinit(void)
         vSemaphoreDelete(unicast_ctx.op_semaphore);
     }
 #endif
+
+    /* Unregister ISOC callback */
+    hci_isoc_unregister_callback(hci_isoc_event_handler);
 
     unicast_ctx.initialized = false;
 }

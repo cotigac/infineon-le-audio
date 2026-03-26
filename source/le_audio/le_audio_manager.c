@@ -38,6 +38,7 @@
 #include "pacs.h"
 #include "bap_unicast.h"
 #include "bap_broadcast.h"
+#include "bap_broadcast_sink.h"
 
 /*******************************************************************************
  * Private Definitions
@@ -1085,6 +1086,99 @@ static void le_audio_isoc_event_handler(const hci_isoc_event_t *event, void *use
 }
 
 /*******************************************************************************
+ * Broadcast Sink Event Handler
+ ******************************************************************************/
+
+/**
+ * @brief Handle BAP Broadcast Sink events
+ */
+static void le_audio_broadcast_sink_event_handler(const bap_broadcast_sink_event_t *event,
+                                                   void *user_data)
+{
+    (void)user_data;
+
+    if (event == NULL) {
+        return;
+    }
+
+    switch (event->type) {
+        case BAP_BROADCAST_SINK_EVENT_STATE_CHANGED:
+            /* Map broadcast sink state to LE Audio state */
+            switch (event->data.new_state) {
+                case BAP_BROADCAST_SINK_STATE_IDLE:
+                    if (g_le_audio_ctx.mode == LE_AUDIO_MODE_BROADCAST_SINK) {
+                        set_state(LE_AUDIO_STATE_IDLE);
+                    }
+                    break;
+                case BAP_BROADCAST_SINK_STATE_SCANNING:
+                    set_state(LE_AUDIO_STATE_ENABLING);
+                    break;
+                case BAP_BROADCAST_SINK_STATE_PA_SYNCING:
+                case BAP_BROADCAST_SINK_STATE_PA_SYNCED:
+                case BAP_BROADCAST_SINK_STATE_BIG_SYNCING:
+                    set_state(LE_AUDIO_STATE_QOS_CONFIGURED);
+                    break;
+                case BAP_BROADCAST_SINK_STATE_STREAMING:
+                    set_state(LE_AUDIO_STATE_STREAMING);
+                    notify_event(LE_AUDIO_EVENT_STREAM_STARTED);
+                    break;
+                case BAP_BROADCAST_SINK_STATE_ERROR:
+                    set_state(LE_AUDIO_STATE_ERROR);
+                    break;
+            }
+            break;
+
+        case BAP_BROADCAST_SINK_EVENT_SOURCE_FOUND:
+            /* Notify application of discovered broadcast */
+            notify_event(LE_AUDIO_EVENT_DEVICE_CONNECTED);
+            break;
+
+        case BAP_BROADCAST_SINK_EVENT_STREAMING_STARTED:
+            set_state(LE_AUDIO_STATE_STREAMING);
+            notify_event(LE_AUDIO_EVENT_STREAM_STARTED);
+            break;
+
+        case BAP_BROADCAST_SINK_EVENT_STREAMING_STOPPED:
+            set_state(LE_AUDIO_STATE_CONFIGURED);
+            notify_event(LE_AUDIO_EVENT_STREAM_STOPPED);
+            break;
+
+        case BAP_BROADCAST_SINK_EVENT_AUDIO_FRAME:
+            /* Forward received LC3 frame to decode queue */
+            {
+                lc3_frame_t frame;
+                BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+                if (event->data.audio_frame.length > 0 &&
+                    event->data.audio_frame.length <= LE_AUDIO_MAX_LC3_FRAME_SIZE) {
+                    memcpy(frame.data, event->data.audio_frame.data,
+                           event->data.audio_frame.length);
+                    frame.length = event->data.audio_frame.length;
+                    frame.timestamp = event->data.audio_frame.timestamp;
+                    frame.sequence_number = (uint8_t)event->data.audio_frame.seq_num;
+
+                    if (frame_queue_push(&g_le_audio_ctx.rx_queue, &frame) == 0) {
+                        g_le_audio_ctx.frames_received++;
+                        if (g_le_audio_ctx.rx_sem != NULL) {
+                            xSemaphoreGiveFromISR(g_le_audio_ctx.rx_sem,
+                                                  &xHigherPriorityTaskWoken);
+                            portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+                        }
+                    }
+                }
+            }
+            break;
+
+        case BAP_BROADCAST_SINK_EVENT_ERROR:
+            notify_error(event->data.error_code);
+            break;
+
+        default:
+            break;
+    }
+}
+
+/*******************************************************************************
  * Public API Implementation
  ******************************************************************************/
 
@@ -1164,8 +1258,14 @@ int le_audio_init(const le_audio_codec_config_t *codec_config)
         return -7;
     }
 
-    /* Register ISOC callback for RX data */
-    hci_isoc_register_callback(le_audio_isoc_event_handler, NULL);
+    /* Register ISOC callback for RX data (use _ex to avoid overwriting other callbacks) */
+    if (hci_isoc_register_callback_ex(le_audio_isoc_event_handler, NULL) != HCI_ISOC_OK) {
+        hci_isoc_deinit();
+        vSemaphoreDelete(g_le_audio_ctx.tx_sem);
+        vSemaphoreDelete(g_le_audio_ctx.rx_sem);
+        vSemaphoreDelete(g_le_audio_ctx.state_mutex);
+        return -7;
+    }
 
     /* Initialize BAP Unicast profile */
     result = bap_unicast_init();
@@ -1177,7 +1277,7 @@ int le_audio_init(const le_audio_codec_config_t *codec_config)
         return -8;
     }
 
-    /* Initialize BAP Broadcast profile (Auracast) */
+    /* Initialize BAP Broadcast profile (Auracast TX) */
     result = bap_broadcast_init();
     if (result != BAP_BROADCAST_OK) {
         bap_unicast_deinit();
@@ -1187,6 +1287,21 @@ int le_audio_init(const le_audio_codec_config_t *codec_config)
         vSemaphoreDelete(g_le_audio_ctx.state_mutex);
         return -9;
     }
+
+    /* Initialize BAP Broadcast Sink (Auracast RX) */
+    result = bap_broadcast_sink_init();
+    if (result != BAP_BROADCAST_SINK_OK) {
+        bap_broadcast_deinit();
+        bap_unicast_deinit();
+        hci_isoc_deinit();
+        vSemaphoreDelete(g_le_audio_ctx.tx_sem);
+        vSemaphoreDelete(g_le_audio_ctx.rx_sem);
+        vSemaphoreDelete(g_le_audio_ctx.state_mutex);
+        return -10;
+    }
+
+    /* Register broadcast sink event callback */
+    bap_broadcast_sink_register_callback(le_audio_broadcast_sink_event_handler, NULL);
 
     /* Initialize PACS (Published Audio Capabilities Service) */
     result = pacs_init();
@@ -1219,10 +1334,19 @@ void le_audio_deinit(void)
             case LE_AUDIO_MODE_BROADCAST_SOURCE:
                 broadcast_disable();
                 break;
+            case LE_AUDIO_MODE_BROADCAST_SINK:
+                bap_broadcast_sink_stop();
+                break;
             default:
                 break;
         }
     }
+
+    /* Deinitialize broadcast sink */
+    bap_broadcast_sink_deinit();
+
+    /* Unregister ISOC callback */
+    hci_isoc_unregister_callback(le_audio_isoc_event_handler);
 
     /* LC3 codec runs on CM55 - no cleanup needed here */
 
@@ -1397,6 +1521,139 @@ int le_audio_broadcast_update_metadata(const char *name, uint16_t context)
 }
 
 /*******************************************************************************
+ * Broadcast Sink API
+ ******************************************************************************/
+
+int le_audio_broadcast_sink_start_scan(void)
+{
+    int result;
+
+    if (!g_le_audio_ctx.initialized) {
+        return -1;
+    }
+
+    if (g_le_audio_ctx.state != LE_AUDIO_STATE_IDLE) {
+        return -2;  /* Invalid state */
+    }
+
+    g_le_audio_ctx.mode = LE_AUDIO_MODE_BROADCAST_SINK;
+
+    result = bap_broadcast_sink_start_scan();
+    if (result != BAP_BROADCAST_SINK_OK) {
+        g_le_audio_ctx.mode = LE_AUDIO_MODE_IDLE;
+        notify_error(result);
+        return -3;
+    }
+
+    set_state(LE_AUDIO_STATE_ENABLING);
+
+    return 0;
+}
+
+int le_audio_broadcast_sink_stop_scan(void)
+{
+    if (!g_le_audio_ctx.initialized) {
+        return -1;
+    }
+
+    if (g_le_audio_ctx.mode != LE_AUDIO_MODE_BROADCAST_SINK) {
+        return -2;
+    }
+
+    return bap_broadcast_sink_stop_scan();
+}
+
+int le_audio_broadcast_sink_sync(const uint8_t *broadcast_id,
+                                  const uint8_t *broadcast_code)
+{
+    int result;
+    bap_broadcast_sink_info_t sink_info;
+    bap_broadcast_source_t target_source;
+    bool found = false;
+
+    if (!g_le_audio_ctx.initialized) {
+        return -1;
+    }
+
+    if (broadcast_id == NULL) {
+        return -2;
+    }
+
+    if (g_le_audio_ctx.mode != LE_AUDIO_MODE_BROADCAST_SINK) {
+        return -3;
+    }
+
+    /* Get current sink info to find the source with matching broadcast_id */
+    result = bap_broadcast_sink_get_info(&sink_info);
+    if (result == BAP_BROADCAST_SINK_OK) {
+        /* Check if current source matches the requested broadcast_id */
+        if (memcmp(sink_info.source.broadcast_id, broadcast_id, 3) == 0) {
+            found = true;
+            target_source = sink_info.source;
+        }
+    }
+
+    if (!found) {
+        /* Source not found - application should wait for SOURCE_FOUND event */
+        return -4;
+    }
+
+    /* Stop scanning */
+    bap_broadcast_sink_stop_scan();
+
+    /* Sync to PA with automatic BIG sync when ready */
+    result = bap_broadcast_sink_sync_to_pa_auto_big(&target_source, broadcast_code);
+    if (result != BAP_BROADCAST_SINK_OK) {
+        notify_error(result);
+        return -5;
+    }
+
+    return 0;
+}
+
+int le_audio_broadcast_sink_stop(void)
+{
+    if (!g_le_audio_ctx.initialized) {
+        return -1;
+    }
+
+    if (g_le_audio_ctx.mode != LE_AUDIO_MODE_BROADCAST_SINK) {
+        return -2;
+    }
+
+    bap_broadcast_sink_stop();
+
+    g_le_audio_ctx.mode = LE_AUDIO_MODE_IDLE;
+    set_state(LE_AUDIO_STATE_IDLE);
+
+    return 0;
+}
+
+int le_audio_broadcast_sink_demo_auto_sync(const uint8_t *broadcast_code)
+{
+    int result;
+
+    if (!g_le_audio_ctx.initialized) {
+        return -1;
+    }
+
+    if (g_le_audio_ctx.state != LE_AUDIO_STATE_IDLE) {
+        return -2;  /* Invalid state */
+    }
+
+    g_le_audio_ctx.mode = LE_AUDIO_MODE_BROADCAST_SINK;
+
+    result = bap_broadcast_sink_demo_auto_sync(broadcast_code);
+    if (result != BAP_BROADCAST_SINK_OK) {
+        g_le_audio_ctx.mode = LE_AUDIO_MODE_IDLE;
+        notify_error(result);
+        return -3;
+    }
+
+    return 0;
+}
+
+/*******************************************************************************
  * Audio Data API
  ******************************************************************************/
 
@@ -1487,9 +1744,10 @@ int le_audio_receive_audio(int16_t *pcm_data, uint16_t sample_count, uint32_t ti
         return -3;  /* Not streaming */
     }
 
-    /* Only unicast sink/duplex can receive */
+    /* Only unicast sink/duplex or broadcast sink can receive */
     if (g_le_audio_ctx.mode != LE_AUDIO_MODE_UNICAST_SINK &&
-        g_le_audio_ctx.mode != LE_AUDIO_MODE_UNICAST_DUPLEX) {
+        g_le_audio_ctx.mode != LE_AUDIO_MODE_UNICAST_DUPLEX &&
+        g_le_audio_ctx.mode != LE_AUDIO_MODE_BROADCAST_SINK) {
         return -4;
     }
 

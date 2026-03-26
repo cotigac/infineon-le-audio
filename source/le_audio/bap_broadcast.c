@@ -716,8 +716,10 @@ int bap_broadcast_init(void)
         return BAP_BROADCAST_ERROR_NO_RESOURCES;
     }
 
-    /* Register for HCI ISOC events */
-    hci_isoc_register_callback(hci_isoc_event_handler, NULL);
+    /* Register for HCI ISOC events (use _ex to avoid overwriting other callbacks) */
+    if (hci_isoc_register_callback_ex(hci_isoc_event_handler, NULL) != HCI_ISOC_OK) {
+        return BAP_BROADCAST_ERROR_NO_RESOURCES;
+    }
 
     bcast_ctx.initialized = true;
     bcast_ctx.state = BAP_BROADCAST_STATE_IDLE;
@@ -742,6 +744,9 @@ void bap_broadcast_deinit(void)
         stop_periodic_advertising();
         stop_extended_advertising();
     }
+
+    /* Unregister ISOC callback */
+    hci_isoc_unregister_callback(hci_isoc_event_handler);
 
     bcast_ctx.initialized = false;
     bcast_ctx.state = BAP_BROADCAST_STATE_IDLE;

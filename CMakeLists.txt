@@ -272,6 +272,35 @@ add_library(btstack-includes INTERFACE)
 target_include_directories(btstack-includes INTERFACE ${BTSTACK_INCLUDE_DIRS})
 
 #-------------------------------------------------------------------------------
+# Abstraction RTOS Library (Required for BTStack Integration)
+#-------------------------------------------------------------------------------
+
+set(ABSTRACTION_RTOS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libs/abstraction-rtos)
+
+set(ABSTRACTION_RTOS_INCLUDE_DIRS
+    ${ABSTRACTION_RTOS_DIR}/include
+    ${ABSTRACTION_RTOS_DIR}/include/COMPONENT_FREERTOS
+)
+
+# Abstraction RTOS sources
+set(ABSTRACTION_RTOS_SOURCES
+    ${ABSTRACTION_RTOS_DIR}/source/COMPONENT_FREERTOS/cyabs_freertos_helpers.c
+    ${ABSTRACTION_RTOS_DIR}/source/COMPONENT_FREERTOS/cyabs_rtos_freertos.c
+)
+
+if(EXISTS "${ABSTRACTION_RTOS_DIR}/include/cyabs_rtos.h")
+    add_library(abstraction-rtos STATIC ${ABSTRACTION_RTOS_SOURCES})
+    target_include_directories(abstraction-rtos PUBLIC ${ABSTRACTION_RTOS_INCLUDE_DIRS})
+    target_link_libraries(abstraction-rtos PUBLIC freertos)
+    message(STATUS "Found Abstraction RTOS: ${ABSTRACTION_RTOS_DIR}")
+else()
+    # Create interface library as placeholder
+    add_library(abstraction-rtos INTERFACE)
+    target_include_directories(abstraction-rtos INTERFACE ${ABSTRACTION_RTOS_INCLUDE_DIRS})
+    message(WARNING "Abstraction RTOS not found at: ${ABSTRACTION_RTOS_DIR}")
+endif()
+
+#-------------------------------------------------------------------------------
 # BTStack Integration (HCI-UART Porting Layer for PSoC Edge + CYW55512)
 #-------------------------------------------------------------------------------
 
@@ -300,7 +329,7 @@ set(BTSTACK_INTEGRATION_SOURCES
 add_library(btstack-integration STATIC ${BTSTACK_INTEGRATION_SOURCES})
 target_include_directories(btstack-integration PUBLIC ${BTSTACK_INTEGRATION_INCLUDE_DIRS})
 target_include_directories(btstack-integration PUBLIC ${BTSTACK_INCLUDE_DIRS})
-target_link_libraries(btstack-integration PUBLIC freertos)
+target_link_libraries(btstack-integration PUBLIC freertos abstraction-rtos)
 target_compile_definitions(btstack-integration PUBLIC
     CY_USING_HAL
     COMPONENT_HCI_UART
@@ -407,6 +436,7 @@ set(LE_AUDIO_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/source/le_audio/le_audio_manager.c
     ${CMAKE_CURRENT_SOURCE_DIR}/source/le_audio/bap_unicast.c
     ${CMAKE_CURRENT_SOURCE_DIR}/source/le_audio/bap_broadcast.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/le_audio/bap_broadcast_sink.c
     ${CMAKE_CURRENT_SOURCE_DIR}/source/le_audio/isoc_handler.c
     ${CMAKE_CURRENT_SOURCE_DIR}/source/le_audio/pacs.c
 )

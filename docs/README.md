@@ -40,7 +40,8 @@ A musical instrument (synthesizer, digital piano, guitar processor, etc.) that n
 | Feature | Core | Description | Status |
 |---------|------|-------------|--------|
 | **LE Audio Unicast** | CM33+CM55 | Full-duplex audio streaming via CIS | ✅ Implemented |
-| **LE Audio Broadcast (Auracast)** | CM33+CM55 | One-to-many audio broadcast via BIS | ✅ Implemented |
+| **LE Audio Broadcast Source** | CM33+CM55 | One-to-many audio broadcast via BIS (Auracast TX) | ✅ Implemented |
+| **LE Audio Broadcast Sink** | CM33+CM55 | Receive Auracast broadcasts (Auracast RX) | ✅ Implemented |
 | **LC3 Codec** | CM55 | Host-side implementation using Google liblc3 (Helium DSP) | ✅ Implemented |
 | **BLE MIDI** | CM33 | MIDI over Bluetooth Low Energy GATT service | ✅ Implemented |
 | **USB MIDI** | CM33 | USB High-Speed MIDI class device | ✅ Implemented |
@@ -167,7 +168,8 @@ The project has **complete implementation** of all Bluetooth, LE Audio, MIDI, an
 | `isoc_handler.c` | ✅ ISOC data handling complete |
 | `pacs.c` | ✅ PACS service complete |
 | `bap_unicast.c` | ✅ BAP Unicast complete |
-| `bap_broadcast.c` | ✅ BAP Broadcast (Auracast) complete |
+| `bap_broadcast.c` | ✅ BAP Broadcast Source (Auracast TX) complete |
+| `bap_broadcast_sink.c` | ✅ BAP Broadcast Sink (Auracast RX) complete |
 | `le_audio_manager.h` | ✅ Header definitions complete |
 | `i2s_stream.c` | ✅ I2S streaming complete |
 | `midi_ble_service.c` | ✅ BLE MIDI service complete |
@@ -214,30 +216,41 @@ isoc_handler_tx_frame(stream_id, lc3_frame.data, lc3_frame.len, timestamp);
 
 ### Path 2: LE Audio RX (HCI ISOC RX → LC3 Decode → I2S TX) ✅ COMPLETE
 
+Supports both Unicast (CIS) and Broadcast Sink (BIS/Auracast RX).
+
 **Dual-Core Data Flow:**
 ```
 CYW55512 → HCI → ISOC Handler → IPC Queue → LC3 Decode → I2S TX → Main Controller
   Radio    UART   [CM33]         RX         [CM55]       [CM55]       PCM
-                  HCI ISOC     Shared Mem  Helium DSP     DMA
+ CIS/BIS         HCI ISOC     Shared Mem  Helium DSP     DMA
 ```
 
 | Step | Core | File | TODOs | Status |
 |------|------|------|-------|--------|
-| HCI RX | CM33 | `hci_isoc.c` | 0 | ✅ BTSTACK ISOC data callback registered |
-| ISOC RX | CM33 | `isoc_handler.c` | 0 | ✅ Posts to IPC queue |
+| HCI RX | CM33 | `hci_isoc.c` | 0 | ✅ BTSTACK ISOC data callback registered (CIS + BIS) |
+| ISOC RX | CM33 | `isoc_handler.c` | 0 | ✅ Posts to IPC queue (multi-callback registry) |
+| BIG Sync | CM33 | `bap_broadcast_sink.c` | 0 | ✅ Auracast RX: scan, PA sync, BIG sync |
 | IPC RX | Both | shared memory | 0 | ✅ Queue CM33 → CM55 |
 | LC3 Decode | CM55 | `audio_task.c` | 0 | ✅ Helium DSP, PLC for packet loss |
 | I2S TX DMA | CM55 | `i2s_stream.c` | 0 | ✅ Thread-safe ring buffer writes |
 
 **Data Path Wiring (Dual-Core):**
 ```c
-// CM33: isoc_handler.c - on ISOC RX callback
+// CM33: isoc_handler.c - on ISOC RX callback (CIS or BIS)
 xQueueSend(g_lc3_rx_queue, &lc3_frame, 0);  // CM33 → CM55
 
 // CM55: audio_task.c - process_rx_path()
 xQueueReceive(g_lc3_rx_queue, &lc3_frame, portMAX_DELAY);
 lc3_decode(lc3_frame.data, lc3_frame.len, pcm_buffer);
 i2s_stream_write(pcm_buffer, pcm_len);
+```
+
+**Broadcast Sink (Auracast RX) Flow:**
+```c
+// bap_broadcast_sink.c - scan → PA sync → BIG sync → streaming
+bap_broadcast_sink_start_scan();      // Extended scanning for broadcasts
+bap_broadcast_sink_sync_to_pa(addr);  // Sync to periodic advertising (BASE)
+bap_broadcast_sink_sync_to_big(...);  // Sync to BIG, receive LC3 on BIS
 ```
 
 ### Path 3: BLE MIDI (USB ↔ GATT ↔ Controller) ✅ COMPLETE
@@ -319,7 +332,8 @@ BTSTACK → HCI Commands → UART → CYW55512 Controller
 | GATT | `gatt_db.c` | 0 | ✅ `wiced_bt_gatt_db_init()` complete |
 | ISOC | `hci_isoc.c` | 0 | ✅ `wiced_bt_isoc_*` APIs integrated |
 | BAP Unicast | `bap_unicast.c` | 0 | ✅ ASE Control Point operations |
-| BAP Broadcast | `bap_broadcast.c` | 0 | ✅ Auracast with periodic advertising |
+| BAP Broadcast Source | `bap_broadcast.c` | 0 | ✅ Auracast TX with periodic advertising |
+| BAP Broadcast Sink | `bap_broadcast_sink.c` | 0 | ✅ Auracast RX: scan, PA sync, BIG sync |
 | PACS | `pacs.c` | 0 | ✅ Published Audio Capabilities |
 | LE Audio Mgr | `le_audio_manager.c` | 0 | ✅ Timeout with FreeRTOS ticks |
 

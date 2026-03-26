@@ -109,6 +109,7 @@ SOURCES+= \
     ../../../source/bluetooth/link.c \
     ../../../source/bluetooth/hci_isoc.c \
     ../../../source/le_audio/bap_broadcast.c \
+    ../../../source/le_audio/bap_broadcast_sink.c \
     ../../../source/le_audio/bap_unicast.c \
     ../../../source/le_audio/isoc_handler.c \
     ../../../source/le_audio/le_audio_manager.c \
