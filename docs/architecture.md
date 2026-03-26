@@ -299,7 +299,7 @@ AT-style command interface for configuring Bluetooth, Wi-Fi, and LE Audio via US
 |----------|----------|--------------|
 | System | `AT`, `ATI`, `AT+VERSION?`, `AT+RST`, `AT+ECHO` | `at_system_cmds.c` |
 | Bluetooth | `AT+BTINIT`, `AT+BTSTATE?`, `AT+BTNAME`, `AT+GAPADVSTART`, `AT+GAPSCAN`, `AT+GAPCONN` | `at_bt_cmds.c` |
-| LE Audio | `AT+LEAINIT`, `AT+LEABROADCAST`, `AT+LEAUNICAST`, `AT+LEACODEC`, `AT+LEAINFO?` | `at_leaudio_cmds.c` |
+| LE Audio | `AT+LEAINIT`, `AT+LEABROADCAST`, `AT+LEAUNICAST`, `AT+LEACODEC`, `AT+LEASCAN`, `AT+LEASYNC`, `AT+LEASINK`, `AT+LEADEMO` | `at_leaudio_cmds.c` |
 | Wi-Fi | `AT+WIFIINIT`, `AT+WIFISCAN`, `AT+WIFIJOIN`, `AT+WIFIBRIDGE`, `AT+WIFIRSSI?` | `at_wifi_cmds.c` |
 
 **USB Composite Device Architecture:**

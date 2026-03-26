@@ -99,8 +99,21 @@ typedef enum {
     LE_AUDIO_EVENT_STREAM_STOPPED,
     LE_AUDIO_EVENT_DEVICE_CONNECTED,
     LE_AUDIO_EVENT_DEVICE_DISCONNECTED,
+    LE_AUDIO_EVENT_BROADCAST_FOUND,      /**< Auracast broadcast discovered */
+    LE_AUDIO_EVENT_BROADCAST_SYNCED,     /**< Synced to broadcast (PA + BIG) */
+    LE_AUDIO_EVENT_BROADCAST_LOST,       /**< Lost sync to broadcast */
     LE_AUDIO_EVENT_ERROR
 } le_audio_event_type_t;
+
+/** Discovered broadcast info (for LE_AUDIO_EVENT_BROADCAST_FOUND) */
+typedef struct {
+    uint8_t  broadcast_id[3];           /**< 3-byte Broadcast_ID */
+    uint8_t  addr[6];                   /**< Broadcaster address */
+    uint8_t  addr_type;                 /**< Address type */
+    int8_t   rssi;                      /**< RSSI in dBm */
+    char     broadcast_name[32];        /**< Broadcast name (if available) */
+    bool     encrypted;                 /**< Whether broadcast is encrypted */
+} le_audio_broadcast_info_t;
 
 /** LE Audio event data */
 typedef struct {
@@ -108,6 +121,7 @@ typedef struct {
     union {
         le_audio_state_t new_state;
         int error_code;
+        le_audio_broadcast_info_t broadcast;  /**< For BROADCAST_FOUND event */
     } data;
 } le_audio_event_t;
 

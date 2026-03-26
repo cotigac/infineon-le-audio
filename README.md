@@ -655,13 +655,26 @@ AT+BTSTATE?     → +BTSTATE: INITIALIZED
 AT+BTNAME=MyDevice → OK
 AT+GAPADVSTART  → OK
 
-# LE Audio commands
+# LE Audio commands - Broadcast Source (Auracast TX)
 AT+LEAINIT      → +LEAINIT: OK,48000,10000
-AT+LEABROADCAST=1 → OK                    # Start broadcast source
+AT+LEABROADCAST=1 → OK                    # Start broadcast source (TX)
+AT+LEABROADCAST=0 → OK                    # Stop broadcast source
+AT+LEABROADCAST? → +LEABROADCAST: 1,"My Broadcast"
+
+# LE Audio commands - Broadcast Sink (Auracast RX)
 AT+LEASCAN=1    → OK                      # Start scanning for broadcasts
-AT+LEASYNC=<broadcast_id> → OK            # Sync to broadcast (sink)
-AT+LEADEMO      → OK                      # Auto-sync to first broadcast
+AT+LEASCAN=0    → OK                      # Stop scanning
+AT+LEASCAN?     → +LEASCAN: 1             # Query scan state
+                → +LEABROADCAST_FOUND: 010203,"Studio Audio",-45,OPEN  # URC
+AT+LEASYNC=010203 → +LEASYNC: SYNCING,010203  # Sync to broadcast
+AT+LEASYNC=010203,<32-char-hex-key> → OK  # Sync to encrypted broadcast
+AT+LEASINK?     → +LEASINK: 1,STREAMING   # Query sink state
+AT+LEASINK=0    → +LEASINK: STOPPED       # Stop sink
+AT+LEADEMO      → +LEADEMO: STARTED       # Auto-sync to first broadcast
+
+# LE Audio status
 AT+LEASTATE?    → +LEASTATE: STREAMING
+AT+LEAMODE?     → +LEAMODE: BROADCAST_SINK
 
 # Wi-Fi commands
 AT+WIFIINIT     → OK

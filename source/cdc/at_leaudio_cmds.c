@@ -94,6 +94,12 @@ static int cmd_leaunicast_query(int argc, const char *argv[]);
 static int cmd_leacodec_exec(int argc, const char *argv[]);
 static int cmd_leacodec_query(int argc, const char *argv[]);
 static int cmd_leainfo_query(int argc, const char *argv[]);
+static int cmd_leascan_exec(int argc, const char *argv[]);
+static int cmd_leascan_query(int argc, const char *argv[]);
+static int cmd_leasync_exec(int argc, const char *argv[]);
+static int cmd_leasink_exec(int argc, const char *argv[]);
+static int cmd_leasink_query(int argc, const char *argv[]);
+static int cmd_leademo_exec(int argc, const char *argv[]);
 
 /* Helper functions */
 static void send_urc(const char *fmt, ...);
@@ -192,6 +198,50 @@ static const at_cmd_entry_t g_leaudio_cmds[] = {
         .help = "Display LE Audio information",
         .min_args = 0,
         .max_args = 0
+    },
+
+    /* AT+LEASCAN - Scan for Auracast broadcasts (Sink) */
+    {
+        .name = "LEASCAN",
+        .exec = cmd_leascan_exec,
+        .query = cmd_leascan_query,
+        .test = NULL,
+        .help = "Start/stop scanning for broadcasts (0|1)",
+        .min_args = 1,
+        .max_args = 1
+    },
+
+    /* AT+LEASYNC - Sync to Auracast broadcast (Sink) */
+    {
+        .name = "LEASYNC",
+        .exec = cmd_leasync_exec,
+        .query = NULL,
+        .test = NULL,
+        .help = "Sync to broadcast (broadcast_id_hex[,broadcast_code_hex])",
+        .min_args = 1,
+        .max_args = 2
+    },
+
+    /* AT+LEASINK - Broadcast sink control */
+    {
+        .name = "LEASINK",
+        .exec = cmd_leasink_exec,
+        .query = cmd_leasink_query,
+        .test = NULL,
+        .help = "Stop broadcast sink (0)",
+        .min_args = 1,
+        .max_args = 1
+    },
+
+    /* AT+LEADEMO - Demo auto-sync */
+    {
+        .name = "LEADEMO",
+        .exec = cmd_leademo_exec,
+        .query = NULL,
+        .test = NULL,
+        .help = "Auto-sync to first broadcast [broadcast_code_hex]",
+        .min_args = 0,
+        .max_args = 1
     },
 };
 
@@ -305,6 +355,25 @@ static void le_audio_event_callback(const le_audio_event_t *event, void *user_da
 
         case LE_AUDIO_EVENT_DEVICE_DISCONNECTED:
             send_urc("\r\n+LEADEVICE: DISCONNECTED\r\n");
+            break;
+
+        case LE_AUDIO_EVENT_BROADCAST_FOUND:
+            /* Report discovered Auracast broadcast */
+            send_urc("\r\n+LEABROADCAST_FOUND: %02X%02X%02X,\"%s\",%d,%s\r\n",
+                     event->data.broadcast.broadcast_id[0],
+                     event->data.broadcast.broadcast_id[1],
+                     event->data.broadcast.broadcast_id[2],
+                     event->data.broadcast.broadcast_name,
+                     event->data.broadcast.rssi,
+                     event->data.broadcast.encrypted ? "ENCRYPTED" : "OPEN");
+            break;
+
+        case LE_AUDIO_EVENT_BROADCAST_SYNCED:
+            send_urc("\r\n+LEASINK: SYNCED\r\n");
+            break;
+
+        case LE_AUDIO_EVENT_BROADCAST_LOST:
+            send_urc("\r\n+LEASINK: LOST\r\n");
             break;
 
         case LE_AUDIO_EVENT_ERROR:
@@ -692,6 +761,240 @@ static int cmd_leainfo_query(int argc, const char *argv[])
     cdc_acm_printf("  Frame Duration: %u us\r\n", g_codec_config.frame_duration_us);
     cdc_acm_printf("  Octets/Frame: %u\r\n", g_codec_config.octets_per_frame);
     cdc_acm_printf("  Channels: %u\r\n", g_codec_config.channels);
+
+    return CME_SUCCESS;
+}
+
+/*******************************************************************************
+ * Command Handlers - Broadcast Sink (Auracast RX)
+ ******************************************************************************/
+
+/** Scanning state */
+static bool g_scanning = false;
+
+/**
+ * @brief Parse hex string to bytes
+ *
+ * @param hex_str Hex string (e.g., "010203")
+ * @param out Output buffer
+ * @param out_len Expected number of bytes
+ * @return true on success
+ */
+static bool parse_hex_string(const char *hex_str, uint8_t *out, size_t out_len)
+{
+    size_t str_len = strlen(hex_str);
+    if (str_len != out_len * 2) {
+        return false;
+    }
+
+    for (size_t i = 0; i < out_len; i++) {
+        char byte_str[3] = { hex_str[i*2], hex_str[i*2 + 1], '\0' };
+        char *endptr;
+        unsigned long val = strtoul(byte_str, &endptr, 16);
+        if (*endptr != '\0') {
+            return false;
+        }
+        out[i] = (uint8_t)val;
+    }
+    return true;
+}
+
+/**
+ * @brief AT+LEASCAN=0|1 - Start/stop scanning for Auracast broadcasts
+ */
+static int cmd_leascan_exec(int argc, const char *argv[])
+{
+    if (argc < 1) {
+        return CME_INVALID_PARAM;
+    }
+
+    if (!g_module_init) {
+        return CME_LEA_NOT_INIT;
+    }
+
+    int enable = atoi(argv[0]);
+
+    if (enable) {
+        if (g_scanning) {
+            cdc_acm_printf("\r\n+LEASCAN: ALREADY_SCANNING\r\n");
+            return CME_SUCCESS;
+        }
+
+        int result = le_audio_broadcast_sink_start_scan();
+        if (result != 0) {
+            return CME_LEA_STREAM_ERROR;
+        }
+
+        g_scanning = true;
+        cdc_acm_printf("\r\n+LEASCAN: STARTED\r\n");
+    } else {
+        if (!g_scanning) {
+            cdc_acm_printf("\r\n+LEASCAN: NOT_SCANNING\r\n");
+            return CME_SUCCESS;
+        }
+
+        int result = le_audio_broadcast_sink_stop_scan();
+        if (result != 0) {
+            return CME_LEA_STREAM_ERROR;
+        }
+
+        g_scanning = false;
+        cdc_acm_printf("\r\n+LEASCAN: STOPPED\r\n");
+    }
+
+    return CME_SUCCESS;
+}
+
+/**
+ * @brief AT+LEASCAN? - Query scanning state
+ */
+static int cmd_leascan_query(int argc, const char *argv[])
+{
+    (void)argc;
+    (void)argv;
+
+    cdc_acm_printf("\r\n+LEASCAN: %d\r\n", g_scanning ? 1 : 0);
+    return CME_SUCCESS;
+}
+
+/**
+ * @brief AT+LEASYNC=broadcast_id[,broadcast_code] - Sync to a broadcast
+ *
+ * broadcast_id: 3-byte hex string (e.g., "010203")
+ * broadcast_code: 16-byte hex string for encrypted broadcasts (optional)
+ */
+static int cmd_leasync_exec(int argc, const char *argv[])
+{
+    if (argc < 1) {
+        return CME_INVALID_PARAM;
+    }
+
+    if (!g_module_init) {
+        return CME_LEA_NOT_INIT;
+    }
+
+    /* Parse broadcast ID (3 bytes) */
+    uint8_t broadcast_id[3];
+    if (!parse_hex_string(argv[0], broadcast_id, 3)) {
+        cdc_acm_printf("\r\nERROR: Invalid broadcast_id (expected 6 hex chars)\r\n");
+        return CME_INVALID_PARAM;
+    }
+
+    /* Parse optional broadcast code (16 bytes) */
+    uint8_t broadcast_code[16];
+    uint8_t *code_ptr = NULL;
+
+    if (argc >= 2 && argv[1][0] != '\0') {
+        if (!parse_hex_string(argv[1], broadcast_code, 16)) {
+            cdc_acm_printf("\r\nERROR: Invalid broadcast_code (expected 32 hex chars)\r\n");
+            return CME_INVALID_PARAM;
+        }
+        code_ptr = broadcast_code;
+    }
+
+    /* Stop scanning if active */
+    if (g_scanning) {
+        le_audio_broadcast_sink_stop_scan();
+        g_scanning = false;
+    }
+
+    /* Sync to broadcast */
+    int result = le_audio_broadcast_sink_sync(broadcast_id, code_ptr);
+    if (result != 0) {
+        cdc_acm_printf("\r\n+LEASYNC: FAILED,%d\r\n", result);
+        return CME_LEA_STREAM_ERROR;
+    }
+
+    cdc_acm_printf("\r\n+LEASYNC: SYNCING,%02X%02X%02X\r\n",
+                   broadcast_id[0], broadcast_id[1], broadcast_id[2]);
+
+    return CME_SUCCESS;
+}
+
+/**
+ * @brief AT+LEASINK=0 - Stop broadcast sink
+ */
+static int cmd_leasink_exec(int argc, const char *argv[])
+{
+    if (argc < 1) {
+        return CME_INVALID_PARAM;
+    }
+
+    if (!g_module_init) {
+        return CME_LEA_NOT_INIT;
+    }
+
+    int enable = atoi(argv[0]);
+
+    if (enable) {
+        /* Use AT+LEASCAN or AT+LEASYNC to start sink */
+        cdc_acm_printf("\r\nERROR: Use AT+LEASCAN=1 or AT+LEASYNC to start sink\r\n");
+        return CME_NOT_ALLOWED;
+    }
+
+    /* Stop sink */
+    int result = le_audio_broadcast_sink_stop();
+    if (result != 0) {
+        return CME_LEA_STREAM_ERROR;
+    }
+
+    cdc_acm_printf("\r\n+LEASINK: STOPPED\r\n");
+    return CME_SUCCESS;
+}
+
+/**
+ * @brief AT+LEASINK? - Query broadcast sink status
+ */
+static int cmd_leasink_query(int argc, const char *argv[])
+{
+    (void)argc;
+    (void)argv;
+
+    if (!g_module_init) {
+        cdc_acm_printf("\r\n+LEASINK: NOT_INITIALIZED\r\n");
+        return CME_SUCCESS;
+    }
+
+    le_audio_mode_t mode = le_audio_get_mode();
+    bool sinking = (mode == LE_AUDIO_MODE_BROADCAST_SINK);
+
+    cdc_acm_printf("\r\n+LEASINK: %d,%s\r\n",
+                   sinking ? 1 : 0,
+                   g_scanning ? "SCANNING" : (sinking ? "STREAMING" : "IDLE"));
+
+    return CME_SUCCESS;
+}
+
+/**
+ * @brief AT+LEADEMO[=broadcast_code] - Demo auto-sync to first broadcast
+ */
+static int cmd_leademo_exec(int argc, const char *argv[])
+{
+    if (!g_module_init) {
+        return CME_LEA_NOT_INIT;
+    }
+
+    /* Parse optional broadcast code (16 bytes) */
+    uint8_t broadcast_code[16];
+    uint8_t *code_ptr = NULL;
+
+    if (argc >= 1 && argv[0][0] != '\0') {
+        if (!parse_hex_string(argv[0], broadcast_code, 16)) {
+            cdc_acm_printf("\r\nERROR: Invalid broadcast_code (expected 32 hex chars)\r\n");
+            return CME_INVALID_PARAM;
+        }
+        code_ptr = broadcast_code;
+    }
+
+    /* Start demo - auto sync to first broadcast found */
+    int result = le_audio_broadcast_sink_demo_auto_sync(code_ptr);
+    if (result != 0) {
+        cdc_acm_printf("\r\n+LEADEMO: FAILED,%d\r\n", result);
+        return CME_LEA_STREAM_ERROR;
+    }
+
+    cdc_acm_printf("\r\n+LEADEMO: STARTED\r\n");
+    cdc_acm_printf("Scanning for broadcasts... (will auto-sync to first found)\r\n");
 
     return CME_SUCCESS;
 }

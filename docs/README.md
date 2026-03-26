@@ -375,7 +375,7 @@ Terminal   emUSB-Device   Tokenizer    at_*_cmds.c       BTSTACK/WHD/etc.
 |----------|----------|
 | System | `AT`, `ATI`, `AT+VERSION?`, `AT+RST`, `AT+ECHO=0/1` |
 | Bluetooth | `AT+BTINIT`, `AT+BTSTATE?`, `AT+BTNAME=<name>`, `AT+GAPADVSTART`, `AT+GAPSCAN=1`, `AT+GAPCONN=<addr>` |
-| LE Audio | `AT+LEAINIT`, `AT+LEASTATE?`, `AT+LEABROADCAST=1`, `AT+LEAUNICAST=1,<handle>`, `AT+LEACODEC=<rate>,<duration>` |
+| LE Audio | `AT+LEAINIT`, `AT+LEASTATE?`, `AT+LEABROADCAST=1`, `AT+LEAUNICAST=1,<handle>`, `AT+LEACODEC`, `AT+LEASCAN`, `AT+LEASYNC`, `AT+LEADEMO` |
 | Wi-Fi | `AT+WIFIINIT`, `AT+WIFISTATE?`, `AT+WIFISCAN`, `AT+WIFIJOIN=<ssid>,<pwd>`, `AT+WIFIBRIDGE=1` |
 
 ### Path Summary
