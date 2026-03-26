@@ -15,12 +15,17 @@ mtb_shared/
 mtb/mtb_shared/
 mtb/le-audio/build/
 mtb/le-audio/proj_*/build/
-mtb/le-audio/proj_*/libs/
 GeneratedSource/
 *.mtbproj
 *.mtbsearch
 .modustoolbox
 .mtbqueryapi
+.ninja_log
+
+# MTB libs folders - ignore downloaded libraries but keep .mtb and .mk files
+mtb/le-audio/proj_*/libs/*/
+!mtb/le-audio/proj_*/libs/*.mtb
+!mtb/le-audio/proj_*/libs/*.mk
 
 # IDE files
 .vscode/
